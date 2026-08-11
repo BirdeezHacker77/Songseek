@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 
 import msgspec
@@ -19,16 +20,63 @@ from models.library_management import (
     PATH_COLLISION_DIFFERENT,
     ROOT_UNAVAILABLE,
 )
-from models.library_management_planning import LibraryManagementSelection
+from models.library_management_planning import (
+    LibraryManagementSelection,
+    LibraryManagementSelectionSubject,
+    NormalizedLibraryManagementSelection,
+)
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
 from services.native.library_management_baseline_service import (
     LibraryManagementBaselineService,
+    _display_document,
 )
 from services.native.library_management_publisher import LibraryManagementPublisher
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.native.library_policy_resolver import LibraryPolicyResolver
-from tests.services.native.test_library_management_planner import _configured, _planner
+from tests.services.native.test_library_management_planner import (
+    _ArtworkRepository,
+    _configured,
+    _planner,
+)
+
+
+def test_baseline_display_document_keeps_catalog_year_without_native_date() -> None:
+    subject = LibraryManagementSelectionSubject(
+        ordinal=0,
+        bundle_ordinal=0,
+        bundle_first=True,
+        local_album_id="album-1",
+        local_track_id="track-1",
+        album_revision=1,
+        track_revision=1,
+        root_id="root-1",
+        relative_path="Artist/Album/01 Track.mp3",
+        file_path="/music/Artist/Album/01 Track.mp3",
+        file_size_bytes=1,
+        file_mtime_ns=1,
+        stat_revision="1:1",
+        tag_revision="tag-1",
+        availability="indexed",
+        applied_policy="automatic",
+        file_format="mp3",
+        disc_number=1,
+        track_number=1,
+        track_title="Track",
+        artist_name="Artist",
+        album_title="Album",
+        album_artist_name="Artist",
+        year=1974,
+        album_artwork_version=None,
+    )
+
+    desired = _display_document(subject, None)
+
+    assert (
+        next(field.value for field in desired.fields if field.name == "date") == "1974"
+    )
+
+
 from tests.services.native.test_library_management_publisher import (
     _ready_apply_operation,
     _update_profile,
@@ -274,6 +322,97 @@ async def test_baseline_restore_returns_a_to_original_after_a_then_b(tmp_path) -
     assert state.baseline_id == baseline.id
     assert state.applied_profile_id is None
     assert state.last_outcome == "restored"
+
+
+@pytest.mark.asyncio
+async def test_baseline_preview_counts_embedded_artwork_restoration(tmp_path) -> None:
+    artwork = _ArtworkRepository()
+
+    def configure(_root, preferences, _store) -> None:
+        def enable_embedded(_settings, profile) -> None:
+            profile.artwork.embedded_enabled = True
+            profile.artwork.external_enabled = False
+            profile.artwork.providers = ["cover_art_archive_release"]
+
+        _update_profile(preferences, enable_embedded)
+
+    (
+        root,
+        source,
+        store,
+        audio,
+        publisher,
+        job_id,
+    ) = await _ready_apply_operation(
+        tmp_path,
+        configure=configure,
+        artwork_repository=artwork,
+    )
+    original_artwork = audio.read(source).artwork
+    await publisher.publish_bundle(job_id, 0, "apply-worker")
+    managed = await store.get_target_track("track-1")
+    assert managed is not None
+    assert audio.read(root / str(managed["relative_path"])).artwork != original_artwork
+    _finish_job(store, job_id, 115.0)
+
+    management = publisher._preferences.get_library_management_settings()
+    policy_revision = LibraryPolicyResolver(
+        publisher._preferences.get_typed_library_settings_raw()
+    ).policy_revision
+    service = _baseline_service(
+        tmp_path,
+        store,
+        publisher._preferences,
+        audio,
+        now=120.0,
+    )
+    preview = await _create_and_run_restore_preview(
+        service,
+        store,
+        settings_revision=management.settings_revision,
+        policy_revision=policy_revision,
+        idempotency_key="baseline-embedded-artwork-preview",
+    )
+
+    items = await store.list_library_management_plan_items(preview.job_id)
+    snapshot = await store.get_library_management_job_snapshot(preview.job_id)
+    assert len(items) == 1
+    desired = json.loads(items[0].desired_document_json)
+    desired_fields = {value["name"]: value for value in desired["fields"]}
+    assert desired_fields["title"]["value"] == "Aria"
+    assert desired_fields["title"]["action"] == "unchanged"
+    assert desired_fields["album"]["value"] == "Goldberg Variations, BWV 988"
+    assert desired_fields["album_artist"]["value"] == [
+        "Johann Sebastian Bach",
+        "Glenn Gould",
+    ]
+    assert desired_fields["date"]["value"] == "1982-10"
+    assert (
+        items[0].desired_document_hash
+        == hashlib.sha256(items[0].desired_document_json.encode()).hexdigest()
+    )
+    diff = json.loads(items[0].diff_json)
+    assert diff["artwork_changed"] is True
+    assert diff["field_mutations"]
+    assert diff["restoration"]["scope"] == "first_management_baseline"
+    assert diff["restoration"]["artwork"]["changed"] is True
+    assert (
+        diff["restoration"]["artwork"]["current"][0]["sha256"]
+        != diff["restoration"]["artwork"]["restored"][0]["sha256"]
+    )
+    assert "content" not in diff["restoration"]["artwork"]["restored"][0]
+    assert (
+        diff["restoration"]["native_tags"]["current_fingerprint"]
+        != diff["restoration"]["native_tags"]["restored_fingerprint"]
+    )
+    assert snapshot is not None
+    assert (
+        msgspec.json.decode(
+            snapshot.selection_json.encode(), type=NormalizedLibraryManagementSelection
+        ).expand_album_bundles
+        is True
+    )
+    assert json.loads(snapshot.summary_json)["artwork_change_count"] == 1
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,10 @@ from infrastructure.persistence._database import PersistenceBase
 from infrastructure.persistence.native_library_schema import SCHEMA_SQL
 from infrastructure.validators import is_valid_mbid
 from models.audio import AudioArtistCredit
+from models.artist_reconciliation import (
+    ProviderAlbumArtistProjection,
+    ProviderArtistCredit,
+)
 from models.identification import (
     CandidateEvidence,
     FingerprintOutcome,
@@ -102,6 +106,7 @@ from models.local_catalog import (
 )
 
 MAX_REVISION = 9_223_372_036_854_775_807
+_POST_PROCESSING_IDENTIFICATION_PRIORITY = 50
 VARIOUS_ARTISTS_ID = "00000000-0000-4000-8000-000000000001"
 UNKNOWN_ARTIST_ID = "00000000-0000-4000-8000-000000000002"
 AUTOMATIC_SAFE_EVIDENCE_REASONS = frozenset(
@@ -111,6 +116,8 @@ BULK_PREVIEW_BATCH_SIZE = 500
 BULK_PREVIEW_CLEANUP_BATCH_SIZE = 5_000
 MANAGEMENT_PERSISTENCE_BATCH_SIZE = 500
 _MANAGEMENT_ARTIST_NAMESPACE = uuid.UUID("c65f5557-43c6-4550-bd8a-ea7dcaac6411")
+_MUSICBRAINZ_VARIOUS_ARTISTS_MBID = "89ad4ac3-39f7-470e-963a-56509c546377"
+_MUSICBRAINZ_UNKNOWN_ARTIST_MBID = "125ec42a-7229-4250-afc5-e057484327fe"
 _MANAGEMENT_OVERRIDE_NAMESPACE = uuid.UUID("da92fb1a-554d-4822-a31d-d845531f693b")
 _IMPORT_MANAGEMENT_JOB_NAMESPACE = uuid.UUID("5db0594a-43c7-4ea4-866f-bd48bb33717d")
 _IMPORT_BASELINE_NAMESPACE = uuid.UUID("bf48a4f8-5968-41f6-9c82-f95a976a8f21")
@@ -238,7 +245,8 @@ SELECT
     aae.provider_artist_id AS provider_album_artist_mbid,
     tae.provider_artist_id AS provider_artist_mbid,
     artwork.cover_url,
-    artwork.source AS artwork_source
+    artwork.source AS artwork_source,
+    artwork.version AS album_artwork_version
 FROM local_tracks t
 JOIN local_albums a ON a.id = t.local_album_id
 LEFT JOIN local_track_artists ta
@@ -1028,10 +1036,14 @@ class NativeLibraryStore(PersistenceBase):
                 "ALTER TABLE local_track_external_identities ADD COLUMN release_track_position INTEGER CHECK(release_track_position IS NULL OR release_track_position > 0)",
                 "ALTER TABLE library_management_overrides ADD COLUMN subject_revision INTEGER NOT NULL DEFAULT 1 CHECK(subject_revision BETWEEN 1 AND 9223372036854775807)",
                 "ALTER TABLE library_management_plan_items ADD COLUMN destination_collision_key TEXT",
+                "ALTER TABLE library_management_plan_items ADD COLUMN catalog_document_json TEXT",
+                "ALTER TABLE library_management_plan_items ADD COLUMN catalog_document_hash TEXT",
                 "ALTER TABLE library_management_job_snapshots ADD COLUMN proposed_settings_revision TEXT",
                 "ALTER TABLE library_management_job_snapshots ADD COLUMN apply_idempotency_key TEXT",
                 "ALTER TABLE library_management_job_snapshots ADD COLUMN intent_json TEXT NOT NULL DEFAULT '{}'",
                 "ALTER TABLE library_management_baselines ADD COLUMN ancillary_snapshot_json TEXT NOT NULL DEFAULT '[]'",
+                "ALTER TABLE library_management_baselines ADD COLUMN catalog_document_json TEXT",
+                "ALTER TABLE library_management_baselines ADD COLUMN catalog_document_hash TEXT",
                 "ALTER TABLE library_management_operation_snapshots ADD COLUMN ancillary_snapshot_json TEXT NOT NULL DEFAULT '[]'",
                 "ALTER TABLE library_management_operation_snapshots ADD COLUMN before_management_state_json TEXT NOT NULL DEFAULT '{}'",
                 "ALTER TABLE library_file_mutation_journal ADD COLUMN recovery_evidence_json TEXT NOT NULL DEFAULT '{}'",
@@ -2344,15 +2356,10 @@ class NativeLibraryStore(PersistenceBase):
                     return [], 0
                 placeholders = ",".join("?" for _ in resolved_artists)
                 clauses.append(
-                    "(EXISTS (SELECT 1 FROM local_album_artists laa "
+                    "EXISTS (SELECT 1 FROM local_album_artists laa "
                     "WHERE laa.local_album_id = a.id "
-                    f"AND laa.local_artist_id IN ({placeholders})) "
-                    "OR EXISTS (SELECT 1 FROM local_track_artists lta "
-                    "JOIN local_tracks credited_track ON credited_track.id = lta.local_track_id "
-                    "WHERE credited_track.local_album_id = a.id "
-                    f"AND lta.local_artist_id IN ({placeholders})))"
+                    f"AND laa.local_artist_id IN ({placeholders}))"
                 )
-                parameters.extend(resolved_artists)
                 parameters.extend(resolved_artists)
             where = " AND ".join(clauses)
             total = int(
@@ -2415,14 +2422,15 @@ class NativeLibraryStore(PersistenceBase):
         sort_by: str = "name",
         sort_order: str = "asc",
         artist_ids: list[str] | None = None,
+        scope: str = "album",
     ) -> tuple[list[dict[str, Any]], int]:
         def operation(
             connection: sqlite3.Connection,
         ) -> tuple[list[dict[str, Any]], int]:
-            clauses = [
-                "ar.retired_into_artist_id IS NULL",
-                "t.availability = 'indexed'",
-            ]
+            normalized_scope = (
+                scope if scope in {"album", "contributors", "all"} else "album"
+            )
+            clauses = ["ar.retired_into_artist_id IS NULL"]
             parameters: list[Any] = []
             if search:
                 clauses.append("ar.folded_name LIKE ?")
@@ -2442,49 +2450,239 @@ class NativeLibraryStore(PersistenceBase):
                 placeholders = ",".join("?" for _ in resolved_artists)
                 clauses.append(f"ar.id IN ({placeholders})")
                 parameters.extend(resolved_artists)
+            if normalized_scope == "album":
+                clauses.append("album_rel.artist_id IS NOT NULL")
+            elif normalized_scope == "contributors":
+                clauses.append("contributor_rel.artist_id IS NOT NULL")
+            else:
+                clauses.append(
+                    "(album_rel.artist_id IS NOT NULL OR contributor_rel.artist_id IS NOT NULL)"
+                )
             where = " AND ".join(clauses)
+            common = (
+                "WITH album_rel AS ("
+                "SELECT credit.local_artist_id AS artist_id, "
+                "COUNT(DISTINCT credit.local_album_id) AS album_count, "
+                "COUNT(DISTINCT track.id) AS track_count, "
+                "MIN(track.imported_at) AS album_date_added "
+                "FROM local_album_artists credit "
+                "JOIN local_albums album ON album.id = credit.local_album_id "
+                "JOIN local_tracks track ON track.local_album_id = album.id "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND track.availability = 'indexed' GROUP BY credit.local_artist_id"
+                "), contributor_rel AS ("
+                "SELECT credit.local_artist_id AS artist_id, "
+                "COUNT(DISTINCT track.local_album_id) AS appearance_release_count, "
+                "COUNT(DISTINCT track.id) AS appearance_track_count, "
+                "MIN(track.imported_at) AS appearance_date_added "
+                "FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND track.availability = 'indexed' "
+                "AND NOT EXISTS (SELECT 1 FROM local_album_artists album_credit "
+                "WHERE album_credit.local_album_id = track.local_album_id "
+                "AND album_credit.local_artist_id = credit.local_artist_id) "
+                "GROUP BY credit.local_artist_id"
+                ") "
+            )
             joins = (
                 " FROM local_artists ar "
-                "JOIN ("
-                "SELECT aa.local_artist_id, t0.local_album_id, t0.id AS local_track_id "
-                "FROM local_album_artists aa JOIN local_tracks t0 "
-                "ON t0.local_album_id = aa.local_album_id "
-                "UNION "
-                "SELECT ta.local_artist_id, t1.local_album_id, t1.id AS local_track_id "
-                "FROM local_track_artists ta JOIN local_tracks t1 "
-                "ON t1.id = ta.local_track_id"
-                ") credit ON credit.local_artist_id = ar.id "
-                "JOIN local_albums a ON a.id = credit.local_album_id "
-                "JOIN local_tracks t ON t.id = credit.local_track_id "
+                "LEFT JOIN album_rel ON album_rel.artist_id = ar.id "
+                "LEFT JOIN contributor_rel ON contributor_rel.artist_id = ar.id "
+                "LEFT JOIN local_artist_external_identities aie "
+                "ON aie.local_artist_id = ar.id AND aie.provider = 'musicbrainz' "
             )
             total = int(
                 connection.execute(
-                    "SELECT COUNT(DISTINCT ar.id)" + joins + "WHERE " + where,
+                    common + "SELECT COUNT(*)" + joins + "WHERE " + where,
                     parameters,
                 ).fetchone()[0]
             )
             direction = "DESC" if sort_order == "desc" else "ASC"
             order_expression = {
-                "album_count": "album_count",
+                "album_count": "COALESCE(album_rel.album_count, 0)",
+                "appearance_count": "COALESCE(contributor_rel.appearance_track_count, 0)",
                 "date_added": "date_added",
             }.get(sort_by, "ar.folded_name")
+            date_added = (
+                "contributor_rel.appearance_date_added"
+                if normalized_scope == "contributors"
+                else "album_rel.album_date_added"
+                if normalized_scope == "album"
+                else "MIN(COALESCE(album_rel.album_date_added, contributor_rel.appearance_date_added), "
+                "COALESCE(contributor_rel.appearance_date_added, album_rel.album_date_added))"
+            )
             rows = connection.execute(
-                "SELECT ar.id AS artist_mbid, ar.display_name AS artist_name, "
+                common + "SELECT ar.id AS artist_mbid, ar.display_name AS artist_name, "
                 "ar.row_revision, "
-                "ar.sort_name, COUNT(DISTINCT a.id) AS album_count, "
-                "COUNT(DISTINCT t.id) AS track_count, MIN(t.imported_at) AS date_added, "
+                "ar.sort_name, COALESCE(album_rel.album_count, 0) AS album_count, "
+                "COALESCE(album_rel.track_count, 0) AS track_count, "
+                "COALESCE(contributor_rel.appearance_release_count, 0) "
+                "AS appearance_release_count, "
+                "COALESCE(contributor_rel.appearance_track_count, 0) "
+                "AS appearance_track_count, " + date_added + " AS date_added, "
+                "CASE WHEN album_rel.artist_id IS NOT NULL "
+                "AND contributor_rel.artist_id IS NOT NULL THEN 'both' "
+                "WHEN album_rel.artist_id IS NOT NULL THEN 'album_artist' "
+                "ELSE 'contributor' END AS library_relationship, "
                 "aie.provider_artist_id AS provider_artist_mbid"
                 + joins
-                + "LEFT JOIN local_artist_external_identities aie "
-                "ON aie.local_artist_id = ar.id AND aie.provider = 'musicbrainz' "
-                "WHERE "
+                + "WHERE "
                 + where
-                + f" GROUP BY ar.id ORDER BY {order_expression} {direction}, "
+                + f" ORDER BY {order_expression} {direction}, "
                 f"ar.folded_name {direction}, ar.id {direction} "
                 "LIMIT ? OFFSET ?",
                 (*parameters, max(1, limit), max(0, offset)),
             ).fetchall()
             return [dict(row) for row in rows], total
+
+        return await self._read(operation)
+
+    async def target_artist_scope_counts(self) -> tuple[int, int]:
+        def operation(connection: sqlite3.Connection) -> tuple[int, int]:
+            album_count = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT credit.local_artist_id) "
+                    "FROM local_album_artists credit "
+                    "JOIN local_artists artist ON artist.id = credit.local_artist_id "
+                    "JOIN local_albums album ON album.id = credit.local_album_id "
+                    "WHERE artist.retired_into_artist_id IS NULL "
+                    "AND album.retired_into_album_id IS NULL AND EXISTS ("
+                    "SELECT 1 FROM local_tracks track WHERE track.local_album_id = album.id "
+                    "AND track.availability = 'indexed')"
+                ).fetchone()[0]
+            )
+            contributor_count = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT credit.local_artist_id) "
+                    "FROM local_track_artists credit "
+                    "JOIN local_artists artist ON artist.id = credit.local_artist_id "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "JOIN local_albums album ON album.id = track.local_album_id "
+                    "WHERE artist.retired_into_artist_id IS NULL "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND track.availability = 'indexed' AND NOT EXISTS ("
+                    "SELECT 1 FROM local_album_artists album_credit "
+                    "WHERE album_credit.local_album_id = track.local_album_id "
+                    "AND album_credit.local_artist_id = credit.local_artist_id)"
+                ).fetchone()[0]
+            )
+            return album_count, contributor_count
+
+        return await self._read(operation)
+
+    async def list_target_artist_appearances(
+        self, artist_id: str, *, limit: int = 20, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[list[dict[str, Any]], int, int]:
+            resolved = self._resolve_target_membership_ids(
+                connection, kind="artist", identifier=artist_id
+            )
+            if not resolved:
+                return [], 0, 0
+            artist_placeholders = ",".join("?" for _ in resolved)
+            contributor_predicate = (
+                "track.availability = 'indexed' "
+                "AND album.retired_into_album_id IS NULL "
+                f"AND credit.local_artist_id IN ({artist_placeholders}) "
+                "AND NOT EXISTS (SELECT 1 FROM local_album_artists album_credit "
+                "WHERE album_credit.local_album_id = track.local_album_id "
+                f"AND album_credit.local_artist_id IN ({artist_placeholders}))"
+            )
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT track.local_album_id) "
+                    "FROM local_track_artists credit "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "JOIN local_albums album ON album.id = track.local_album_id WHERE "
+                    + contributor_predicate,
+                    (*resolved, *resolved),
+                ).fetchone()[0]
+            )
+            total_tracks = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT track.id) "
+                    "FROM local_track_artists credit "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "JOIN local_albums album ON album.id = track.local_album_id WHERE "
+                    + contributor_predicate,
+                    (*resolved, *resolved),
+                ).fetchone()[0]
+            )
+            album_id_rows = connection.execute(
+                "SELECT track.local_album_id, MIN(album.title_folded) AS title_folded "
+                "FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "JOIN local_albums album ON album.id = track.local_album_id WHERE "
+                + contributor_predicate
+                + " GROUP BY track.local_album_id "
+                "ORDER BY title_folded, track.local_album_id LIMIT ? OFFSET ?",
+                (*resolved, *resolved, max(1, limit), max(0, offset)),
+            ).fetchall()
+            album_ids = [str(row["local_album_id"]) for row in album_id_rows]
+            if not album_ids:
+                return [], total, total_tracks
+            album_placeholders = ",".join("?" for _ in album_ids)
+            album_rows = connection.execute(
+                "SELECT a.id AS release_group_mbid, a.title AS album_title, "
+                "a.album_artist_name, a.album_artist_id AS album_artist_mbid, "
+                "a.year, a.is_compilation, a.original_release_date, "
+                "a.album_artist_sort_name, COUNT(t.id) AS track_count, "
+                "SUM(t.file_size_bytes) AS total_size_bytes, "
+                "SUM(COALESCE(t.duration_seconds, 0)) AS total_duration_seconds, "
+                "MAX(t.imported_at) AS last_imported_at, "
+                "MAX(t.file_format) AS file_format, MAX(t.album_sort) AS album_sort_name, "
+                "GROUP_CONCAT(DISTINCT NULLIF(t.genre, '')) AS genres, "
+                "ae.release_group_mbid AS provider_release_group_mbid, "
+                "ae.release_mbid AS provider_release_mbid, "
+                "aie.provider_artist_id AS provider_artist_mbid, artwork.cover_url, "
+                "artwork.source AS artwork_source, contribution.id AS contribution_id, "
+                "contribution.state AS contribution_state "
+                "FROM local_albums a JOIN local_tracks t ON t.local_album_id = a.id "
+                "LEFT JOIN local_album_external_identities ae "
+                "ON ae.local_album_id = a.id AND ae.provider = 'musicbrainz' "
+                "LEFT JOIN local_artist_external_identities aie "
+                "ON aie.local_artist_id = a.album_artist_id "
+                "AND aie.provider = 'musicbrainz' "
+                "LEFT JOIN local_album_artwork artwork ON artwork.local_album_id = a.id "
+                "LEFT JOIN library_contribution_drafts contribution "
+                "ON contribution.local_album_id = a.id "
+                "AND contribution.state NOT IN ('linked','cancelled','stale') "
+                f"WHERE a.id IN ({album_placeholders}) AND t.availability = 'indexed' "
+                "GROUP BY a.id",
+                album_ids,
+            ).fetchall()
+            albums = {str(row["release_group_mbid"]): dict(row) for row in album_rows}
+            track_rows = connection.execute(
+                _TARGET_TRACK_SELECT
+                + f" WHERE t.local_album_id IN ({album_placeholders}) "
+                "AND t.availability = 'indexed' "
+                f"AND EXISTS (SELECT 1 FROM local_track_artists credit "
+                "WHERE credit.local_track_id = t.id "
+                f"AND credit.local_artist_id IN ({artist_placeholders})) "
+                "AND NOT EXISTS (SELECT 1 FROM local_album_artists album_credit "
+                "WHERE album_credit.local_album_id = t.local_album_id "
+                f"AND album_credit.local_artist_id IN ({artist_placeholders})) "
+                "ORDER BY t.local_album_id, t.disc_number, t.track_number, t.id",
+                (*album_ids, *resolved, *resolved),
+            ).fetchall()
+            tracks_by_album: dict[str, list[dict[str, Any]]] = {
+                album_id: [] for album_id in album_ids
+            }
+            for row in track_rows:
+                tracks_by_album[str(row["local_album_id"])].append(dict(row))
+            return (
+                [
+                    {"album": albums[album_id], "tracks": tracks_by_album[album_id]}
+                    for album_id in album_ids
+                    if album_id in albums and tracks_by_album[album_id]
+                ],
+                total,
+                total_tracks,
+            )
 
         return await self._read(operation)
 
@@ -2644,12 +2842,10 @@ class NativeLibraryStore(PersistenceBase):
                 "SELECT identity.provider_artist_id "
                 "FROM local_artist_external_identities identity "
                 "WHERE EXISTS (SELECT 1 FROM local_album_artists credit "
+                "JOIN local_albums album ON album.id = credit.local_album_id "
                 "JOIN local_tracks track ON track.local_album_id = credit.local_album_id "
                 "WHERE credit.local_artist_id = identity.local_artist_id "
-                "AND track.availability = 'indexed') "
-                "OR EXISTS (SELECT 1 FROM local_track_artists credit "
-                "JOIN local_tracks track ON track.id = credit.local_track_id "
-                "WHERE credit.local_artist_id = identity.local_artist_id "
+                "AND album.retired_into_album_id IS NULL "
                 "AND track.availability = 'indexed') "
                 "ORDER BY identity.provider_artist_id"
             ).fetchall()
@@ -2676,12 +2872,10 @@ class NativeLibraryStore(PersistenceBase):
                     "local_artist_external_identities identity WHERE "
                     f"lower(identity.provider_artist_id) IN ({placeholders}) AND ("
                     "EXISTS (SELECT 1 FROM local_album_artists credit "
+                    "JOIN local_albums album ON album.id=credit.local_album_id "
                     "JOIN local_tracks track ON track.local_album_id=credit.local_album_id "
                     "WHERE credit.local_artist_id=identity.local_artist_id "
-                    "AND track.availability='indexed') OR EXISTS ("
-                    "SELECT 1 FROM local_track_artists credit JOIN local_tracks track "
-                    "ON track.id=credit.local_track_id WHERE "
-                    "credit.local_artist_id=identity.local_artist_id "
+                    "AND album.retired_into_album_id IS NULL "
                     "AND track.availability='indexed'))",
                     batch,
                 ).fetchall()
@@ -2691,23 +2885,51 @@ class NativeLibraryStore(PersistenceBase):
         return await self._read(operation)
 
     async def target_has_provider_artist(self, provider_artist_id: str) -> bool:
-        def operation(connection: sqlite3.Connection) -> bool:
-            return (
+        owned, _appears = await self.target_provider_artist_relationship(
+            provider_artist_id
+        )
+        return owned
+
+    async def target_provider_artist_relationship(
+        self, provider_artist_id: str
+    ) -> tuple[bool, bool]:
+        def operation(connection: sqlite3.Connection) -> tuple[bool, bool]:
+            owned = (
                 connection.execute(
                     "SELECT 1 FROM local_artist_external_identities identity "
-                    "WHERE LOWER(identity.provider_artist_id) = LOWER(?) AND ("
-                    "EXISTS (SELECT 1 FROM local_album_artists credit "
-                    "JOIN local_tracks track ON track.local_album_id = credit.local_album_id "
-                    "WHERE credit.local_artist_id = identity.local_artist_id "
-                    "AND track.availability = 'indexed') OR "
-                    "EXISTS (SELECT 1 FROM local_track_artists credit "
-                    "JOIN local_tracks track ON track.id = credit.local_track_id "
-                    "WHERE credit.local_artist_id = identity.local_artist_id "
-                    "AND track.availability = 'indexed')) LIMIT 1",
+                    "JOIN local_artists artist ON artist.id = identity.local_artist_id "
+                    "JOIN local_album_artists credit "
+                    "ON credit.local_artist_id = identity.local_artist_id "
+                    "JOIN local_albums album ON album.id = credit.local_album_id "
+                    "JOIN local_tracks track ON track.local_album_id = album.id "
+                    "WHERE LOWER(identity.provider_artist_id) = LOWER(?) "
+                    "AND artist.retired_into_artist_id IS NULL "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND track.availability = 'indexed' LIMIT 1",
                     (provider_artist_id,),
                 ).fetchone()
                 is not None
             )
+            appears = (
+                connection.execute(
+                    "SELECT 1 FROM local_artist_external_identities identity "
+                    "JOIN local_artists artist ON artist.id = identity.local_artist_id "
+                    "JOIN local_track_artists credit "
+                    "ON credit.local_artist_id = identity.local_artist_id "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "JOIN local_albums album ON album.id = track.local_album_id "
+                    "WHERE LOWER(identity.provider_artist_id) = LOWER(?) "
+                    "AND artist.retired_into_artist_id IS NULL "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND track.availability = 'indexed' AND NOT EXISTS ("
+                    "SELECT 1 FROM local_album_artists album_credit "
+                    "WHERE album_credit.local_album_id = track.local_album_id "
+                    "AND album_credit.local_artist_id = credit.local_artist_id) LIMIT 1",
+                    (provider_artist_id,),
+                ).fetchone()
+                is not None
+            )
+            return owned, appears
 
         return await self._read(operation)
 
@@ -2914,15 +3136,12 @@ class NativeLibraryStore(PersistenceBase):
             ).fetchone()
             artist_count = int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM ("
-                    "SELECT aa.local_artist_id FROM local_album_artists aa "
-                    "JOIN local_tracks t ON t.local_album_id = aa.local_album_id "
-                    "WHERE t.availability = 'indexed' "
-                    "UNION "
-                    "SELECT ta.local_artist_id FROM local_track_artists ta "
-                    "JOIN local_tracks t ON t.id = ta.local_track_id "
-                    "WHERE t.availability = 'indexed'"
-                    ")"
+                    "SELECT COUNT(DISTINCT credit.local_artist_id) "
+                    "FROM local_album_artists credit "
+                    "JOIN local_albums album ON album.id = credit.local_album_id "
+                    "WHERE album.retired_into_album_id IS NULL AND EXISTS ("
+                    "SELECT 1 FROM local_tracks track WHERE track.local_album_id = album.id "
+                    "AND track.availability = 'indexed')"
                 ).fetchone()[0]
             )
             formats = connection.execute(
@@ -5407,11 +5626,12 @@ class NativeLibraryStore(PersistenceBase):
         now: float,
     ) -> tuple[str, bool]:
         prior_candidate = connection.execute(
-            "SELECT id FROM local_artists WHERE id = ? AND retired_into_artist_id IS NULL",
+            "SELECT COALESCE(retired_into_artist_id, id) AS id "
+            "FROM local_artists WHERE id = ?",
             (candidate_id,),
         ).fetchone()
         if prior_candidate is not None:
-            return candidate_id, True
+            return str(prior_candidate["id"]), True
         exact = connection.execute(
             "SELECT id, sort_name FROM local_artists WHERE normalized_name = ? "
             "AND kind = ? AND retired_into_artist_id IS NULL ORDER BY created_at, id",
@@ -5821,6 +6041,63 @@ class NativeLibraryStore(PersistenceBase):
             if changed:
                 self._bump_catalog(connection)
             return changed
+
+        return await self._write(operation)
+
+    async def backfill_manual_identity_release_years(self, *, updated_at: float) -> int:
+        """Fill missing catalog years from accepted, pinned release metadata."""
+
+        def operation(connection: sqlite3.Connection) -> int:
+            rows = connection.execute(
+                "SELECT identity.local_album_id, snapshot.canonical_payload_json "
+                "FROM local_album_external_identities identity "
+                "JOIN library_management_metadata_snapshots snapshot "
+                "ON snapshot.provider = 'musicbrainz' "
+                "AND snapshot.entity_kind = 'release' "
+                "AND snapshot.entity_id = identity.release_mbid "
+                "WHERE identity.provider = 'musicbrainz' "
+                "AND identity.decision_source = 'manual' "
+                "AND identity.release_mbid IS NOT NULL "
+                "AND snapshot.fetched_at = ("
+                "SELECT MAX(newest.fetched_at) "
+                "FROM library_management_metadata_snapshots newest "
+                "WHERE newest.provider = snapshot.provider "
+                "AND newest.entity_kind = snapshot.entity_kind "
+                "AND newest.entity_id = snapshot.entity_id) "
+                "ORDER BY identity.local_album_id, snapshot.id"
+            ).fetchall()
+            repaired_albums: set[str] = set()
+            for row in rows:
+                album_id = str(row["local_album_id"])
+                if album_id in repaired_albums:
+                    continue
+                payload = json.loads(str(row["canonical_payload_json"]))
+                date = payload.get("date")
+                value = date.get("value") if isinstance(date, dict) else None
+                if not isinstance(value, str) or len(value) < 4:
+                    continue
+                year_text = value[:4]
+                if not year_text.isdigit():
+                    continue
+                year = int(year_text)
+                if year < 1000 or year > 9999:
+                    continue
+                album_cursor = connection.execute(
+                    "UPDATE local_albums SET year = ?, updated_at = ?, "
+                    "row_revision = row_revision + 1 "
+                    "WHERE id = ? AND year IS NULL",
+                    (year, updated_at, album_id),
+                )
+                track_cursor = connection.execute(
+                    "UPDATE local_tracks SET year = ?, row_revision = row_revision + 1 "
+                    "WHERE local_album_id = ? AND year IS NULL",
+                    (year, album_id),
+                )
+                if album_cursor.rowcount or track_cursor.rowcount:
+                    repaired_albums.add(album_id)
+            if repaired_albums:
+                self._bump_catalog(connection)
+            return len(repaired_albums)
 
         return await self._write(operation)
 
@@ -8737,63 +9014,80 @@ class NativeLibraryStore(PersistenceBase):
         album_credits = [resolved_credit(credit) for credit in album_credits]
         track_credits = [resolved_credit(credit) for credit in track_credits]
         track = write.track
-        connection.execute(
-            "INSERT INTO local_albums "
-            "(id, root_id, grouping_key, title, title_folded, album_artist_name, "
-            "album_artist_name_folded, album_artist_id, album_artist_sort_name, year, "
-            "original_release_date, primary_genre, is_compilation, grouping_source, "
-            "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET title = excluded.title, "
-            "title_folded = excluded.title_folded, album_artist_name = excluded.album_artist_name, "
-            "album_artist_name_folded = excluded.album_artist_name_folded, "
-            "album_artist_id = excluded.album_artist_id, year = excluded.year, "
-            "primary_genre = excluded.primary_genre, updated_at = excluded.updated_at, "
-            "row_revision = local_albums.row_revision + 1",
-            (
-                album.id,
-                album.root_id,
-                album.grouping_key,
-                album.title,
-                _fold(album.title),
-                album.album_artist_name,
-                _fold(album.album_artist_name),
-                album.album_artist_id,
-                album.album_artist_sort_name,
-                album.year,
-                album.original_release_date,
-                album.primary_genre,
-                int(album.is_compilation),
-                album.grouping_source,
-                album.created_at,
-                album.updated_at,
-            ),
-        )
-        connection.execute(
-            "DELETE FROM local_album_artists WHERE local_album_id = ?", (album.id,)
-        )
-        connection.executemany(
-            "INSERT INTO local_album_artists "
-            "(local_album_id, position, local_artist_id, role, credited_name, join_phrase) "
-            "VALUES (?,?,?,?,?,?)",
-            [
-                (
-                    album.id,
-                    credit.position,
-                    credit.local_artist_id,
-                    credit.role,
-                    credit.credited_name,
-                    credit.join_phrase,
-                )
-                for credit in album_credits
-            ],
-        )
         existing = connection.execute(
-            "SELECT id,membership_locked,local_album_id,tag_revision,duration_seconds,"
-            "file_format,bit_rate,sample_rate,bit_depth,channels,availability "
+            "SELECT local_tracks.*, EXISTS(SELECT 1 FROM local_album_external_identities ae "
+            "WHERE ae.local_album_id=local_tracks.local_album_id "
+            "AND ae.provider='musicbrainz' AND ae.release_mbid IS NOT NULL) "
+            "AND EXISTS(SELECT 1 FROM local_track_external_identities te "
+            "WHERE te.local_track_id=local_tracks.id AND te.provider='musicbrainz' "
+            "AND te.release_mbid IS NOT NULL AND te.recording_mbid IS NOT NULL "
+            "AND te.release_track_mbid IS NOT NULL) AS accepted_identity "
             "FROM local_tracks "
             "WHERE root_id = ? AND relative_path = ?",
             (track.root_id, track.relative_path),
         ).fetchone()
+        catalog_locked = bool(
+            existing is not None
+            and existing["membership_locked"]
+            and existing["accepted_identity"]
+        )
+        if catalog_locked:
+            connection.execute(
+                "UPDATE local_albums SET updated_at=?,row_revision=row_revision+1 "
+                "WHERE id=?",
+                (album.updated_at, album.id),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO local_albums "
+                "(id, root_id, grouping_key, title, title_folded, album_artist_name, "
+                "album_artist_name_folded, album_artist_id, album_artist_sort_name, year, "
+                "original_release_date, primary_genre, is_compilation, grouping_source, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET title = excluded.title, "
+                "title_folded = excluded.title_folded, album_artist_name = excluded.album_artist_name, "
+                "album_artist_name_folded = excluded.album_artist_name_folded, "
+                "album_artist_id = excluded.album_artist_id, year = excluded.year, "
+                "primary_genre = excluded.primary_genre, updated_at = excluded.updated_at, "
+                "row_revision = local_albums.row_revision + 1",
+                (
+                    album.id,
+                    album.root_id,
+                    album.grouping_key,
+                    album.title,
+                    _fold(album.title),
+                    album.album_artist_name,
+                    _fold(album.album_artist_name),
+                    album.album_artist_id,
+                    album.album_artist_sort_name,
+                    album.year,
+                    album.original_release_date,
+                    album.primary_genre,
+                    int(album.is_compilation),
+                    album.grouping_source,
+                    album.created_at,
+                    album.updated_at,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM local_album_artists WHERE local_album_id = ?", (album.id,)
+            )
+            connection.executemany(
+                "INSERT INTO local_album_artists "
+                "(local_album_id, position, local_artist_id, role, credited_name, join_phrase) "
+                "VALUES (?,?,?,?,?,?)",
+                [
+                    (
+                        album.id,
+                        credit.position,
+                        credit.local_artist_id,
+                        credit.role,
+                        credit.credited_name,
+                        credit.join_phrase,
+                    )
+                    for credit in album_credits
+                ],
+            )
         if existing is None:
             self._insert_track(connection, track, write.genres or None)
             track_id = track.id
@@ -8849,27 +9143,55 @@ class NativeLibraryStore(PersistenceBase):
                     track.tag_revision,
                     track.tags_read_at,
                     int(track.metadata_incomplete),
-                    track.title,
-                    _fold(track.title),
-                    track.artist_name,
-                    _fold(track.artist_name),
-                    track.album_title,
-                    _fold(track.album_title),
-                    track.album_artist_name,
-                    _fold(track.album_artist_name),
+                    existing["title"] if catalog_locked else track.title,
+                    existing["title_folded"] if catalog_locked else _fold(track.title),
+                    existing["artist_name"] if catalog_locked else track.artist_name,
+                    (
+                        existing["artist_name_folded"]
+                        if catalog_locked
+                        else _fold(track.artist_name)
+                    ),
+                    existing["album_title"] if catalog_locked else track.album_title,
+                    (
+                        existing["album_title_folded"]
+                        if catalog_locked
+                        else _fold(track.album_title)
+                    ),
+                    (
+                        existing["album_artist_name"]
+                        if catalog_locked
+                        else track.album_artist_name
+                    ),
+                    (
+                        existing["album_artist_name_folded"]
+                        if catalog_locked
+                        else _fold(track.album_artist_name)
+                    ),
                     track.tag_album_title,
                     track.tag_album_artist_name,
-                    track.disc_number,
-                    track.track_number,
-                    track.year,
-                    track.genre,
-                    _fold(track.genre),
-                    track.title_sort,
-                    track.artist_sort,
-                    track.album_sort,
-                    track.album_artist_sort,
-                    track.disc_subtitle,
-                    int(track.is_compilation),
+                    existing["disc_number"] if catalog_locked else track.disc_number,
+                    existing["track_number"] if catalog_locked else track.track_number,
+                    existing["year"] if catalog_locked else track.year,
+                    existing["genre"] if catalog_locked else track.genre,
+                    existing["genre_folded"] if catalog_locked else _fold(track.genre),
+                    existing["title_sort"] if catalog_locked else track.title_sort,
+                    existing["artist_sort"] if catalog_locked else track.artist_sort,
+                    existing["album_sort"] if catalog_locked else track.album_sort,
+                    (
+                        existing["album_artist_sort"]
+                        if catalog_locked
+                        else track.album_artist_sort
+                    ),
+                    (
+                        existing["disc_subtitle"]
+                        if catalog_locked
+                        else track.disc_subtitle
+                    ),
+                    (
+                        int(existing["is_compilation"])
+                        if catalog_locked
+                        else int(track.is_compilation)
+                    ),
                     track.embedded_release_group_mbid,
                     track.embedded_release_mbid,
                     track.embedded_recording_mbid,
@@ -8896,28 +9218,30 @@ class NativeLibraryStore(PersistenceBase):
                     track_id,
                 ),
             )
-            self._replace_track_genres_tx(
-                connection, track_id, write.genres or None, scalar_genre=track.genre
-            )
-        connection.execute(
-            "DELETE FROM local_track_artists WHERE local_track_id = ?", (track_id,)
-        )
-        connection.executemany(
-            "INSERT INTO local_track_artists "
-            "(local_track_id, position, local_artist_id, role, credited_name, join_phrase) "
-            "VALUES (?,?,?,?,?,?)",
-            [
-                (
-                    track_id,
-                    credit.position,
-                    credit.local_artist_id,
-                    credit.role,
-                    credit.credited_name,
-                    credit.join_phrase,
+            if not catalog_locked:
+                self._replace_track_genres_tx(
+                    connection, track_id, write.genres or None, scalar_genre=track.genre
                 )
-                for credit in track_credits
-            ],
-        )
+        if not catalog_locked:
+            connection.execute(
+                "DELETE FROM local_track_artists WHERE local_track_id = ?", (track_id,)
+            )
+            connection.executemany(
+                "INSERT INTO local_track_artists "
+                "(local_track_id, position, local_artist_id, role, credited_name, join_phrase) "
+                "VALUES (?,?,?,?,?,?)",
+                [
+                    (
+                        track_id,
+                        credit.position,
+                        credit.local_artist_id,
+                        credit.role,
+                        credit.credited_name,
+                        credit.join_phrase,
+                    )
+                    for credit in track_credits
+                ],
+            )
         if scan_run_id is not None:
             connection.execute(
                 "INSERT OR IGNORE INTO library_scan_grouping_contexts "
@@ -9026,6 +9350,22 @@ class NativeLibraryStore(PersistenceBase):
                 self._require_policy_revision_sync(
                     connection, expected_policy_revision=expected_policy_revision
                 )
+            existing = connection.execute(
+                "SELECT local_tracks.*, EXISTS(SELECT 1 FROM local_album_external_identities ae "
+                "WHERE ae.local_album_id=local_tracks.local_album_id "
+                "AND ae.provider='musicbrainz' AND ae.release_mbid IS NOT NULL) "
+                "AND EXISTS(SELECT 1 FROM local_track_external_identities te "
+                "WHERE te.local_track_id=local_tracks.id AND te.provider='musicbrainz' "
+                "AND te.release_mbid IS NOT NULL AND te.recording_mbid IS NOT NULL "
+                "AND te.release_track_mbid IS NOT NULL) AS accepted_identity "
+                "FROM local_tracks WHERE root_id=? AND relative_path=?",
+                (track.root_id, track.relative_path),
+            ).fetchone()
+            catalog_locked = bool(
+                existing is not None
+                and existing["membership_locked"]
+                and existing["accepted_identity"]
+            )
             connection.execute(
                 "INSERT INTO local_artists "
                 "(id, display_name, sort_name, folded_name, normalized_name, kind, created_at, updated_at) "
@@ -9045,54 +9385,56 @@ class NativeLibraryStore(PersistenceBase):
                     artist.updated_at,
                 ),
             )
-            connection.execute(
-                "INSERT INTO local_albums "
-                "(id, root_id, grouping_key, title, title_folded, album_artist_name, "
-                "album_artist_name_folded, album_artist_id, album_artist_sort_name, year, "
-                "original_release_date, primary_genre, is_compilation, grouping_source, "
-                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET title = excluded.title, "
-                "title_folded = excluded.title_folded, album_artist_name = excluded.album_artist_name, "
-                "album_artist_name_folded = excluded.album_artist_name_folded, "
-                "album_artist_id = excluded.album_artist_id, year = excluded.year, "
-                "primary_genre = excluded.primary_genre, updated_at = excluded.updated_at, "
-                "row_revision = local_albums.row_revision + 1",
-                (
-                    album.id,
-                    album.root_id,
-                    album.grouping_key,
-                    album.title,
-                    _fold(album.title),
-                    album.album_artist_name,
-                    _fold(album.album_artist_name),
-                    album.album_artist_id,
-                    album.album_artist_sort_name,
-                    album.year,
-                    album.original_release_date,
-                    album.primary_genre,
-                    int(album.is_compilation),
-                    album.grouping_source,
-                    album.created_at,
-                    album.updated_at,
-                ),
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO local_album_artists "
-                "(local_album_id, position, local_artist_id, role, credited_name, join_phrase) "
-                "VALUES (?,0,?,?,?,?)",
-                (
-                    album.id,
-                    artist.id,
-                    credit.role,
-                    credit.credited_name,
-                    credit.join_phrase,
-                ),
-            )
-            existing = connection.execute(
-                "SELECT id, membership_locked, local_album_id FROM local_tracks "
-                "WHERE root_id = ? AND relative_path = ?",
-                (track.root_id, track.relative_path),
-            ).fetchone()
+            if catalog_locked:
+                connection.execute(
+                    "UPDATE local_albums SET updated_at=?,row_revision=row_revision+1 "
+                    "WHERE id=?",
+                    (album.updated_at, album.id),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO local_albums "
+                    "(id, root_id, grouping_key, title, title_folded, album_artist_name, "
+                    "album_artist_name_folded, album_artist_id, album_artist_sort_name, year, "
+                    "original_release_date, primary_genre, is_compilation, grouping_source, "
+                    "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET title = excluded.title, "
+                    "title_folded = excluded.title_folded, album_artist_name = excluded.album_artist_name, "
+                    "album_artist_name_folded = excluded.album_artist_name_folded, "
+                    "album_artist_id = excluded.album_artist_id, year = excluded.year, "
+                    "primary_genre = excluded.primary_genre, updated_at = excluded.updated_at, "
+                    "row_revision = local_albums.row_revision + 1",
+                    (
+                        album.id,
+                        album.root_id,
+                        album.grouping_key,
+                        album.title,
+                        _fold(album.title),
+                        album.album_artist_name,
+                        _fold(album.album_artist_name),
+                        album.album_artist_id,
+                        album.album_artist_sort_name,
+                        album.year,
+                        album.original_release_date,
+                        album.primary_genre,
+                        int(album.is_compilation),
+                        album.grouping_source,
+                        album.created_at,
+                        album.updated_at,
+                    ),
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO local_album_artists "
+                    "(local_album_id, position, local_artist_id, role, credited_name, join_phrase) "
+                    "VALUES (?,0,?,?,?,?)",
+                    (
+                        album.id,
+                        artist.id,
+                        credit.role,
+                        credit.credited_name,
+                        credit.join_phrase,
+                    ),
+                )
             if existing is None:
                 self._insert_track(connection, track, genres)
                 track_id = track.id
@@ -9134,27 +9476,75 @@ class NativeLibraryStore(PersistenceBase):
                         track.tag_revision,
                         track.tags_read_at,
                         int(track.metadata_incomplete),
-                        track.title,
-                        _fold(track.title),
-                        track.artist_name,
-                        _fold(track.artist_name),
-                        track.album_title,
-                        _fold(track.album_title),
-                        track.album_artist_name,
-                        _fold(track.album_artist_name),
+                        existing["title"] if catalog_locked else track.title,
+                        (
+                            existing["title_folded"]
+                            if catalog_locked
+                            else _fold(track.title)
+                        ),
+                        existing["artist_name"]
+                        if catalog_locked
+                        else track.artist_name,
+                        (
+                            existing["artist_name_folded"]
+                            if catalog_locked
+                            else _fold(track.artist_name)
+                        ),
+                        existing["album_title"]
+                        if catalog_locked
+                        else track.album_title,
+                        (
+                            existing["album_title_folded"]
+                            if catalog_locked
+                            else _fold(track.album_title)
+                        ),
+                        (
+                            existing["album_artist_name"]
+                            if catalog_locked
+                            else track.album_artist_name
+                        ),
+                        (
+                            existing["album_artist_name_folded"]
+                            if catalog_locked
+                            else _fold(track.album_artist_name)
+                        ),
                         track.tag_album_title,
                         track.tag_album_artist_name,
-                        track.disc_number,
-                        track.track_number,
-                        track.year,
-                        track.genre,
-                        _fold(track.genre),
-                        track.title_sort,
-                        track.artist_sort,
-                        track.album_sort,
-                        track.album_artist_sort,
-                        track.disc_subtitle,
-                        int(track.is_compilation),
+                        existing["disc_number"]
+                        if catalog_locked
+                        else track.disc_number,
+                        (
+                            existing["track_number"]
+                            if catalog_locked
+                            else track.track_number
+                        ),
+                        existing["year"] if catalog_locked else track.year,
+                        existing["genre"] if catalog_locked else track.genre,
+                        (
+                            existing["genre_folded"]
+                            if catalog_locked
+                            else _fold(track.genre)
+                        ),
+                        existing["title_sort"] if catalog_locked else track.title_sort,
+                        existing["artist_sort"]
+                        if catalog_locked
+                        else track.artist_sort,
+                        existing["album_sort"] if catalog_locked else track.album_sort,
+                        (
+                            existing["album_artist_sort"]
+                            if catalog_locked
+                            else track.album_artist_sort
+                        ),
+                        (
+                            existing["disc_subtitle"]
+                            if catalog_locked
+                            else track.disc_subtitle
+                        ),
+                        (
+                            int(existing["is_compilation"])
+                            if catalog_locked
+                            else int(track.is_compilation)
+                        ),
                         track.embedded_release_group_mbid,
                         track.embedded_release_mbid,
                         track.embedded_recording_mbid,
@@ -9181,21 +9571,23 @@ class NativeLibraryStore(PersistenceBase):
                         track_id,
                     ),
                 )
-                self._replace_track_genres_tx(
-                    connection, track_id, genres, scalar_genre=track.genre
+                if not catalog_locked:
+                    self._replace_track_genres_tx(
+                        connection, track_id, genres, scalar_genre=track.genre
+                    )
+            if not catalog_locked:
+                connection.execute(
+                    "INSERT OR IGNORE INTO local_track_artists "
+                    "(local_track_id, position, local_artist_id, role, credited_name, join_phrase) "
+                    "VALUES (?,0,?,?,?,?)",
+                    (
+                        track_id,
+                        artist.id,
+                        credit.role,
+                        credit.credited_name,
+                        credit.join_phrase,
+                    ),
                 )
-            connection.execute(
-                "INSERT OR IGNORE INTO local_track_artists "
-                "(local_track_id, position, local_artist_id, role, credited_name, join_phrase) "
-                "VALUES (?,0,?,?,?,?)",
-                (
-                    track_id,
-                    artist.id,
-                    credit.role,
-                    credit.credited_name,
-                    credit.join_phrase,
-                ),
-            )
             if scan_run_id is not None and grouping_context is not None:
                 connection.execute(
                     "INSERT OR IGNORE INTO library_scan_grouping_contexts "
@@ -10210,12 +10602,16 @@ class NativeLibraryStore(PersistenceBase):
                         ),
                     )
                     changed = True
-                elif not bool(existing["grouping_locked"]) and (
-                    existing["grouping_key"] != group["grouping_key"]
-                    or existing["title"] != group["title"]
-                    or existing["album_artist_name"] != group["album_artist_name"]
-                    or existing["album_artist_id"] != artist_id
-                    or existing["retired_into_album_id"] is not None
+                elif (
+                    group["reason_code"] != "MANUAL_MEMBERSHIP_RESTORED"
+                    and not bool(existing["grouping_locked"])
+                    and (
+                        existing["grouping_key"] != group["grouping_key"]
+                        or existing["title"] != group["title"]
+                        or existing["album_artist_name"] != group["album_artist_name"]
+                        or existing["album_artist_id"] != artist_id
+                        or existing["retired_into_album_id"] is not None
+                    )
                 ):
                     connection.execute(
                         "UPDATE local_albums SET grouping_key=?,title=?,title_folded=?,"
@@ -10703,15 +11099,19 @@ class NativeLibraryStore(PersistenceBase):
                             now,
                         )
                     )
-                elif not bool(existing["grouping_locked"]) and (
-                    existing["grouping_key"] != group.grouping_key
-                    or existing["title"] != group.title
-                    or existing["title_folded"] != _fold(group.title)
-                    or existing["album_artist_name"] != group.album_artist_name
-                    or existing["album_artist_name_folded"]
-                    != _fold(group.album_artist_name)
-                    or existing["album_artist_id"] != application.local_artist_id
-                    or existing["retired_into_album_id"] is not None
+                elif (
+                    group.reason_code != "MANUAL_MEMBERSHIP_RESTORED"
+                    and not bool(existing["grouping_locked"])
+                    and (
+                        existing["grouping_key"] != group.grouping_key
+                        or existing["title"] != group.title
+                        or existing["title_folded"] != _fold(group.title)
+                        or existing["album_artist_name"] != group.album_artist_name
+                        or existing["album_artist_name_folded"]
+                        != _fold(group.album_artist_name)
+                        or existing["album_artist_id"] != application.local_artist_id
+                        or existing["retired_into_album_id"] is not None
+                    )
                 ):
                     updated_albums.append(
                         (
@@ -11980,6 +12380,11 @@ class NativeLibraryStore(PersistenceBase):
         surviving_artist_id: str,
         now: float,
     ) -> None:
+        protected_ids = {VARIOUS_ARTISTS_ID, UNKNOWN_ARTIST_ID}.intersection(
+            retired_artist_ids
+        )
+        if protected_ids:
+            raise ValidationError("A reserved catalog artist ID cannot be retired.")
         for artist_id in retired_artist_ids:
             connection.execute(
                 "UPDATE local_album_artists SET local_artist_id = ?, row_revision = row_revision + 1 "
@@ -12067,6 +12472,12 @@ class NativeLibraryStore(PersistenceBase):
                 "WHERE kind = 'artist' AND internal_id = ?",
                 (surviving_artist_id, artist_id),
             )
+            connection.execute(
+                "UPDATE library_artist_credit_proofs SET local_artist_id = ?, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE local_artist_id = ?",
+                (surviving_artist_id, now, artist_id),
+            )
         if retired_artist_ids:
             placeholders = ",".join("?" for _ in retired_artist_ids)
             connection.execute(
@@ -12152,7 +12563,12 @@ class NativeLibraryStore(PersistenceBase):
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
             unique_ids = sorted(set(artist_ids))
             if not unique_ids:
-                return {"artists": [], "identities": [], "reference_counts": {}}
+                return {
+                    "artists": [],
+                    "identities": [],
+                    "reference_counts": {},
+                    "reference_counts_by_artist": {},
+                }
             placeholders = ",".join("?" for _ in unique_ids)
             artists = connection.execute(
                 "SELECT * FROM local_artists "
@@ -12165,55 +12581,2309 @@ class NativeLibraryStore(PersistenceBase):
                 "ORDER BY local_artist_id, provider",
                 unique_ids,
             ).fetchall()
+            count_queries = {
+                "album_credits": (
+                    "SELECT local_artist_id artist_id, COUNT(*) count "
+                    "FROM local_album_artists "
+                    f"WHERE local_artist_id IN ({placeholders}) GROUP BY local_artist_id",
+                    unique_ids,
+                ),
+                "track_credits": (
+                    "SELECT local_artist_id artist_id, COUNT(*) count "
+                    "FROM local_track_artists "
+                    f"WHERE local_artist_id IN ({placeholders}) GROUP BY local_artist_id",
+                    unique_ids,
+                ),
+                "primary_albums": (
+                    "SELECT album_artist_id artist_id, COUNT(*) count FROM local_albums "
+                    f"WHERE album_artist_id IN ({placeholders}) GROUP BY album_artist_id",
+                    unique_ids,
+                ),
+                "migration_references": (
+                    "SELECT target_id artist_id, COUNT(*) count "
+                    "FROM library_migration_provenance WHERE target_kind = 'local_artist' "
+                    f"AND target_id IN ({placeholders}) GROUP BY target_id",
+                    unique_ids,
+                ),
+                "favorites": (
+                    "SELECT item_id artist_id, COUNT(*) count FROM library_user_favorites "
+                    "WHERE item_kind = 'artist' "
+                    f"AND item_id IN ({placeholders}) GROUP BY item_id",
+                    unique_ids,
+                ),
+                "playlist_snapshots": (
+                    "SELECT local_artist_id artist_id, COUNT(*) count "
+                    "FROM library_playlist_tracks "
+                    f"WHERE local_artist_id IN ({placeholders}) GROUP BY local_artist_id",
+                    unique_ids,
+                ),
+                "history": (
+                    "SELECT local_artist_id artist_id, COUNT(*) count "
+                    "FROM library_play_history "
+                    f"WHERE local_artist_id IN ({placeholders}) GROUP BY local_artist_id",
+                    unique_ids,
+                ),
+                "compatibility_ids": (
+                    "SELECT internal_id artist_id, COUNT(*) count FROM library_compat_id_map "
+                    "WHERE kind = 'artist' "
+                    f"AND internal_id IN ({placeholders}) GROUP BY internal_id",
+                    unique_ids,
+                ),
+            }
+            counts_by_artist = {
+                artist_id: {kind: 0 for kind in count_queries}
+                for artist_id in unique_ids
+            }
+            for kind, (query, parameters) in count_queries.items():
+                for row in connection.execute(query, parameters).fetchall():
+                    counts_by_artist[str(row["artist_id"])][kind] = int(row["count"])
             counts = {
-                "album_credits": connection.execute(
-                    "SELECT COUNT(*) FROM local_album_artists "
-                    f"WHERE local_artist_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "track_credits": connection.execute(
-                    "SELECT COUNT(*) FROM local_track_artists "
-                    f"WHERE local_artist_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "primary_albums": connection.execute(
-                    "SELECT COUNT(*) FROM local_albums "
-                    f"WHERE album_artist_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "migration_references": connection.execute(
-                    "SELECT COUNT(*) FROM library_migration_provenance "
-                    f"WHERE target_kind = 'local_artist' AND target_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "favorites": connection.execute(
-                    "SELECT COUNT(*) FROM library_user_favorites "
-                    f"WHERE item_kind = 'artist' AND item_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "playlist_snapshots": connection.execute(
-                    "SELECT COUNT(*) FROM library_playlist_tracks "
-                    f"WHERE local_artist_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "history": connection.execute(
-                    "SELECT COUNT(*) FROM library_play_history "
-                    f"WHERE local_artist_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
-                "compatibility_ids": connection.execute(
-                    "SELECT COUNT(*) FROM library_compat_id_map "
-                    f"WHERE kind = 'artist' AND internal_id IN ({placeholders})",
-                    unique_ids,
-                ).fetchone()[0],
+                kind: sum(values[kind] for values in counts_by_artist.values())
+                for kind in count_queries
             }
             return {
                 "artists": [dict(row) for row in artists],
                 "identities": [dict(row) for row in identities],
-                "reference_counts": {key: int(value) for key, value in counts.items()},
+                "reference_counts": counts,
+                "reference_counts_by_artist": counts_by_artist,
             }
 
         return await self._read(operation)
+
+    @classmethod
+    def _provider_artist_for_credit_tx(
+        cls,
+        connection: sqlite3.Connection,
+        credit: ProviderArtistCredit,
+        *,
+        now: float,
+    ) -> str:
+        if not is_valid_mbid(credit.artist_mbid):
+            raise ValidationError(
+                "A projected artist credit has an invalid MusicBrainz ID."
+            )
+
+        def reserved_artist_matches(artist_id: str, artist_mbid: str) -> bool:
+            return (artist_id, artist_mbid) in {
+                (VARIOUS_ARTISTS_ID, _MUSICBRAINZ_VARIOUS_ARTISTS_MBID),
+                (UNKNOWN_ARTIST_ID, _MUSICBRAINZ_UNKNOWN_ARTIST_MBID),
+            }
+
+        owner = connection.execute(
+            "SELECT identity.local_artist_id FROM local_artist_external_identities identity "
+            "JOIN local_artists artist ON artist.id = identity.local_artist_id "
+            "WHERE identity.provider = 'musicbrainz' AND identity.provider_artist_id = ? "
+            "AND artist.retired_into_artist_id IS NULL",
+            (credit.artist_mbid,),
+        ).fetchone()
+        if owner is not None:
+            owner_id = str(owner["local_artist_id"])
+            if owner_id in {VARIOUS_ARTISTS_ID, UNKNOWN_ARTIST_ID} and not (
+                reserved_artist_matches(owner_id, credit.artist_mbid)
+            ):
+                raise ConflictError(
+                    "A reserved catalog artist owns an unrelated provider identity."
+                )
+            return owner_id
+
+        candidate_id: str | None = None
+        names = {
+            value
+            for value in (
+                _normalize_exact(credit.canonical_name),
+                _normalize_exact(credit.credited_name),
+            )
+            if value
+        }
+        if names:
+            placeholders = ",".join("?" for _ in names)
+            candidate = connection.execute(
+                "SELECT artist.id FROM local_artists artist "
+                "LEFT JOIN local_artist_external_identities identity "
+                "ON identity.local_artist_id = artist.id AND identity.provider = 'musicbrainz' "
+                f"WHERE artist.normalized_name IN ({placeholders}) "
+                "AND artist.retired_into_artist_id IS NULL "
+                "AND identity.local_artist_id IS NULL "
+                "ORDER BY artist.created_at, artist.id LIMIT 1",
+                sorted(names),
+            ).fetchone()
+            if candidate is not None:
+                candidate_id = str(candidate["id"])
+                if candidate_id in {VARIOUS_ARTISTS_ID, UNKNOWN_ARTIST_ID} and not (
+                    reserved_artist_matches(candidate_id, credit.artist_mbid)
+                ):
+                    candidate_id = None
+
+        if candidate_id is None:
+            candidate_id = str(
+                uuid.uuid5(
+                    _MANAGEMENT_ARTIST_NAMESPACE,
+                    f"artist-mbid:{credit.artist_mbid}",
+                )
+            )
+            existing = connection.execute(
+                "SELECT id, retired_into_artist_id FROM local_artists WHERE id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if existing is not None and existing["retired_into_artist_id"] is not None:
+                candidate_id = str(existing["retired_into_artist_id"])
+            elif existing is None:
+                display_name = credit.canonical_name or credit.credited_name
+                artist_kind = (
+                    "various_artists"
+                    if credit.artist_mbid == _MUSICBRAINZ_VARIOUS_ARTISTS_MBID
+                    else "group"
+                )
+                connection.execute(
+                    "INSERT INTO local_artists "
+                    "(id, display_name, sort_name, folded_name, normalized_name, kind, "
+                    "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        candidate_id,
+                        display_name,
+                        credit.sort_name or None,
+                        _fold(display_name) or "",
+                        _normalize_exact(display_name),
+                        artist_kind,
+                        now,
+                        now,
+                    ),
+                )
+
+        if credit.artist_mbid == _MUSICBRAINZ_VARIOUS_ARTISTS_MBID:
+            connection.execute(
+                "UPDATE local_artists SET kind = 'various_artists', updated_at = ? "
+                "WHERE id = ? AND kind != 'various_artists'",
+                (now, candidate_id),
+            )
+
+        conflict = connection.execute(
+            "SELECT provider_artist_id FROM local_artist_external_identities "
+            "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+            (candidate_id,),
+        ).fetchone()
+        if (
+            conflict is not None
+            and str(conflict["provider_artist_id"]) != credit.artist_mbid
+        ):
+            raise ConflictError(
+                "A local artist already owns a different provider identity."
+            )
+        connection.execute(
+            "INSERT OR IGNORE INTO local_artist_external_identities "
+            "(local_artist_id, provider, provider_artist_id, decision_source, selected_at) "
+            "VALUES (?,'musicbrainz',?,'automatic',?)",
+            (candidate_id, credit.artist_mbid, now),
+        )
+        owner = connection.execute(
+            "SELECT local_artist_id FROM local_artist_external_identities "
+            "WHERE provider = 'musicbrainz' AND provider_artist_id = ?",
+            (credit.artist_mbid,),
+        ).fetchone()
+        if owner is None:
+            raise ConflictError("The provider artist identity could not be assigned.")
+        return str(owner["local_artist_id"])
+
+    @staticmethod
+    def _artist_has_complete_provider_proof_tx(
+        connection: sqlite3.Connection,
+        local_artist_id: str,
+    ) -> str | None:
+        rows = connection.execute(
+            "SELECT credit.artist_mbid FROM ("
+            "SELECT proof.artist_mbid FROM local_album_artists current "
+            "JOIN local_albums album ON album.id = current.local_album_id "
+            "LEFT JOIN local_album_external_identities identity "
+            "ON identity.local_album_id = current.local_album_id "
+            "AND identity.provider = 'musicbrainz' "
+            "LEFT JOIN library_artist_credit_proofs proof "
+            "ON proof.subject_kind = 'album' AND proof.subject_id = current.local_album_id "
+            "AND proof.credit_position = current.position "
+            "AND proof.source_local_artist_id = current.local_artist_id "
+            "AND proof.album_identity_revision = identity.row_revision "
+            "AND proof.release_mbid = identity.release_mbid "
+            "WHERE current.local_artist_id = ? AND album.retired_into_album_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+            "WHERE active_track.local_album_id = album.id "
+            "AND active_track.availability = 'indexed') "
+            "UNION ALL "
+            "SELECT proof.artist_mbid FROM local_track_artists current "
+            "JOIN local_tracks track ON track.id = current.local_track_id "
+            "JOIN local_albums album ON album.id = track.local_album_id "
+            "LEFT JOIN local_album_external_identities album_identity "
+            "ON album_identity.local_album_id = album.id "
+            "AND album_identity.provider = 'musicbrainz' "
+            "LEFT JOIN local_track_external_identities track_identity "
+            "ON track_identity.local_track_id = track.id "
+            "AND track_identity.provider = 'musicbrainz' "
+            "LEFT JOIN library_artist_credit_proofs proof "
+            "ON proof.subject_kind = 'track' AND proof.subject_id = current.local_track_id "
+            "AND proof.credit_position = current.position "
+            "AND proof.source_local_artist_id = current.local_artist_id "
+            "AND proof.album_identity_revision = album_identity.row_revision "
+            "AND proof.track_identity_revision = track_identity.row_revision "
+            "AND proof.release_mbid = album_identity.release_mbid "
+            "AND proof.release_track_mbid = track_identity.release_track_mbid "
+            "WHERE current.local_artist_id = ? AND album.retired_into_album_id IS NULL "
+            "AND track.availability = 'indexed'"
+            ") credit",
+            (local_artist_id, local_artist_id),
+        ).fetchall()
+        active_count = int(
+            connection.execute(
+                "SELECT (SELECT COUNT(*) FROM local_album_artists credit "
+                "JOIN local_albums album ON album.id = credit.local_album_id "
+                "WHERE credit.local_artist_id = ? AND album.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                "WHERE active_track.local_album_id = album.id "
+                "AND active_track.availability = 'indexed')) + "
+                "(SELECT COUNT(*) FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                "WHERE credit.local_artist_id = ? AND album.retired_into_album_id IS NULL "
+                "AND track.availability = 'indexed')",
+                (local_artist_id, local_artist_id),
+            ).fetchone()[0]
+        )
+        mbids = [str(row["artist_mbid"]) for row in rows if row["artist_mbid"]]
+        if active_count == 0 or len(mbids) != active_count or len(set(mbids)) != 1:
+            return None
+        return mbids[0]
+
+    @staticmethod
+    def _finish_artist_reconciliation_work_tx(
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        ordinal: int,
+        worker_id: str,
+        state: str,
+        result: dict[str, Any],
+        failure_code: str | None,
+        now: float,
+    ) -> None:
+        updated = connection.execute(
+            "UPDATE library_operation_work SET state = ?, result_json = ?, failure_code = ?, "
+            "updated_at = ?, row_revision = row_revision + 1 "
+            "WHERE job_id = ? AND ordinal = ? AND state = 'running' RETURNING ordinal",
+            (
+                state,
+                json.dumps(result, separators=(",", ":"), sort_keys=True),
+                failure_code,
+                now,
+                job_id,
+                ordinal,
+            ),
+        ).fetchone()
+        if updated is None:
+            raise StaleRevisionError("The artist reconciliation work lease changed.")
+        succeeded = int(state == "succeeded")
+        failed = int(state == "failed")
+        skipped = int(state == "skipped")
+        job_update = connection.execute(
+            "UPDATE library_operation_jobs SET completed_count = completed_count + 1, "
+            "succeeded_count = succeeded_count + ?, failed_count = failed_count + ?, "
+            "skipped_count = skipped_count + ?, updated_at = ?, "
+            "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+            "WHERE id = ? AND kind = 'repair' AND state = 'running' AND lease_owner = ?",
+            (succeeded, failed, skipped, now, job_id, worker_id),
+        )
+        if job_update.rowcount != 1:
+            raise StaleRevisionError("The artist reconciliation job lease changed.")
+
+    @staticmethod
+    def _retarget_retired_album_references_tx(
+        connection: sqlite3.Connection,
+        *,
+        retired_album_id: str,
+        surviving_album_id: str,
+        now: float,
+    ) -> None:
+        """Move live-facing album references while retaining historical audit rows."""
+
+        conflicting_alias = connection.execute(
+            "SELECT local_album_id FROM local_album_aliases WHERE alias = ? "
+            "AND local_album_id != ?",
+            (retired_album_id, surviving_album_id),
+        ).fetchone()
+        if conflicting_alias is not None:
+            raise ConflictError("A retired album ID already resolves to another album.")
+        connection.execute(
+            "UPDATE local_album_aliases SET local_album_id = ? WHERE local_album_id = ?",
+            (surviving_album_id, retired_album_id),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO local_album_aliases "
+            "(alias, local_album_id, kind, created_at) VALUES (?,?,'merged_album',?)",
+            (retired_album_id, surviving_album_id, now),
+        )
+        connection.execute(
+            "UPDATE library_migration_provenance SET target_id = ? "
+            "WHERE target_kind = 'local_album' AND target_id = ?",
+            (surviving_album_id, retired_album_id),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO library_user_favorites "
+            "(user_id, item_kind, item_id, created_at) "
+            "SELECT user_id, item_kind, ?, created_at FROM library_user_favorites "
+            "WHERE item_kind = 'album' AND item_id = ?",
+            (surviving_album_id, retired_album_id),
+        )
+        connection.execute(
+            "DELETE FROM library_user_favorites "
+            "WHERE item_kind = 'album' AND item_id = ?",
+            (retired_album_id,),
+        )
+        connection.execute(
+            "UPDATE library_play_history SET local_album_id = ? WHERE local_album_id = ?",
+            (surviving_album_id, retired_album_id),
+        )
+        connection.execute(
+            "UPDATE library_playlist_tracks SET local_album_id = ?, "
+            "album_id = CASE WHEN album_id = ? THEN ? ELSE album_id END "
+            "WHERE local_album_id = ?",
+            (
+                surviving_album_id,
+                retired_album_id,
+                surviving_album_id,
+                retired_album_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE library_playlist_tracks SET album_id = ? WHERE album_id = ?",
+            (surviving_album_id, retired_album_id),
+        )
+        connection.execute(
+            "UPDATE library_compat_id_map SET internal_id = ? "
+            "WHERE kind = 'album' AND internal_id = ?",
+            (surviving_album_id, retired_album_id),
+        )
+        connection.execute(
+            "DELETE FROM local_entity_source_links WHERE local_album_id = ? "
+            "AND EXISTS (SELECT 1 FROM local_entity_source_links survivor_link "
+            "WHERE survivor_link.local_album_id = ? "
+            "AND survivor_link.provider = local_entity_source_links.provider "
+            "AND survivor_link.external_entity_type = "
+            "local_entity_source_links.external_entity_type "
+            "AND survivor_link.external_id = local_entity_source_links.external_id)",
+            (retired_album_id, surviving_album_id),
+        )
+        connection.execute(
+            "UPDATE local_entity_source_links SET local_album_id = ?, updated_at = ?, "
+            "row_revision = row_revision + 1 WHERE local_album_id = ?",
+            (surviving_album_id, now, retired_album_id),
+        )
+
+    @staticmethod
+    def _compatible_album_identity_for_retirement_tx(
+        connection: sqlite3.Connection,
+        *,
+        retired_album_id: str,
+        surviving_album_id: str,
+    ) -> bool:
+        source = connection.execute(
+            "SELECT release_group_mbid, release_mbid FROM local_album_external_identities "
+            "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+            (retired_album_id,),
+        ).fetchone()
+        target = connection.execute(
+            "SELECT release_group_mbid, release_mbid FROM local_album_external_identities "
+            "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+            (surviving_album_id,),
+        ).fetchone()
+        if source is None or target is None:
+            return source is None
+        if str(source["release_group_mbid"]) != str(target["release_group_mbid"]):
+            return False
+        return (source["release_mbid"] or None) == (target["release_mbid"] or None)
+
+    @classmethod
+    def _retire_empty_album_shell_tx(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        album: sqlite3.Row,
+        operation_job_id: str,
+        now: float,
+    ) -> dict[str, Any] | None:
+        if str(album["grouping_source"]) != "automatic" or bool(
+            album["grouping_locked"]
+        ):
+            return None
+        if connection.execute(
+            "SELECT 1 FROM local_tracks WHERE local_album_id = ? LIMIT 1",
+            (album["id"],),
+        ).fetchone():
+            return None
+        candidates = connection.execute(
+            "SELECT target.* FROM local_albums target "
+            "WHERE target.id != ? AND target.retired_into_album_id IS NULL "
+            "AND target.root_id = ? AND target.title_folded = ? "
+            "AND COALESCE(target.album_artist_name_folded, '') = ? "
+            "AND EXISTS (SELECT 1 FROM local_tracks track "
+            "WHERE track.local_album_id = target.id AND track.availability = 'indexed') "
+            "ORDER BY target.id",
+            (
+                album["id"],
+                album["root_id"],
+                album["title_folded"],
+                str(album["album_artist_name_folded"] or ""),
+            ),
+        ).fetchall()
+        if len(candidates) != 1:
+            return None
+        target = candidates[0]
+        if not cls._compatible_album_identity_for_retirement_tx(
+            connection,
+            retired_album_id=str(album["id"]),
+            surviving_album_id=str(target["id"]),
+        ):
+            return None
+        active_draft = connection.execute(
+            "SELECT 1 FROM library_contribution_drafts WHERE local_album_id = ? "
+            "AND state IN ('draft','ready','seeded','verifying','needs_review') LIMIT 1",
+            (album["id"],),
+        ).fetchone()
+        active_plan = connection.execute(
+            "SELECT 1 FROM library_management_plan_items item "
+            "JOIN library_operation_jobs job ON job.id = item.job_id "
+            "WHERE item.local_album_id = ? AND job.state IN "
+            "('queued','running','paused','ready') LIMIT 1",
+            (album["id"],),
+        ).fetchone()
+        override = connection.execute(
+            "SELECT 1 FROM library_management_overrides WHERE local_album_id = ? LIMIT 1",
+            (album["id"],),
+        ).fetchone()
+        if active_draft is not None or active_plan is not None or override is not None:
+            return None
+
+        source_identity = connection.execute(
+            "SELECT * FROM local_album_external_identities "
+            "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+            (album["id"],),
+        ).fetchone()
+        target_identity = connection.execute(
+            "SELECT 1 FROM local_album_external_identities "
+            "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+            (target["id"],),
+        ).fetchone()
+        if source_identity is not None and target_identity is None:
+            return None
+        source_pin = connection.execute(
+            "SELECT * FROM library_album_release_pins WHERE local_album_id = ?",
+            (album["id"],),
+        ).fetchone()
+        target_pin = connection.execute(
+            "SELECT * FROM library_album_release_pins WHERE local_album_id = ?",
+            (target["id"],),
+        ).fetchone()
+        if source_pin is not None:
+            if target_pin is None:
+                return None
+            if str(source_pin["release_group_mbid"]) != str(
+                target_pin["release_group_mbid"]
+            ) or str(source_pin["release_mbid"]) != str(target_pin["release_mbid"]):
+                return None
+        if source_identity is not None:
+            connection.execute(
+                "DELETE FROM local_album_external_identities WHERE local_album_id = ?",
+                (album["id"],),
+            )
+        if source_pin is not None:
+            connection.execute(
+                "DELETE FROM library_album_release_pins WHERE local_album_id = ?",
+                (album["id"],),
+            )
+        cls._retarget_retired_album_references_tx(
+            connection,
+            retired_album_id=str(album["id"]),
+            surviving_album_id=str(target["id"]),
+            now=now,
+        )
+        connection.execute(
+            "UPDATE local_albums SET retired_into_album_id = ?, updated_at = ?, "
+            "row_revision = row_revision + 1 WHERE id = ? AND retired_into_album_id IS NULL",
+            (target["id"], now, album["id"]),
+        )
+        after = {
+            "kind": "retire_empty_album_shell",
+            "surviving_album_id": str(target["id"]),
+            "retired_album_ids": [str(album["id"])],
+            "filesystem_writes": 0,
+        }
+        connection.execute(
+            "INSERT OR IGNORE INTO library_catalog_actions "
+            "(id, idempotency_key, actor_user_id, action_kind, local_album_id, "
+            "operation_job_id, before_json, after_json, reason_code, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()),
+                f"catalog-hygiene:empty-shell:{album['id']}",
+                None,
+                "merge_album",
+                target["id"],
+                operation_job_id,
+                json.dumps({"retired_album_id": album["id"]}, sort_keys=True),
+                json.dumps(after, sort_keys=True),
+                "AUTOMATIC_EMPTY_ALBUM_SHELL_CONVERGENCE",
+                now,
+            ),
+        )
+        return after
+
+    @classmethod
+    def _repair_contradictory_legacy_album_identity_tx(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        album: sqlite3.Row,
+        operation_job_id: str,
+        now: float,
+    ) -> dict[str, Any] | None:
+        identity = connection.execute(
+            "SELECT * FROM local_album_external_identities "
+            "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+            (album["id"],),
+        ).fetchone()
+        if (
+            identity is None
+            or str(identity["decision_source"]) != "legacy_import"
+            or not identity["release_group_mbid"]
+            or not identity["release_mbid"]
+            or str(album["grouping_source"]) != "legacy_import"
+        ):
+            return None
+        tracks = connection.execute(
+            "SELECT track.*, track_identity.release_mbid identity_release_mbid, "
+            "track_identity.release_track_mbid, "
+            "track_identity.decision_source track_identity_source "
+            "FROM local_tracks track LEFT JOIN local_track_external_identities track_identity "
+            "ON track_identity.local_track_id = track.id "
+            "AND track_identity.provider = 'musicbrainz' "
+            "WHERE track.local_album_id = ? AND track.availability = 'indexed' "
+            "ORDER BY track.id",
+            (album["id"],),
+        ).fetchall()
+        if not tracks:
+            return None
+        if connection.execute(
+            "SELECT 1 FROM local_tracks WHERE local_album_id = ? "
+            "AND availability != 'indexed' LIMIT 1",
+            (album["id"],),
+        ).fetchone():
+            return None
+        embedded_groups = {
+            str(track["embedded_release_group_mbid"])
+            for track in tracks
+            if track["embedded_release_group_mbid"]
+        }
+        tag_titles = {
+            _fold(str(track["tag_album_title"]))
+            for track in tracks
+            if track["tag_album_title"]
+        }
+        tag_artists = {
+            _fold(str(track["tag_album_artist_name"]))
+            for track in tracks
+            if track["tag_album_artist_name"]
+        }
+        every_track_has_embedded_group = all(
+            track["embedded_release_group_mbid"] for track in tracks
+        )
+        every_track_has_tag_identity = all(
+            track["tag_album_title"] and track["tag_album_artist_name"]
+            for track in tracks
+        )
+        incomplete_exact_map = any(
+            not track["release_track_mbid"]
+            or str(track["identity_release_mbid"] or "")
+            != str(identity["release_mbid"])
+            for track in tracks
+        )
+        has_later_track_decision = any(
+            track["track_identity_source"]
+            and str(track["track_identity_source"]) != "legacy_import"
+            for track in tracks
+        )
+        if (
+            not every_track_has_embedded_group
+            or not every_track_has_tag_identity
+            or has_later_track_decision
+            or len(embedded_groups) != 1
+            or len(tag_titles) != 1
+            or len(tag_artists) != 1
+            or not incomplete_exact_map
+        ):
+            return None
+        embedded_group = next(iter(embedded_groups))
+        tag_title = next(iter(tag_titles))
+        tag_artist = next(iter(tag_artists))
+        if (
+            not is_valid_mbid(embedded_group)
+            or embedded_group == str(identity["release_group_mbid"])
+            or tag_title != str(album["title_folded"])
+        ):
+            return None
+        candidates = connection.execute(
+            "SELECT target.* FROM local_albums target "
+            "JOIN local_album_external_identities target_identity "
+            "ON target_identity.local_album_id = target.id "
+            "AND target_identity.provider = 'musicbrainz' "
+            "WHERE target.id != ? AND target.retired_into_album_id IS NULL "
+            "AND target.root_id = ? AND target.title_folded = ? "
+            "AND COALESCE(target.album_artist_name_folded, '') = ? "
+            "AND target_identity.release_group_mbid = ? "
+            "AND EXISTS (SELECT 1 FROM local_tracks target_track "
+            "WHERE target_track.local_album_id = target.id "
+            "AND target_track.availability = 'indexed') ORDER BY target.id",
+            (album["id"], album["root_id"], tag_title, tag_artist, embedded_group),
+        ).fetchall()
+        if len(candidates) != 1:
+            return None
+        target = candidates[0]
+        target_tracks = connection.execute(
+            "SELECT * FROM local_tracks WHERE local_album_id = ? ORDER BY id",
+            (target["id"],),
+        ).fetchall()
+        if not target_tracks or any(
+            str(track["availability"]) != "indexed" for track in target_tracks
+        ):
+            return None
+        target_evidence_matches = all(
+            track["tag_album_title"]
+            and _fold(str(track["tag_album_title"])) == tag_title
+            and track["tag_album_artist_name"]
+            and _fold(str(track["tag_album_artist_name"])) == tag_artist
+            and track["embedded_release_group_mbid"]
+            and str(track["embedded_release_group_mbid"]) == embedded_group
+            for track in target_tracks
+        )
+        directories = {
+            str(PurePosixPath(str(track["relative_path"])).parent)
+            for track in [*tracks, *target_tracks]
+        }
+        positions = [
+            (
+                int(track["disc_number"] or 0),
+                int(track["track_number"] or 0),
+            )
+            for track in [*tracks, *target_tracks]
+        ]
+        unique_track_positions = all(
+            disc_number > 0 and track_number > 0
+            for disc_number, track_number in positions
+        ) and len(set(positions)) == len(positions)
+        if (
+            not target_evidence_matches
+            or len(directories) != 1
+            or not unique_track_positions
+        ):
+            return None
+        active_draft = connection.execute(
+            "SELECT 1 FROM library_contribution_drafts WHERE local_album_id IN (?,?) "
+            "AND state IN ('draft','ready','seeded','verifying','needs_review') LIMIT 1",
+            (album["id"], target["id"]),
+        ).fetchone()
+        active_plan = connection.execute(
+            "SELECT 1 FROM library_management_plan_items item "
+            "JOIN library_operation_jobs job ON job.id = item.job_id "
+            "WHERE item.local_album_id IN (?,?) AND job.state IN "
+            "('queued','running','paused','ready') LIMIT 1",
+            (album["id"], target["id"]),
+        ).fetchone()
+        override = connection.execute(
+            "SELECT 1 FROM library_management_overrides WHERE local_album_id IN (?,?) "
+            "LIMIT 1",
+            (album["id"], target["id"]),
+        ).fetchone()
+        if active_draft is not None or active_plan is not None or override is not None:
+            return None
+
+        source_track_ids = [str(track["id"]) for track in tracks]
+        placeholders = ",".join("?" for _ in source_track_ids)
+        connection.execute(
+            "DELETE FROM library_artist_credit_proofs WHERE local_album_id = ?",
+            (album["id"],),
+        )
+        connection.execute(
+            "DELETE FROM local_track_external_identities "
+            f"WHERE local_track_id IN ({placeholders}) "
+            "AND decision_source = 'legacy_import'",
+            source_track_ids,
+        )
+        connection.execute(
+            "DELETE FROM local_album_external_identities WHERE local_album_id = ? "
+            "AND decision_source = 'legacy_import'",
+            (album["id"],),
+        )
+        connection.execute(
+            f"UPDATE local_tracks SET local_album_id = ?, row_revision = row_revision + 1 "
+            f"WHERE id IN ({placeholders})",
+            (target["id"], *source_track_ids),
+        )
+        cls._retarget_retired_album_references_tx(
+            connection,
+            retired_album_id=str(album["id"]),
+            surviving_album_id=str(target["id"]),
+            now=now,
+        )
+        connection.execute(
+            "UPDATE local_albums SET retired_into_album_id = ?, updated_at = ?, "
+            "row_revision = row_revision + 1 WHERE id = ? AND retired_into_album_id IS NULL",
+            (target["id"], now, album["id"]),
+        )
+        connection.execute(
+            "UPDATE local_albums SET updated_at = ?, row_revision = row_revision + 1 "
+            "WHERE id = ? AND retired_into_album_id IS NULL",
+            (now, target["id"]),
+        )
+        after = {
+            "kind": "repair_contradictory_legacy_identity",
+            "surviving_album_id": str(target["id"]),
+            "retired_album_ids": [str(album["id"])],
+            "moved_track_ids": sorted(source_track_ids),
+            "rejected_release_group_mbid": str(identity["release_group_mbid"]),
+            "proven_release_group_mbid": embedded_group,
+            "evidence": {
+                "tag_album_title": tag_title,
+                "tag_album_artist_name": tag_artist,
+                "shared_directory": next(iter(directories)),
+                "indexed_source_track_count": len(tracks),
+                "indexed_target_track_count": len(target_tracks),
+                "exact_track_map_incomplete": True,
+            },
+            "filesystem_writes": 0,
+        }
+        connection.execute(
+            "INSERT OR IGNORE INTO library_catalog_actions "
+            "(id, idempotency_key, actor_user_id, action_kind, local_album_id, "
+            "operation_job_id, before_json, after_json, reason_code, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()),
+                f"catalog-hygiene:provider-contradiction:{album['id']}:{identity['row_revision']}",
+                None,
+                "merge_album",
+                target["id"],
+                operation_job_id,
+                json.dumps(
+                    {
+                        "source_album_id": album["id"],
+                        "release_group_mbid": identity["release_group_mbid"],
+                        "release_mbid": identity["release_mbid"],
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(after, sort_keys=True),
+                "AUTOMATIC_PROVIDER_CONTRADICTION_CATALOG_REPAIR",
+                now,
+            ),
+        )
+        after["reidentify_album_id"] = str(target["id"])
+        return after
+
+    async def get_catalog_identity_hygiene_context(
+        self, local_album_id: str
+    ) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            album = connection.execute(
+                "SELECT * FROM local_albums WHERE id = ? AND retired_into_album_id IS NULL",
+                (local_album_id,),
+            ).fetchone()
+            if album is None:
+                return None
+            identity = connection.execute(
+                "SELECT * FROM local_album_external_identities "
+                "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+                (local_album_id,),
+            ).fetchone()
+            tracks = connection.execute(
+                "SELECT id, row_revision, availability, tag_album_title, "
+                "tag_album_artist_name, embedded_release_group_mbid "
+                "FROM local_tracks WHERE local_album_id = ? ORDER BY id",
+                (local_album_id,),
+            ).fetchall()
+            return {
+                "album": dict(album),
+                "identity": _row(identity),
+                "tracks": [dict(track) for track in tracks],
+            }
+
+        return await self._read(operation)
+
+    async def apply_catalog_identity_hygiene_work(
+        self,
+        *,
+        job_id: str,
+        ordinal: int,
+        worker_id: str,
+        local_album_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            work = connection.execute(
+                "SELECT 1 FROM library_operation_work WHERE job_id = ? AND ordinal = ? "
+                "AND state = 'running'",
+                (job_id, ordinal),
+            ).fetchone()
+            if work is None:
+                raise StaleRevisionError("The catalog hygiene work lease changed.")
+            album = connection.execute(
+                "SELECT * FROM local_albums WHERE id = ? AND retired_into_album_id IS NULL",
+                (local_album_id,),
+            ).fetchone()
+            applied: dict[str, Any] | None = None
+            if album is not None:
+                applied = self._retire_empty_album_shell_tx(
+                    connection,
+                    album=album,
+                    operation_job_id=job_id,
+                    now=now,
+                )
+                if applied is None:
+                    applied = self._repair_contradictory_legacy_album_identity_tx(
+                        connection,
+                        album=album,
+                        operation_job_id=job_id,
+                        now=now,
+                    )
+            changed = applied is not None
+            catalog_revision = (
+                self._bump_catalog(connection)
+                if changed
+                else int(
+                    connection.execute(
+                        "SELECT value FROM library_catalog_revision WHERE singleton = 1"
+                    ).fetchone()["value"]
+                )
+            )
+            result = {
+                "changed": changed,
+                "local_album_id": local_album_id,
+                "reason_code": (
+                    str(applied["kind"]) if applied is not None else "NO_SAFE_CHANGE"
+                ),
+                "catalog_revision": catalog_revision,
+                "filesystem_writes": 0,
+            }
+            if applied is not None:
+                result.update(applied)
+                if applied.get("reidentify_album_id"):
+                    reidentify_album_id = str(applied["reidentify_album_id"])
+                    current_tracks = connection.execute(
+                        "SELECT id, tag_revision, stat_revision, applied_policy_revision, "
+                        "applied_policy FROM local_tracks WHERE local_album_id = ? "
+                        "ORDER BY id",
+                        (reidentify_album_id,),
+                    ).fetchall()
+                    input_revision = _album_input_revision(list(current_tracks))
+                    reidentification_job_id, created = (
+                        self._enqueue_identification_job_result(
+                            connection,
+                            IdentificationJob(
+                                id=str(uuid.uuid4()),
+                                local_album_id=reidentify_album_id,
+                                kind="post_processing",
+                                priority=_POST_PROCESSING_IDENTIFICATION_PRIORITY,
+                                dedupe_key=(
+                                    "post_processing:"
+                                    f"{reidentify_album_id}:{input_revision}"
+                                ),
+                                input_revision=input_revision,
+                                created_at=now,
+                            ),
+                        )
+                    )
+                    result["reidentification_input_revision"] = input_revision
+                    result["reidentification_job_id"] = reidentification_job_id
+                    result["reidentification_job_created"] = created
+            self._finish_artist_reconciliation_work_tx(
+                connection,
+                job_id=job_id,
+                ordinal=ordinal,
+                worker_id=worker_id,
+                state="succeeded" if changed else "skipped",
+                result=result,
+                failure_code=None if changed else "NO_SAFE_CHANGE",
+                now=now,
+            )
+            self._bump_stream(connection, "operation")
+            return result
+
+        return await self._write(operation)
+
+    async def defer_catalog_identity_hygiene_work(
+        self,
+        *,
+        job_id: str,
+        ordinal: int,
+        worker_id: str,
+        reason_code: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            work_update = connection.execute(
+                "UPDATE library_operation_work SET state = 'pending', failure_code = ?, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE job_id = ? AND ordinal = ? AND state = 'running'",
+                (reason_code, now, job_id, ordinal),
+            )
+            if work_update.rowcount != 1:
+                raise StaleRevisionError(
+                    "The catalog hygiene work lease changed while it was deferred."
+                )
+            updated = connection.execute(
+                "UPDATE library_operation_jobs SET state = 'queued', lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE id = ? AND kind = 'repair' AND state = 'running' "
+                "AND lease_owner = ? RETURNING *",
+                (now, job_id, worker_id),
+            ).fetchone()
+            if updated is None:
+                raise StaleRevisionError(
+                    "The catalog hygiene lease changed while it was deferred."
+                )
+            self._bump_stream(connection, "operation")
+            return dict(updated)
+
+        return await self._write(operation)
+
+    async def apply_provider_anchored_artist_convergence(
+        self,
+        local_album_id: str,
+        *,
+        operation_job_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        """Retire scanner-split track artists anchored to one provider-owned album artist."""
+
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            candidate_rows = connection.execute(
+                "SELECT DISTINCT credit.local_artist_id FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                "WHERE track.local_album_id = ? AND track.availability = 'indexed' "
+                "AND album.retired_into_album_id IS NULL",
+                (local_album_id,),
+            ).fetchall()
+            actions: list[dict[str, Any]] = []
+
+            for candidate_row in candidate_rows:
+                source_id = str(candidate_row["local_artist_id"])
+                if source_id in {VARIOUS_ARTISTS_ID, UNKNOWN_ARTIST_ID}:
+                    continue
+                source = connection.execute(
+                    "SELECT * FROM local_artists WHERE id = ? "
+                    "AND retired_into_artist_id IS NULL",
+                    (source_id,),
+                ).fetchone()
+                if source is None:
+                    continue
+                active_album_credit = connection.execute(
+                    "SELECT 1 FROM local_album_artists credit "
+                    "JOIN local_albums album ON album.id = credit.local_album_id "
+                    "WHERE credit.local_artist_id = ? "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                    "WHERE active_track.local_album_id = album.id "
+                    "AND active_track.availability = 'indexed') LIMIT 1",
+                    (source_id,),
+                ).fetchone()
+                if active_album_credit is not None:
+                    continue
+
+                direct_identity = connection.execute(
+                    "SELECT provider_artist_id FROM local_artist_external_identities "
+                    "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+                    (source_id,),
+                ).fetchone()
+                active_credits = connection.execute(
+                    "SELECT credit.position, credit.credited_name, "
+                    "credit.row_revision credit_revision, track.id local_track_id, "
+                    "track.row_revision track_revision, track.tag_revision, "
+                    "track.embedded_artist_mbid, track.embedded_album_artist_mbid, "
+                    "album.id local_album_id, album.row_revision album_revision "
+                    "FROM local_track_artists credit "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "JOIN local_albums album ON album.id = track.local_album_id "
+                    "WHERE credit.local_artist_id = ? "
+                    "AND track.availability = 'indexed' "
+                    "AND album.retired_into_album_id IS NULL "
+                    "ORDER BY track.id, credit.position",
+                    (source_id,),
+                ).fetchall()
+                if not active_credits:
+                    continue
+
+                embedded_artist_mbids = {
+                    str(credit["embedded_artist_mbid"]).strip().casefold()
+                    for credit in active_credits
+                    if int(credit["position"]) == 0
+                    and str(credit["embedded_artist_mbid"] or "").strip()
+                }
+                if len(embedded_artist_mbids) > 1 or any(
+                    not is_valid_mbid(value) for value in embedded_artist_mbids
+                ):
+                    continue
+                embedded_target = None
+                if embedded_artist_mbids:
+                    embedded_mbid = next(iter(embedded_artist_mbids))
+                    embedded_target = connection.execute(
+                        "SELECT NULL album_credit_position, NULL album_credited_name, "
+                        "NULL album_credit_revision, artist.id local_artist_id, "
+                        "artist.display_name, artist.kind, "
+                        "artist.row_revision artist_revision, identity.provider_artist_id "
+                        "FROM local_artist_external_identities identity "
+                        "JOIN local_artists artist ON artist.id = identity.local_artist_id "
+                        "WHERE identity.provider = 'musicbrainz' "
+                        "AND lower(identity.provider_artist_id) = ? "
+                        "AND artist.retired_into_artist_id IS NULL "
+                        "AND artist.id != ?",
+                        (embedded_mbid, source_id),
+                    ).fetchone()
+                    if embedded_target is None or _normalize_exact(
+                        embedded_target["display_name"]
+                    ) != _normalize_exact(source["display_name"]):
+                        continue
+
+                resolved_target: tuple[str, str] | None = None
+                evidence: list[dict[str, Any]] = []
+                source_name = _normalize_exact(source["display_name"])
+                valid = True
+                for credit in active_credits:
+                    credit_name = _normalize_exact(
+                        credit["credited_name"] or source["display_name"]
+                    )
+                    target_rows = connection.execute(
+                        "SELECT album_credit.position album_credit_position, "
+                        "album_credit.credited_name album_credited_name, "
+                        "album_credit.row_revision album_credit_revision, "
+                        "artist.id local_artist_id, artist.display_name, artist.kind, "
+                        "artist.row_revision artist_revision, "
+                        "identity.provider_artist_id "
+                        "FROM local_album_artists album_credit "
+                        "JOIN local_artists artist ON artist.id = album_credit.local_artist_id "
+                        "JOIN local_artist_external_identities identity "
+                        "ON identity.local_artist_id = artist.id "
+                        "AND identity.provider = 'musicbrainz' "
+                        "WHERE album_credit.local_album_id = ? "
+                        "AND artist.retired_into_artist_id IS NULL "
+                        "ORDER BY album_credit.position",
+                        (credit["local_album_id"],),
+                    ).fetchall()
+                    matches: list[sqlite3.Row] = []
+                    for target in target_rows:
+                        target_id = str(target["local_artist_id"])
+                        target_mbid = str(target["provider_artist_id"])
+                        target_names = {
+                            _normalize_exact(target["display_name"]),
+                            _normalize_exact(target["album_credited_name"]),
+                        }
+                        if (
+                            target_id == source_id
+                            or not is_valid_mbid(target_mbid)
+                            or source_name not in target_names
+                            or credit_name not in target_names
+                        ):
+                            continue
+                        embedded_artist = str(
+                            credit["embedded_artist_mbid"] or ""
+                        ).strip()
+                        if (
+                            int(credit["position"]) == 0
+                            and embedded_artist
+                            and embedded_artist.casefold() != target_mbid.casefold()
+                        ):
+                            continue
+                        embedded_album_artist = str(
+                            credit["embedded_album_artist_mbid"] or ""
+                        ).strip()
+                        if (
+                            int(target["album_credit_position"]) == 0
+                            and embedded_album_artist
+                            and embedded_album_artist.casefold()
+                            != target_mbid.casefold()
+                        ):
+                            continue
+                        matches.append(target)
+                    if len(matches) > 1:
+                        valid = False
+                        break
+                    target = matches[0] if matches else embedded_target
+                    if target is None:
+                        valid = False
+                        break
+                    if not matches and credit_name != source_name:
+                        valid = False
+                        break
+                    target_pair = (
+                        str(target["local_artist_id"]),
+                        str(target["provider_artist_id"]),
+                    )
+                    current_proof = connection.execute(
+                        "SELECT proof.artist_mbid FROM library_artist_credit_proofs proof "
+                        "JOIN local_album_external_identities album_identity "
+                        "ON album_identity.local_album_id = proof.local_album_id "
+                        "AND album_identity.provider = 'musicbrainz' "
+                        "LEFT JOIN local_track_external_identities track_identity "
+                        "ON track_identity.local_track_id = proof.local_track_id "
+                        "AND track_identity.provider = 'musicbrainz' "
+                        "WHERE proof.subject_kind = 'track' "
+                        "AND proof.subject_id = ? AND proof.credit_position = ? "
+                        "AND proof.source_local_artist_id = ? "
+                        "AND proof.album_identity_revision = album_identity.row_revision "
+                        "AND proof.release_mbid = album_identity.release_mbid "
+                        "AND proof.track_identity_revision = track_identity.row_revision "
+                        "AND proof.release_track_mbid = track_identity.release_track_mbid",
+                        (
+                            credit["local_track_id"],
+                            credit["position"],
+                            source_id,
+                        ),
+                    ).fetchone()
+                    if (
+                        current_proof is not None
+                        and str(current_proof["artist_mbid"]).casefold()
+                        != target_pair[1].casefold()
+                    ):
+                        valid = False
+                        break
+                    if resolved_target is not None and resolved_target != target_pair:
+                        valid = False
+                        break
+                    resolved_target = target_pair
+                    evidence.append(
+                        {
+                            "local_album_id": str(credit["local_album_id"]),
+                            "album_revision": int(credit["album_revision"]),
+                            "album_credit_revision": (
+                                int(target["album_credit_revision"])
+                                if target["album_credit_revision"] is not None
+                                else None
+                            ),
+                            "local_track_id": str(credit["local_track_id"]),
+                            "track_revision": int(credit["track_revision"]),
+                            "tag_revision": str(credit["tag_revision"] or ""),
+                            "track_credit_position": int(credit["position"]),
+                            "track_credit_revision": int(credit["credit_revision"]),
+                            "surviving_artist_id": target_pair[0],
+                            "provider_artist_mbid": target_pair[1],
+                            "anchor_kind": (
+                                "album_artist_identity"
+                                if matches
+                                else "embedded_track_artist_identity"
+                            ),
+                        }
+                    )
+                if not valid or resolved_target is None:
+                    continue
+                survivor_id, artist_mbid = resolved_target
+                if (
+                    direct_identity is not None
+                    and str(direct_identity["provider_artist_id"]).casefold()
+                    != artist_mbid.casefold()
+                ):
+                    continue
+                survivor = connection.execute(
+                    "SELECT row_revision FROM local_artists WHERE id = ? "
+                    "AND retired_into_artist_id IS NULL",
+                    (survivor_id,),
+                ).fetchone()
+                if survivor is None:
+                    continue
+                left, right = sorted((source_id, survivor_id))
+                dismissed = connection.execute(
+                    "SELECT 1 FROM library_artist_reconciliation_dismissals "
+                    "WHERE left_artist_id = ? AND right_artist_id = ? "
+                    "AND left_artist_revision = ? AND right_artist_revision = ?",
+                    (
+                        left,
+                        right,
+                        (
+                            int(source["row_revision"])
+                            if left == source_id
+                            else int(survivor["row_revision"])
+                        ),
+                        (
+                            int(survivor["row_revision"])
+                            if right == survivor_id
+                            else int(source["row_revision"])
+                        ),
+                    ),
+                ).fetchone()
+                if dismissed is not None:
+                    continue
+                self._retire_local_artists_tx(
+                    connection,
+                    retired_artist_ids=[source_id],
+                    surviving_artist_id=survivor_id,
+                    now=now,
+                )
+                actions.append(
+                    {
+                        "source_artist_id": source_id,
+                        "source_artist_revision": int(source["row_revision"]),
+                        "surviving_artist_id": survivor_id,
+                        "surviving_artist_revision": int(survivor["row_revision"]),
+                        "provider_artist_mbid": artist_mbid,
+                        "credits": evidence,
+                    }
+                )
+
+            if not actions:
+                return {
+                    "retired_artist_ids": [],
+                    "filesystem_writes": 0,
+                }
+            catalog_revision = self._bump_catalog(connection)
+            for action in actions:
+                source_id = str(action["source_artist_id"])
+                survivor_id = str(action["surviving_artist_id"])
+                artist_mbid = str(action["provider_artist_mbid"])
+                connection.execute(
+                    "INSERT OR IGNORE INTO library_catalog_actions "
+                    "(id, idempotency_key, actor_user_id, action_kind, local_artist_id, "
+                    "local_album_id, operation_job_id, before_json, after_json, reason_code, "
+                    "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(uuid.uuid4()),
+                        f"artist-provider-anchor:{source_id}:{survivor_id}:{artist_mbid}",
+                        None,
+                        "merge_artist",
+                        survivor_id,
+                        local_album_id,
+                        operation_job_id,
+                        json.dumps(
+                            {
+                                "artist_ids": [source_id, survivor_id],
+                                "source_artist_revision": action[
+                                    "source_artist_revision"
+                                ],
+                                "surviving_artist_revision": action[
+                                    "surviving_artist_revision"
+                                ],
+                                "credits": action["credits"],
+                            },
+                            sort_keys=True,
+                        ),
+                        json.dumps(
+                            {
+                                "catalog_revision": catalog_revision,
+                                "provider_artist_mbid": artist_mbid,
+                                "retired_artist_ids": [source_id],
+                                "surviving_artist_id": survivor_id,
+                            },
+                            sort_keys=True,
+                        ),
+                        "AUTOMATIC_PROVIDER_ANCHORED_ARTIST_CONVERGENCE",
+                        now,
+                    ),
+                )
+            self._bump_stream(connection, "operation")
+            return {
+                "catalog_revision": catalog_revision,
+                "retired_artist_ids": sorted(
+                    str(action["source_artist_id"]) for action in actions
+                ),
+                "filesystem_writes": 0,
+            }
+
+        return await self._write(operation)
+
+    async def apply_artist_credit_projection(
+        self,
+        projection: ProviderAlbumArtistProjection,
+        *,
+        job_id: str,
+        ordinal: int,
+        worker_id: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            work = connection.execute(
+                "SELECT expected_subject_revision FROM library_operation_work "
+                "WHERE job_id = ? AND ordinal = ? AND state = 'running'",
+                (job_id, ordinal),
+            ).fetchone()
+            album = connection.execute(
+                "SELECT row_revision FROM local_albums WHERE id = ? "
+                "AND retired_into_album_id IS NULL",
+                (projection.local_album_id,),
+            ).fetchone()
+            identity = connection.execute(
+                "SELECT release_mbid, row_revision FROM local_album_external_identities "
+                "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+                (projection.local_album_id,),
+            ).fetchone()
+            if work is None or album is None or identity is None:
+                raise StaleRevisionError(
+                    "The accepted release changed before projection."
+                )
+            if (
+                int(album["row_revision"]) != projection.album_revision
+                or int(work["expected_subject_revision"]) != projection.album_revision
+                or str(identity["release_mbid"]) != projection.release_mbid
+                or int(identity["row_revision"]) != projection.album_identity_revision
+            ):
+                raise StaleRevisionError(
+                    "The accepted release changed before projection."
+                )
+            if not projection.album_credits:
+                raise ValidationError(
+                    "An accepted release has no usable artist credit."
+                )
+
+            track_rows: dict[str, sqlite3.Row] = {}
+            for track in projection.tracks:
+                row = connection.execute(
+                    "SELECT catalog.row_revision, identity.row_revision identity_revision, "
+                    "identity.release_mbid, identity.release_track_mbid "
+                    "FROM local_tracks catalog JOIN local_track_external_identities identity "
+                    "ON identity.local_track_id = catalog.id AND identity.provider = 'musicbrainz' "
+                    "WHERE catalog.id = ? AND catalog.local_album_id = ?",
+                    (track.local_track_id, projection.local_album_id),
+                ).fetchone()
+                if row is None or (
+                    int(row["row_revision"]) != track.track_revision
+                    or int(row["identity_revision"]) != track.track_identity_revision
+                    or str(row["release_mbid"]) != projection.release_mbid
+                    or str(row["release_track_mbid"]) != track.release_track_mbid
+                ):
+                    raise StaleRevisionError(
+                        "An exact release-track mapping changed before projection."
+                    )
+                track_rows[track.local_track_id] = row
+
+            old_album = connection.execute(
+                "SELECT position, local_artist_id FROM local_album_artists "
+                "WHERE local_album_id = ? ORDER BY position",
+                (projection.local_album_id,),
+            ).fetchall()
+            old_tracks = {
+                track.local_track_id: connection.execute(
+                    "SELECT position, local_artist_id FROM local_track_artists "
+                    "WHERE local_track_id = ? ORDER BY position",
+                    (track.local_track_id,),
+                ).fetchall()
+                for track in projection.tracks
+            }
+            ambiguous = len(old_album) != len(projection.album_credits) or any(
+                len(old_tracks[track.local_track_id]) != len(track.credits)
+                for track in projection.tracks
+            )
+
+            resolved_album: list[tuple[ProviderArtistCredit, str, str | None]] = []
+            for credit in projection.album_credits:
+                source_id = (
+                    str(old_album[credit.position]["local_artist_id"])
+                    if len(old_album) == len(projection.album_credits)
+                    and credit.position < len(old_album)
+                    else None
+                )
+                artist_id = self._provider_artist_for_credit_tx(
+                    connection, credit, now=now
+                )
+                resolved_album.append((credit, artist_id, source_id))
+
+            resolved_tracks: dict[
+                str, list[tuple[ProviderArtistCredit, str, str | None]]
+            ] = {}
+            for track in projection.tracks:
+                old = old_tracks[track.local_track_id]
+                resolved: list[tuple[ProviderArtistCredit, str, str | None]] = []
+                for credit in track.credits:
+                    source_id = (
+                        str(old[credit.position]["local_artist_id"])
+                        if len(old) == len(track.credits) and credit.position < len(old)
+                        else None
+                    )
+                    artist_id = self._provider_artist_for_credit_tx(
+                        connection, credit, now=now
+                    )
+                    resolved.append((credit, artist_id, source_id))
+                resolved_tracks[track.local_track_id] = resolved
+
+            proof_rows: list[tuple[Any, ...]] = []
+            for credit, artist_id, source_id in resolved_album:
+                proof_rows.append(
+                    (
+                        "album",
+                        projection.local_album_id,
+                        projection.local_album_id,
+                        None,
+                        credit.position,
+                        source_id,
+                        artist_id,
+                        credit.artist_mbid,
+                        credit.canonical_name,
+                        credit.credited_name,
+                        credit.sort_name,
+                        credit.join_phrase,
+                        projection.release_mbid,
+                        None,
+                        projection.album_identity_revision,
+                        None,
+                        projection.evidence_hash,
+                        now,
+                        now,
+                    )
+                )
+            by_track = {track.local_track_id: track for track in projection.tracks}
+            for track_id, credits in resolved_tracks.items():
+                projected_track = by_track[track_id]
+                for credit, artist_id, source_id in credits:
+                    proof_rows.append(
+                        (
+                            "track",
+                            track_id,
+                            projection.local_album_id,
+                            track_id,
+                            credit.position,
+                            source_id,
+                            artist_id,
+                            credit.artist_mbid,
+                            credit.canonical_name,
+                            credit.credited_name,
+                            credit.sort_name,
+                            credit.join_phrase,
+                            projection.release_mbid,
+                            projected_track.release_track_mbid,
+                            projection.album_identity_revision,
+                            projected_track.track_identity_revision,
+                            projection.evidence_hash,
+                            now,
+                            now,
+                        )
+                    )
+            connection.execute(
+                "DELETE FROM library_artist_credit_proofs WHERE local_album_id = ?",
+                (projection.local_album_id,),
+            )
+            connection.executemany(
+                "INSERT INTO library_artist_credit_proofs "
+                "(subject_kind, subject_id, local_album_id, local_track_id, credit_position, "
+                "source_local_artist_id, local_artist_id, artist_mbid, canonical_name, "
+                "credited_name, sort_name, join_phrase, release_mbid, release_track_mbid, "
+                "album_identity_revision, track_identity_revision, evidence_hash, created_at, "
+                "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(subject_kind, subject_id, credit_position) DO UPDATE SET "
+                "local_album_id=excluded.local_album_id, local_track_id=excluded.local_track_id, "
+                "source_local_artist_id=excluded.source_local_artist_id, "
+                "local_artist_id=excluded.local_artist_id, artist_mbid=excluded.artist_mbid, "
+                "canonical_name=excluded.canonical_name, credited_name=excluded.credited_name, "
+                "sort_name=excluded.sort_name, join_phrase=excluded.join_phrase, "
+                "release_mbid=excluded.release_mbid, "
+                "release_track_mbid=excluded.release_track_mbid, "
+                "album_identity_revision=excluded.album_identity_revision, "
+                "track_identity_revision=excluded.track_identity_revision, "
+                "evidence_hash=excluded.evidence_hash, updated_at=excluded.updated_at, "
+                "row_revision=library_artist_credit_proofs.row_revision+1",
+                proof_rows,
+            )
+
+            source_to_survivor: dict[str, tuple[str, str]] = {}
+            for credit, artist_id, source_id in [
+                *resolved_album,
+                *(item for values in resolved_tracks.values() for item in values),
+            ]:
+                if (
+                    source_id is not None
+                    and source_id != artist_id
+                    and source_id not in {VARIOUS_ARTISTS_ID, UNKNOWN_ARTIST_ID}
+                ):
+                    source_to_survivor[source_id] = (artist_id, credit.artist_mbid)
+            retired_by_survivor: dict[tuple[str, str], list[str]] = {}
+            for source_id, (survivor_id, expected_mbid) in sorted(
+                source_to_survivor.items()
+            ):
+                proven_mbid = self._artist_has_complete_provider_proof_tx(
+                    connection, source_id
+                )
+                source = connection.execute(
+                    "SELECT row_revision FROM local_artists WHERE id = ? "
+                    "AND retired_into_artist_id IS NULL",
+                    (source_id,),
+                ).fetchone()
+                survivor = connection.execute(
+                    "SELECT row_revision FROM local_artists WHERE id = ? "
+                    "AND retired_into_artist_id IS NULL",
+                    (survivor_id,),
+                ).fetchone()
+                direct = connection.execute(
+                    "SELECT provider_artist_id FROM local_artist_external_identities "
+                    "WHERE local_artist_id = ? AND provider = 'musicbrainz'",
+                    (source_id,),
+                ).fetchone()
+                if (
+                    source is None
+                    or survivor is None
+                    or proven_mbid != expected_mbid
+                    or (
+                        direct is not None
+                        and str(direct["provider_artist_id"]) != expected_mbid
+                    )
+                ):
+                    continue
+                left, right = sorted((source_id, survivor_id))
+                dismissed = connection.execute(
+                    "SELECT 1 FROM library_artist_reconciliation_dismissals "
+                    "WHERE left_artist_id = ? AND right_artist_id = ? "
+                    "AND left_artist_revision = ? AND right_artist_revision = ?",
+                    (
+                        left,
+                        right,
+                        (
+                            int(source["row_revision"])
+                            if left == source_id
+                            else int(survivor["row_revision"])
+                        ),
+                        (
+                            int(survivor["row_revision"])
+                            if right == survivor_id
+                            else int(source["row_revision"])
+                        ),
+                    ),
+                ).fetchone()
+                if dismissed is not None:
+                    continue
+                retired_by_survivor.setdefault((survivor_id, expected_mbid), []).append(
+                    source_id
+                )
+
+            retired_ids: list[str] = []
+            for (survivor_id, artist_mbid), sources in sorted(
+                retired_by_survivor.items()
+            ):
+                sources = sorted(set(sources) - {survivor_id})
+                if not sources:
+                    continue
+                self._retire_local_artists_tx(
+                    connection,
+                    retired_artist_ids=sources,
+                    surviving_artist_id=survivor_id,
+                    now=now,
+                )
+                retired_ids.extend(sources)
+                action_after = {
+                    "provider_artist_mbid": artist_mbid,
+                    "surviving_artist_id": survivor_id,
+                    "retired_artist_ids": sources,
+                    "input_revision": projection.input_revision,
+                    "album_identity_revision": projection.album_identity_revision,
+                    "track_identity_revisions": {
+                        track.local_track_id: track.track_identity_revision
+                        for track in projection.tracks
+                    },
+                    "evidence_hash": projection.evidence_hash,
+                }
+                connection.execute(
+                    "INSERT INTO library_catalog_actions "
+                    "(id, idempotency_key, actor_user_id, action_kind, local_artist_id, "
+                    "local_album_id, operation_job_id, before_json, after_json, reason_code, "
+                    "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(uuid.uuid4()),
+                        f"artist-reconciliation:{job_id}:{projection.local_album_id}:{artist_mbid}",
+                        None,
+                        "merge_artist",
+                        survivor_id,
+                        projection.local_album_id,
+                        job_id,
+                        json.dumps(
+                            {
+                                "artist_ids": sorted([survivor_id, *sources]),
+                                "input_revision": projection.input_revision,
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        json.dumps(action_after, separators=(",", ":"), sort_keys=True),
+                        "AUTOMATIC_PROVIDER_PROVEN_ARTIST_CONVERGENCE",
+                        now,
+                    ),
+                )
+
+            connection.execute(
+                "DELETE FROM local_album_artists WHERE local_album_id = ?",
+                (projection.local_album_id,),
+            )
+            connection.executemany(
+                "INSERT INTO local_album_artists "
+                "(local_album_id, position, local_artist_id, role, credited_name, join_phrase) "
+                "VALUES (?,?,?,'primary',?,?)",
+                [
+                    (
+                        projection.local_album_id,
+                        credit.position,
+                        artist_id,
+                        credit.credited_name,
+                        credit.join_phrase,
+                    )
+                    for credit, artist_id, _source_id in resolved_album
+                ],
+            )
+            album_artist_text = "".join(
+                f"{credit.credited_name}{credit.join_phrase}"
+                for credit, _artist_id, _source_id in resolved_album
+            ).strip()
+            connection.execute(
+                "UPDATE local_albums SET album_artist_id = ?, album_artist_name = ?, "
+                "album_artist_name_folded = ?, album_artist_sort_name = ?, updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ?",
+                (
+                    resolved_album[0][1],
+                    album_artist_text,
+                    _fold(album_artist_text),
+                    resolved_album[0][0].sort_name or None,
+                    now,
+                    projection.local_album_id,
+                ),
+            )
+            for track in projection.tracks:
+                credits = resolved_tracks[track.local_track_id]
+                if not credits:
+                    raise ValidationError(
+                        "A mapped release track has no usable artist credit."
+                    )
+                connection.execute(
+                    "DELETE FROM local_track_artists WHERE local_track_id = ?",
+                    (track.local_track_id,),
+                )
+                connection.executemany(
+                    "INSERT INTO local_track_artists "
+                    "(local_track_id, position, local_artist_id, role, credited_name, join_phrase) "
+                    "VALUES (?,?,?,'primary',?,?)",
+                    [
+                        (
+                            track.local_track_id,
+                            credit.position,
+                            artist_id,
+                            credit.credited_name,
+                            credit.join_phrase,
+                        )
+                        for credit, artist_id, _source_id in credits
+                    ],
+                )
+                artist_text = "".join(
+                    f"{credit.credited_name}{credit.join_phrase}"
+                    for credit, _artist_id, _source_id in credits
+                ).strip()
+                connection.execute(
+                    "UPDATE local_tracks SET artist_name = ?, artist_name_folded = ?, "
+                    "artist_sort = ?, row_revision = row_revision + 1 WHERE id = ?",
+                    (
+                        artist_text,
+                        _fold(artist_text),
+                        credits[0][0].sort_name or None,
+                        track.local_track_id,
+                    ),
+                )
+
+            result_state = (
+                "resolved_automatically"
+                if retired_ids
+                else "ambiguous_credit_structure"
+                if ambiguous
+                else "waiting_for_identity"
+                if projection.incomplete_track_mapping
+                else "projected"
+            )
+            reason_code = {
+                "resolved_automatically": "PROVIDER_PROVEN_ARTISTS_CONVERGED",
+                "ambiguous_credit_structure": "CREDIT_CARDINALITY_CHANGED",
+                "waiting_for_identity": "EXACT_TRACK_MAPPING_INCOMPLETE",
+                "projected": "PROVIDER_CREDITS_PROJECTED",
+            }[result_state]
+            connection.execute(
+                "INSERT INTO library_artist_reconciliation_state "
+                "(local_album_id, input_revision, evidence_hash, state, "
+                "projected_album_credit_count, projected_track_credit_count, "
+                "retired_artist_count, operation_job_id, reason_code, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(local_album_id) DO UPDATE SET "
+                "input_revision=excluded.input_revision, evidence_hash=excluded.evidence_hash, "
+                "state=excluded.state, "
+                "projected_album_credit_count=excluded.projected_album_credit_count, "
+                "projected_track_credit_count=excluded.projected_track_credit_count, "
+                "retired_artist_count=excluded.retired_artist_count, "
+                "operation_job_id=excluded.operation_job_id, reason_code=excluded.reason_code, "
+                "updated_at=excluded.updated_at, "
+                "row_revision=library_artist_reconciliation_state.row_revision+1",
+                (
+                    projection.local_album_id,
+                    projection.input_revision,
+                    projection.evidence_hash,
+                    result_state,
+                    len(projection.album_credits),
+                    sum(len(track.credits) for track in projection.tracks),
+                    len(retired_ids),
+                    job_id,
+                    reason_code,
+                    now,
+                ),
+            )
+            catalog_revision = self._bump_catalog(connection)
+            result = {
+                "state": result_state,
+                "local_album_id": projection.local_album_id,
+                "retired_artist_ids": sorted(retired_ids),
+                "catalog_revision": catalog_revision,
+                "filesystem_writes": 0,
+            }
+            self._finish_artist_reconciliation_work_tx(
+                connection,
+                job_id=job_id,
+                ordinal=ordinal,
+                worker_id=worker_id,
+                state="succeeded",
+                result=result,
+                failure_code=None,
+                now=now,
+            )
+            self._bump_stream(connection, "operation")
+            return result
+
+        return await self._write(operation)
+
+    async def get_artist_reconciliation_context(
+        self, local_album_id: str
+    ) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            album = connection.execute(
+                "SELECT * FROM local_albums WHERE id = ? AND retired_into_album_id IS NULL",
+                (local_album_id,),
+            ).fetchone()
+            if album is None:
+                return None
+            identity = connection.execute(
+                "SELECT * FROM local_album_external_identities "
+                "WHERE local_album_id = ? AND provider = 'musicbrainz'",
+                (local_album_id,),
+            ).fetchone()
+            tracks = connection.execute(
+                "SELECT track.id, track.title, track.row_revision, track.applied_policy, "
+                "track.availability, track.tag_album_title, track.tag_album_artist_name, "
+                "track.embedded_release_group_mbid, "
+                "identity.recording_mbid, identity.release_mbid identity_release_mbid, "
+                "identity.release_track_mbid, identity.medium_position, "
+                "identity.release_track_position, identity.row_revision identity_revision "
+                "FROM local_tracks track LEFT JOIN local_track_external_identities identity "
+                "ON identity.local_track_id = track.id AND identity.provider = 'musicbrainz' "
+                "WHERE track.local_album_id = ? ORDER BY track.disc_number, "
+                "track.track_number, track.id",
+                (local_album_id,),
+            ).fetchall()
+            state = connection.execute(
+                "SELECT * FROM library_artist_reconciliation_state WHERE local_album_id = ?",
+                (local_album_id,),
+            ).fetchone()
+            snapshot = None
+            if identity is not None and identity["release_mbid"]:
+                snapshot = connection.execute(
+                    "SELECT canonical_payload_json, payload_sha256 "
+                    "FROM library_management_metadata_snapshots "
+                    "WHERE provider = 'musicbrainz' AND entity_kind = 'release' "
+                    "AND entity_id = ? ORDER BY fetched_at DESC, id DESC LIMIT 1",
+                    (identity["release_mbid"],),
+                ).fetchone()
+            return {
+                "album": dict(album),
+                "identity": _row(identity),
+                "tracks": [dict(row) for row in tracks],
+                "state": _row(state),
+                "canonical_payload_json": (
+                    str(snapshot["canonical_payload_json"])
+                    if snapshot is not None
+                    else None
+                ),
+                "canonical_payload_sha256": (
+                    str(snapshot["payload_sha256"]) if snapshot is not None else None
+                ),
+            }
+
+        return await self._read(operation)
+
+    async def complete_artist_reconciliation_work(
+        self,
+        *,
+        job_id: str,
+        ordinal: int,
+        worker_id: str,
+        local_album_id: str,
+        input_revision: str,
+        result_state: str,
+        reason_code: str,
+        now: float,
+        skipped: bool = False,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            connection.execute(
+                "INSERT INTO library_artist_reconciliation_state "
+                "(local_album_id, input_revision, state, operation_job_id, reason_code, "
+                "updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(local_album_id) DO UPDATE SET "
+                "input_revision=excluded.input_revision, state=excluded.state, "
+                "operation_job_id=excluded.operation_job_id, reason_code=excluded.reason_code, "
+                "updated_at=excluded.updated_at, "
+                "row_revision=library_artist_reconciliation_state.row_revision+1",
+                (
+                    local_album_id,
+                    input_revision,
+                    result_state,
+                    job_id,
+                    reason_code,
+                    now,
+                ),
+            )
+            result = {
+                "state": result_state,
+                "local_album_id": local_album_id,
+                "reason_code": reason_code,
+                "filesystem_writes": 0,
+            }
+            self._finish_artist_reconciliation_work_tx(
+                connection,
+                job_id=job_id,
+                ordinal=ordinal,
+                worker_id=worker_id,
+                state="skipped" if skipped else "succeeded",
+                result=result,
+                failure_code=reason_code if skipped else None,
+                now=now,
+            )
+            self._bump_stream(connection, "operation")
+            return result
+
+        return await self._write(operation)
+
+    async def defer_artist_reconciliation_work(
+        self,
+        *,
+        job_id: str,
+        ordinal: int,
+        worker_id: str,
+        local_album_id: str,
+        input_revision: str,
+        reason_code: str,
+        now: float,
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            work_update = connection.execute(
+                "UPDATE library_operation_work SET state = 'pending', failure_code = ?, "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE job_id = ? AND ordinal = ? AND state = 'running'",
+                (reason_code, now, job_id, ordinal),
+            )
+            if work_update.rowcount != 1:
+                raise StaleRevisionError(
+                    "The reconciliation work lease changed while work was deferred."
+                )
+            connection.execute(
+                "INSERT INTO library_artist_reconciliation_state "
+                "(local_album_id, input_revision, state, operation_job_id, reason_code, "
+                "updated_at) VALUES (?,?, 'provider_deferred', ?, ?, ?) "
+                "ON CONFLICT(local_album_id) DO UPDATE SET "
+                "input_revision=excluded.input_revision, state=excluded.state, "
+                "operation_job_id=excluded.operation_job_id, reason_code=excluded.reason_code, "
+                "updated_at=excluded.updated_at, "
+                "row_revision=library_artist_reconciliation_state.row_revision+1",
+                (local_album_id, input_revision, job_id, reason_code, now),
+            )
+            updated = connection.execute(
+                "UPDATE library_operation_jobs SET state = 'queued', lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE id = ? AND kind = 'repair' AND state = 'running' "
+                "AND lease_owner = ? RETURNING *",
+                (now, job_id, worker_id),
+            ).fetchone()
+            if updated is None:
+                raise StaleRevisionError(
+                    "The reconciliation lease changed while work was deferred."
+                )
+            self._bump_stream(connection, "operation")
+            return dict(updated)
+
+        return await self._write(operation)
+
+    async def get_artist_reconciliation_status_data(self) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            job = connection.execute(
+                "SELECT job.* FROM library_operation_jobs job "
+                "JOIN library_repair_snapshots snapshot ON snapshot.job_id = job.id "
+                "WHERE json_extract(snapshot.scope_json, '$.purpose') = "
+                "'artist_identity_reconciliation' "
+                "ORDER BY job.created_at DESC, job.id DESC LIMIT 1"
+            ).fetchone()
+            state_counts = {
+                str(row["state"]): int(row["count"])
+                for row in connection.execute(
+                    "SELECT state, COUNT(*) count FROM library_artist_reconciliation_state "
+                    "GROUP BY state"
+                ).fetchall()
+            }
+            automatic_count = int(
+                connection.execute(
+                    "SELECT COALESCE(SUM(json_array_length(json_extract(after_json, "
+                    "'$.retired_artist_ids'))), 0) FROM library_catalog_actions "
+                    "WHERE reason_code IN ("
+                    "'AUTOMATIC_PROVIDER_PROVEN_ARTIST_CONVERGENCE', "
+                    "'AUTOMATIC_PROVIDER_ANCHORED_ARTIST_CONVERGENCE')"
+                ).fetchone()[0]
+            )
+            return {
+                "job": _row(job),
+                "state_counts": state_counts,
+                "automatically_resolved_count": automatic_count,
+            }
+
+        return await self._read(operation)
+
+    async def get_artist_duplicate_group_data(self) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            rows = connection.execute(
+                "WITH active_artists AS ("
+                "SELECT credit.local_artist_id id FROM local_album_artists credit "
+                "JOIN local_albums album ON album.id = credit.local_album_id "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                "WHERE active_track.local_album_id = album.id "
+                "AND active_track.availability = 'indexed') "
+                "UNION SELECT credit.local_artist_id id FROM local_track_artists credit "
+                "JOIN local_tracks track ON track.id = credit.local_track_id "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND track.availability = 'indexed'), duplicate_names AS ("
+                "SELECT artist.folded_name FROM local_artists artist "
+                "JOIN active_artists active ON active.id = artist.id "
+                "WHERE artist.retired_into_artist_id IS NULL "
+                "GROUP BY artist.folded_name HAVING COUNT(*) > 1) "
+                "SELECT artist.*, identity.provider_artist_id FROM local_artists artist "
+                "JOIN active_artists active ON active.id = artist.id "
+                "LEFT JOIN local_artist_external_identities identity "
+                "ON identity.local_artist_id = artist.id AND identity.provider = 'musicbrainz' "
+                "WHERE artist.retired_into_artist_id IS NULL "
+                "AND artist.folded_name IN (SELECT folded_name FROM duplicate_names) "
+                "ORDER BY artist.folded_name, artist.created_at, artist.id"
+            ).fetchall()
+            members: list[dict[str, Any]] = []
+            for row in rows:
+                artist_id = str(row["id"])
+                counts = connection.execute(
+                    "SELECT "
+                    "(SELECT COUNT(*) FROM local_album_artists credit "
+                    "JOIN local_albums album ON album.id = credit.local_album_id "
+                    "WHERE credit.local_artist_id = ? "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                    "WHERE active_track.local_album_id = album.id "
+                    "AND active_track.availability = 'indexed')) "
+                    "album_credit_count, "
+                    "(SELECT COUNT(*) FROM local_track_artists credit "
+                    "JOIN local_tracks track ON track.id = credit.local_track_id "
+                    "JOIN local_albums album ON album.id = track.local_album_id "
+                    "WHERE credit.local_artist_id = ? "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND track.availability = 'indexed') "
+                    "track_credit_count, "
+                    "(SELECT COUNT(*) FROM local_albums album WHERE album.album_artist_id = ? "
+                    "AND album.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                    "WHERE active_track.local_album_id = album.id "
+                    "AND active_track.availability = 'indexed')) primary_album_count, "
+                    "(SELECT COUNT(*) FROM library_user_favorites WHERE item_kind = 'artist' "
+                    "AND item_id = ?) favorite_count, "
+                    "(SELECT COUNT(*) FROM library_playlist_tracks WHERE local_artist_id = ?) "
+                    "playlist_count, "
+                    "(SELECT COUNT(*) FROM library_play_history WHERE local_artist_id = ?) "
+                    "history_count, "
+                    "(SELECT COUNT(*) FROM library_compat_id_map WHERE kind = 'artist' "
+                    "AND internal_id = ?) compatibility_id_count",
+                    (artist_id,) * 7,
+                ).fetchone()
+                proof_rows = connection.execute(
+                    "SELECT DISTINCT proof.artist_mbid FROM library_artist_credit_proofs proof "
+                    "JOIN local_albums proof_album ON proof_album.id = proof.local_album_id "
+                    "JOIN local_album_external_identities album_identity "
+                    "ON album_identity.local_album_id = proof.local_album_id "
+                    "AND album_identity.provider = 'musicbrainz' "
+                    "AND album_identity.row_revision = proof.album_identity_revision "
+                    "AND album_identity.release_mbid = proof.release_mbid "
+                    "LEFT JOIN local_track_external_identities track_identity "
+                    "ON proof.subject_kind = 'track' "
+                    "AND track_identity.local_track_id = proof.local_track_id "
+                    "AND track_identity.provider = 'musicbrainz' "
+                    "LEFT JOIN local_tracks proof_track ON proof.subject_kind = 'track' "
+                    "AND proof_track.id = proof.local_track_id "
+                    "WHERE proof.source_local_artist_id = ? "
+                    "AND proof_album.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                    "WHERE active_track.local_album_id = proof_album.id "
+                    "AND active_track.availability = 'indexed') AND ("
+                    "proof.subject_kind = 'album' OR ("
+                    "proof_track.availability = 'indexed' "
+                    "AND "
+                    "track_identity.row_revision = proof.track_identity_revision "
+                    "AND track_identity.release_mbid = proof.release_mbid "
+                    "AND track_identity.release_track_mbid = proof.release_track_mbid)) "
+                    "ORDER BY proof.artist_mbid",
+                    (artist_id,),
+                ).fetchall()
+                active_count = int(counts["album_credit_count"]) + int(
+                    counts["track_credit_count"]
+                )
+                valid_proof_count = int(
+                    connection.execute(
+                        "SELECT (SELECT COUNT(*) FROM local_album_artists credit "
+                        "JOIN local_albums album ON album.id = credit.local_album_id "
+                        "JOIN local_album_external_identities identity "
+                        "ON identity.local_album_id = credit.local_album_id "
+                        "AND identity.provider = 'musicbrainz' "
+                        "JOIN library_artist_credit_proofs proof "
+                        "ON proof.subject_kind = 'album' "
+                        "AND proof.subject_id = credit.local_album_id "
+                        "AND proof.credit_position = credit.position "
+                        "AND proof.source_local_artist_id = credit.local_artist_id "
+                        "AND proof.album_identity_revision = identity.row_revision "
+                        "AND proof.release_mbid = identity.release_mbid "
+                        "WHERE credit.local_artist_id = ? "
+                        "AND album.retired_into_album_id IS NULL "
+                        "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                        "WHERE active_track.local_album_id = album.id "
+                        "AND active_track.availability = 'indexed')) + "
+                        "(SELECT COUNT(*) FROM local_track_artists credit "
+                        "JOIN local_tracks track ON track.id = credit.local_track_id "
+                        "JOIN local_albums album ON album.id = track.local_album_id "
+                        "JOIN local_album_external_identities album_identity "
+                        "ON album_identity.local_album_id = track.local_album_id "
+                        "AND album_identity.provider = 'musicbrainz' "
+                        "JOIN local_track_external_identities track_identity "
+                        "ON track_identity.local_track_id = track.id "
+                        "AND track_identity.provider = 'musicbrainz' "
+                        "JOIN library_artist_credit_proofs proof "
+                        "ON proof.subject_kind = 'track' "
+                        "AND proof.subject_id = credit.local_track_id "
+                        "AND proof.credit_position = credit.position "
+                        "AND proof.source_local_artist_id = credit.local_artist_id "
+                        "AND proof.album_identity_revision = album_identity.row_revision "
+                        "AND proof.track_identity_revision = track_identity.row_revision "
+                        "AND proof.release_mbid = album_identity.release_mbid "
+                        "AND proof.release_track_mbid = track_identity.release_track_mbid "
+                        "WHERE credit.local_artist_id = ? "
+                        "AND album.retired_into_album_id IS NULL "
+                        "AND track.availability = 'indexed')",
+                        (artist_id, artist_id),
+                    ).fetchone()[0]
+                )
+                member = dict(row)
+                member.update({key: int(value) for key, value in dict(counts).items()})
+                member.update(
+                    {
+                        "active_credit_count": active_count,
+                        "proven_credit_count": valid_proof_count,
+                        "proof_mbids": [
+                            str(value["artist_mbid"]) for value in proof_rows
+                        ],
+                    }
+                )
+                members.append(member)
+            dismissals = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM library_artist_reconciliation_dismissals"
+                ).fetchall()
+            ]
+            states = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT state.*, album.album_artist_id FROM "
+                    "library_artist_reconciliation_state state "
+                    "JOIN local_albums album ON album.id = state.local_album_id "
+                    "WHERE album.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                    "WHERE active_track.local_album_id = album.id "
+                    "AND active_track.availability = 'indexed')"
+                ).fetchall()
+            ]
+            actions = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT id, local_artist_id, local_album_id, before_json, after_json, "
+                    "reason_code, created_at FROM library_catalog_actions "
+                    "WHERE reason_code IN ("
+                    "'AUTOMATIC_PROVIDER_PROVEN_ARTIST_CONVERGENCE', "
+                    "'AUTOMATIC_PROVIDER_ANCHORED_ARTIST_CONVERGENCE') "
+                    "ORDER BY created_at DESC, id DESC"
+                ).fetchall()
+            ]
+            return {
+                "members": members,
+                "dismissals": dismissals,
+                "states": states,
+                "actions": actions,
+            }
+
+        return await self._read(operation)
+
+    async def get_artist_duplicate_group_references(
+        self, artist_ids: list[str]
+    ) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            unique_ids = sorted(set(artist_ids))
+            if not unique_ids:
+                return {"evidence": [], "releases": [], "tracks": []}
+            placeholders = ",".join("?" for _ in unique_ids)
+            evidence = connection.execute(
+                "SELECT proof.*, COALESCE(album.title, track.title, proof.subject_id) "
+                "subject_name FROM library_artist_credit_proofs proof "
+                "JOIN local_albums proof_album ON proof_album.id = proof.local_album_id "
+                "JOIN local_album_external_identities album_identity "
+                "ON album_identity.local_album_id = proof.local_album_id "
+                "AND album_identity.provider = 'musicbrainz' "
+                "AND album_identity.row_revision = proof.album_identity_revision "
+                "AND album_identity.release_mbid = proof.release_mbid "
+                "LEFT JOIN local_track_external_identities track_identity "
+                "ON proof.subject_kind = 'track' "
+                "AND track_identity.local_track_id = proof.local_track_id "
+                "AND track_identity.provider = 'musicbrainz' "
+                "LEFT JOIN local_albums album ON proof.subject_kind = 'album' "
+                "AND album.id = proof.subject_id "
+                "LEFT JOIN local_tracks track ON proof.subject_kind = 'track' "
+                "AND track.id = proof.subject_id WHERE ("
+                f"proof.source_local_artist_id IN ({placeholders}) "
+                f"OR proof.local_artist_id IN ({placeholders})) "
+                "AND proof_album.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                "WHERE active_track.local_album_id = proof_album.id "
+                "AND active_track.availability = 'indexed') AND ("
+                "proof.subject_kind = 'album' OR ("
+                "track.availability = 'indexed' AND "
+                "track_identity.row_revision = proof.track_identity_revision "
+                "AND track_identity.release_mbid = proof.release_mbid "
+                "AND track_identity.release_track_mbid = proof.release_track_mbid)) "
+                "ORDER BY proof.local_album_id, proof.subject_kind, proof.subject_id, "
+                "proof.credit_position LIMIT 500",
+                (*unique_ids, *unique_ids),
+            ).fetchall()
+            releases = connection.execute(
+                "SELECT DISTINCT album.id, album.title name, album.row_revision, "
+                "album_identity.release_mbid IS NOT NULL identity_ready, "
+                "NOT EXISTS (SELECT 1 FROM local_tracks child "
+                "LEFT JOIN local_track_external_identities track_identity "
+                "ON track_identity.local_track_id = child.id "
+                "AND track_identity.provider = 'musicbrainz' "
+                "WHERE child.local_album_id = album.id "
+                "AND child.availability = 'indexed' "
+                "AND (track_identity.release_track_mbid IS NULL "
+                "OR track_identity.release_mbid IS NOT album_identity.release_mbid)) "
+                "exact_track_mapping_ready FROM local_albums album "
+                "LEFT JOIN local_album_external_identities album_identity "
+                "ON album_identity.local_album_id = album.id "
+                "AND album_identity.provider = 'musicbrainz' "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                "WHERE active_track.local_album_id = album.id "
+                "AND active_track.availability = 'indexed') AND ("
+                f"album.album_artist_id IN ({placeholders}) OR EXISTS ("
+                "SELECT 1 FROM local_album_artists credit WHERE credit.local_album_id = album.id "
+                f"AND credit.local_artist_id IN ({placeholders}))) "
+                "ORDER BY album.title_folded, album.id LIMIT 250",
+                (*unique_ids, *unique_ids),
+            ).fetchall()
+            tracks = connection.execute(
+                "SELECT DISTINCT track.id, track.title name, track.row_revision, "
+                "album_identity.release_mbid IS NOT NULL identity_ready, "
+                "track_identity.release_track_mbid IS NOT NULL "
+                "AND track_identity.release_mbid IS album_identity.release_mbid "
+                "exact_track_mapping_ready FROM local_tracks track "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                "LEFT JOIN local_album_external_identities album_identity "
+                "ON album_identity.local_album_id = album.id "
+                "AND album_identity.provider = 'musicbrainz' "
+                "LEFT JOIN local_track_external_identities track_identity "
+                "ON track_identity.local_track_id = track.id "
+                "AND track_identity.provider = 'musicbrainz' "
+                "WHERE album.retired_into_album_id IS NULL "
+                "AND track.availability = 'indexed' "
+                "AND EXISTS (SELECT 1 FROM local_track_artists credit "
+                "WHERE credit.local_track_id = track.id "
+                f"AND credit.local_artist_id IN ({placeholders})) "
+                "ORDER BY track.title_folded, track.id LIMIT 500",
+                unique_ids,
+            ).fetchall()
+            return {
+                "evidence": [dict(row) for row in evidence],
+                "releases": [dict(row) for row in releases],
+                "tracks": [dict(row) for row in tracks],
+            }
+
+        return await self._read(operation)
+
+    async def dismiss_artist_duplicate_group(
+        self,
+        *,
+        artist_ids: list[str],
+        expected_revisions: dict[str, int],
+        actor_user_id: str,
+        now: float,
+    ) -> int:
+        def operation(connection: sqlite3.Connection) -> int:
+            unique_ids = sorted(set(artist_ids))
+            if len(unique_ids) < 2:
+                raise ValidationError("Choose at least two current artist records.")
+            for artist_id in unique_ids:
+                row = connection.execute(
+                    "SELECT row_revision FROM local_artists WHERE id = ? "
+                    "AND retired_into_artist_id IS NULL",
+                    (artist_id,),
+                ).fetchone()
+                if row is None or int(row["row_revision"]) != expected_revisions.get(
+                    artist_id
+                ):
+                    raise StaleRevisionError(
+                        "The artist group changed before it was marked distinct."
+                    )
+            pairs = [
+                (left, right)
+                for index, left in enumerate(unique_ids)
+                for right in unique_ids[index + 1 :]
+            ]
+            connection.executemany(
+                "INSERT INTO library_artist_reconciliation_dismissals "
+                "(left_artist_id, right_artist_id, left_artist_revision, "
+                "right_artist_revision, dismissed_by_user_id, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(left_artist_id, right_artist_id) "
+                "DO UPDATE SET left_artist_revision=excluded.left_artist_revision, "
+                "right_artist_revision=excluded.right_artist_revision, "
+                "dismissed_by_user_id=excluded.dismissed_by_user_id, "
+                "updated_at=excluded.updated_at, "
+                "row_revision=library_artist_reconciliation_dismissals.row_revision+1",
+                [
+                    (
+                        left,
+                        right,
+                        expected_revisions[left],
+                        expected_revisions[right],
+                        actor_user_id,
+                        now,
+                        now,
+                    )
+                    for left, right in pairs
+                ],
+            )
+            placeholders = ",".join("?" for _ in unique_ids)
+            connection.execute(
+                "UPDATE local_artist_merge_candidates SET state = 'dismissed', "
+                "updated_at = ?, row_revision = row_revision + 1 "
+                "WHERE state = 'open' "
+                f"AND left_artist_id IN ({placeholders}) "
+                f"AND right_artist_id IN ({placeholders})",
+                (now, *unique_ids, *unique_ids),
+            )
+            self._bump_stream(connection, "operation")
+            return len(pairs)
+
+        return await self._write(operation)
 
     async def list_identification_reviews(
         self,
@@ -13671,7 +16341,8 @@ class NativeLibraryStore(PersistenceBase):
                 "adapter_version, semantic_snapshot_blob_sha256, image_snapshot_json, "
                 "ancillary_snapshot_json, file_mtime_ns, file_mode, stat_revision, "
                 "tag_revision, identity_revision, created_at, restore_status, "
-                "last_verified_at, row_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "last_verified_at, row_revision, catalog_document_json, "
+                "catalog_document_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     baseline.id,
                     baseline.local_track_id,
@@ -13691,6 +16362,8 @@ class NativeLibraryStore(PersistenceBase):
                     baseline.restore_status,
                     baseline.last_verified_at,
                     baseline.row_revision,
+                    baseline.catalog_document_json,
+                    baseline.catalog_document_hash,
                 ),
             ).rowcount
             row = connection.execute(
@@ -14974,8 +17647,13 @@ class NativeLibraryStore(PersistenceBase):
                 "track.file_size_bytes, track.file_mtime_ns, track.stat_revision, "
                 "COALESCE(track.tag_revision, '') AS tag_revision, track.availability, "
                 "track.applied_policy, track.file_format, track.disc_number, "
-                "track.track_number FROM local_tracks track "
-                "JOIN local_albums album ON album.id = track.local_album_id WHERE "
+                "track.track_number, track.title AS track_title, track.artist_name, "
+                "album.title AS album_title, album.album_artist_name, "
+                "track.year, "
+                "artwork.version AS album_artwork_version FROM local_tracks track "
+                "JOIN local_albums album ON album.id = track.local_album_id "
+                "LEFT JOIN local_album_artwork artwork ON artwork.local_album_id = album.id "
+                "WHERE "
                 + " AND ".join(clauses)
                 + " ORDER BY album.id, track.disc_number, track.track_number, track.id "
                 "LIMIT ?",
@@ -14988,9 +17666,7 @@ class NativeLibraryStore(PersistenceBase):
             subjects: list[LibraryManagementSelectionSubject] = []
             for row in page_rows:
                 album_id = str(row["local_album_id"])
-                bundle_first = (
-                    not selection.expand_album_bundles or album_id != previous_album
-                )
+                bundle_first = album_id != previous_album
                 if bundle_first:
                     bundle_ordinal += 1
                     previous_album = album_id
@@ -15015,6 +17691,24 @@ class NativeLibraryStore(PersistenceBase):
                         file_format=str(row["file_format"]),
                         disc_number=int(row["disc_number"]),
                         track_number=int(row["track_number"]),
+                        track_title=str(row["track_title"]),
+                        artist_name=(
+                            str(row["artist_name"])
+                            if row["artist_name"] is not None
+                            else None
+                        ),
+                        album_title=str(row["album_title"]),
+                        album_artist_name=(
+                            str(row["album_artist_name"])
+                            if row["album_artist_name"] is not None
+                            else None
+                        ),
+                        year=(int(row["year"]) if row["year"] is not None else None),
+                        album_artwork_version=(
+                            int(row["album_artwork_version"])
+                            if row["album_artwork_version"] is not None
+                            else None
+                        ),
                     )
                 )
                 ordinal += 1
@@ -15199,6 +17893,14 @@ class NativeLibraryStore(PersistenceBase):
                         collision["destination_collision_key"],
                     ),
                 )
+
+            connection.execute(
+                "UPDATE library_management_plan_items SET eligibility='blocked', "
+                "reason_code='BUNDLE_TOO_LARGE' WHERE job_id=? AND bundle_ordinal IN ("
+                "SELECT bundle_ordinal FROM library_management_plan_items WHERE job_id=? "
+                "GROUP BY bundle_ordinal HAVING COUNT(*)>?)",
+                (job_id, job_id, MANAGEMENT_PERSISTENCE_BATCH_SIZE),
+            )
 
             blocked_bundles = connection.execute(
                 "SELECT DISTINCT bundle_ordinal FROM library_management_plan_items "
@@ -15428,10 +18130,11 @@ class NativeLibraryStore(PersistenceBase):
                 "expected_stat_revision, expected_tag_revision, expected_file_fingerprint, "
                 "source_path_identity, destination_root_id, destination_relative_path, "
                 "destination_collision_key, "
-                "desired_document_json, desired_document_hash, artwork_choices_json, diff_json, "
+                "desired_document_json, desired_document_hash, catalog_document_json, "
+                "catalog_document_hash, artwork_choices_json, diff_json, "
                 "capability_json, collision_json, eligibility, reason_code, "
                 "estimated_temporary_bytes, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         item.job_id,
@@ -15458,6 +18161,8 @@ class NativeLibraryStore(PersistenceBase):
                         item.destination_collision_key,
                         item.desired_document_json,
                         item.desired_document_hash,
+                        item.catalog_document_json,
+                        item.catalog_document_hash,
                         item.artwork_choices_json,
                         item.diff_json,
                         item.capability_json,
@@ -16969,6 +19674,8 @@ class NativeLibraryStore(PersistenceBase):
                 ).casefold(),
                 desired_document_json=desired_json,
                 desired_document_hash=desired_hash,
+                catalog_document_json=desired_json,
+                catalog_document_hash=desired_hash,
                 artwork_choices_json=json.dumps(
                     [
                         {
@@ -17272,10 +19979,11 @@ class NativeLibraryStore(PersistenceBase):
             "expected_root_id,expected_relative_path,expected_stat_revision,"
             "expected_tag_revision,expected_file_fingerprint,source_path_identity,"
             "destination_root_id,destination_relative_path,destination_collision_key,"
-            "desired_document_json,desired_document_hash,artwork_choices_json,diff_json,"
+            "desired_document_json,desired_document_hash,catalog_document_json,"
+            "catalog_document_hash,artwork_choices_json,diff_json,"
             "capability_json,collision_json,eligibility,reason_code,"
             "estimated_temporary_bytes,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 item.job_id,
                 item.ordinal,
@@ -17301,6 +20009,8 @@ class NativeLibraryStore(PersistenceBase):
                 item.destination_collision_key,
                 item.desired_document_json,
                 item.desired_document_hash,
+                item.catalog_document_json,
+                item.catalog_document_hash,
                 item.artwork_choices_json,
                 item.diff_json,
                 item.capability_json,
@@ -18534,25 +21244,24 @@ class NativeLibraryStore(PersistenceBase):
                     )
                     continue
                 tag = mutation.tag
+                catalog_tag = mutation.catalog_tag
                 info = mutation.info
                 track_credits = self._management_artist_credits_tx(
                     connection,
-                    tag.artists,
-                    fallback_name=tag.artist or "Unknown Artist",
-                    fallback_sort_name=tag.artist_sort,
-                    fallback_mbid=tag.musicbrainz_artist_id,
+                    catalog_tag.artists,
+                    fallback_name=catalog_tag.artist,
+                    fallback_sort_name=catalog_tag.artist_sort,
+                    fallback_mbid=catalog_tag.musicbrainz_artist_id,
                     now=now,
                 )
                 album_credits = None
                 if mutation.local_album_id not in updated_albums:
                     album_credits = self._management_artist_credits_tx(
                         connection,
-                        tag.album_artists,
-                        fallback_name=(
-                            tag.album_artist or tag.artist or "Unknown Artist"
-                        ),
-                        fallback_sort_name=tag.album_artist_sort,
-                        fallback_mbid=tag.musicbrainz_album_artist_id,
+                        catalog_tag.album_artists,
+                        fallback_name=(catalog_tag.album_artist or catalog_tag.artist),
+                        fallback_sort_name=catalog_tag.album_artist_sort,
+                        fallback_mbid=catalog_tag.musicbrainz_album_artist_id,
                         now=now,
                     )
                 before = {
@@ -18592,27 +21301,27 @@ class NativeLibraryStore(PersistenceBase):
                         mutation.stat_revision,
                         mutation.tag_revision,
                         now,
-                        tag.title,
-                        _fold(tag.title),
-                        tag.artist,
-                        _fold(tag.artist),
-                        tag.album,
-                        _fold(tag.album),
-                        tag.album_artist or tag.artist,
-                        _fold(tag.album_artist or tag.artist),
+                        catalog_tag.title,
+                        _fold(catalog_tag.title),
+                        catalog_tag.artist,
+                        _fold(catalog_tag.artist),
+                        catalog_tag.album,
+                        _fold(catalog_tag.album),
+                        catalog_tag.album_artist or catalog_tag.artist,
+                        _fold(catalog_tag.album_artist or catalog_tag.artist),
                         tag.album,
                         tag.album_artist or "",
-                        tag.disc_number,
-                        tag.track_number,
-                        tag.year,
-                        tag.genre,
-                        _fold(tag.genre),
-                        tag.title_sort,
-                        tag.artist_sort,
-                        tag.album_sort,
-                        tag.album_artist_sort,
-                        tag.disc_subtitle,
-                        int(tag.compilation),
+                        catalog_tag.disc_number,
+                        catalog_tag.track_number,
+                        catalog_tag.year,
+                        catalog_tag.genre,
+                        _fold(catalog_tag.genre),
+                        catalog_tag.title_sort,
+                        catalog_tag.artist_sort,
+                        catalog_tag.album_sort,
+                        catalog_tag.album_artist_sort,
+                        catalog_tag.disc_subtitle,
+                        int(catalog_tag.compilation),
                         tag.musicbrainz_release_group_id,
                         tag.musicbrainz_release_id,
                         tag.musicbrainz_recording_id,
@@ -18642,14 +21351,15 @@ class NativeLibraryStore(PersistenceBase):
                         source_document_revision=mutation.tag_revision,
                     )
                     for position, value in enumerate(
-                        tag.genres or ([tag.genre] if tag.genre else [])
+                        catalog_tag.genres
+                        or ([catalog_tag.genre] if catalog_tag.genre else [])
                     )
                 ]
                 self._replace_track_genres_tx(
                     connection,
                     mutation.local_track_id,
                     genres,
-                    scalar_genre=tag.genre,
+                    scalar_genre=catalog_tag.genre,
                 )
                 connection.execute(
                     "DELETE FROM local_track_artists WHERE local_track_id=?",
@@ -18676,8 +21386,8 @@ class NativeLibraryStore(PersistenceBase):
                         PurePosixPath(mutation.destination_relative_path).parent
                     )
                     grouping_key = (
-                        f"{relative_parent}\x00{(tag.album or '').casefold()}\x00"
-                        f"{(tag.album_artist or tag.artist or '').casefold()}"
+                        f"{relative_parent}\x00{catalog_tag.album.casefold()}\x00"
+                        f"{(catalog_tag.album_artist or catalog_tag.artist).casefold()}"
                     )
                     connection.execute(
                         "UPDATE local_albums SET root_id=?, grouping_key=?, title=?, "
@@ -18689,18 +21399,18 @@ class NativeLibraryStore(PersistenceBase):
                         (
                             mutation.destination_root_id,
                             grouping_key,
-                            tag.album,
-                            _fold(tag.album),
-                            tag.album_artist or tag.artist,
-                            _fold(tag.album_artist or tag.artist),
+                            catalog_tag.album,
+                            _fold(catalog_tag.album),
+                            catalog_tag.album_artist or catalog_tag.artist,
+                            _fold(catalog_tag.album_artist or catalog_tag.artist),
                             tag.album,
                             tag.album_artist or "",
                             album_credits[0].local_artist_id,
-                            tag.album_artist_sort,
-                            tag.year,
-                            tag.original_release_date,
-                            tag.genre,
-                            int(tag.compilation),
+                            catalog_tag.album_artist_sort,
+                            catalog_tag.year,
+                            catalog_tag.original_release_date,
+                            catalog_tag.genre,
+                            int(catalog_tag.compilation),
                             now,
                             mutation.local_album_id,
                         ),
@@ -18816,9 +21526,9 @@ class NativeLibraryStore(PersistenceBase):
                             {
                                 "root_id": mutation.destination_root_id,
                                 "relative_path": mutation.destination_relative_path,
-                                "title": tag.title,
-                                "artist": tag.artist,
-                                "album": tag.album,
+                                "title": catalog_tag.title,
+                                "artist": catalog_tag.artist,
+                                "album": catalog_tag.album,
                                 "file_fingerprint": mutation.file_fingerprint,
                             },
                             separators=(",", ":"),
@@ -18837,6 +21547,14 @@ class NativeLibraryStore(PersistenceBase):
                         "UPDATE library_management_baselines SET "
                         "restore_status='restored',last_verified_at=?,"
                         "row_revision=row_revision+1 WHERE id=? AND row_revision<?",
+                        (now, mutation.baseline_id, MAX_REVISION),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE library_management_baselines SET "
+                        "restore_status='available',last_verified_at=?,"
+                        "row_revision=row_revision+1 WHERE id=? "
+                        "AND restore_status='restored' AND row_revision<?",
                         (now, mutation.baseline_id, MAX_REVISION),
                     )
 
@@ -19430,6 +22148,17 @@ class NativeLibraryStore(PersistenceBase):
                 raise StaleRevisionError(
                     "The album changed after candidates were evaluated."
                 )
+            current_tracks = connection.execute(
+                "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
+                "applied_policy FROM local_tracks WHERE local_album_id=?",
+                (snapshot["local_album_id"],),
+            ).fetchall()
+            if _album_input_revision(current_tracks) != str(
+                snapshot["expected_input_revision"]
+            ):
+                raise StaleRevisionError(
+                    "The album files changed after candidates were evaluated."
+                )
             result = json.loads(str(snapshot["result_json"]))
             attempt_id = str(result["attempt_id"])
             evidence_row = connection.execute(
@@ -19923,7 +22652,8 @@ class NativeLibraryStore(PersistenceBase):
             parameters: tuple[Any, ...] = (kind,) if kind is not None else ()
             candidate = connection.execute(
                 "SELECT id, row_revision FROM library_operation_jobs "
-                f"WHERE state = 'queued' {kind_clause} ORDER BY created_at, id LIMIT 1",
+                f"WHERE state = 'queued' {kind_clause} "
+                "ORDER BY updated_at, created_at, id LIMIT 1",
                 parameters,
             ).fetchone()
             if candidate is None:
@@ -20562,13 +23292,40 @@ class NativeLibraryStore(PersistenceBase):
             if root_ids:
                 root_clause = f"AND a.root_id IN ({','.join('?' for _ in root_ids)})"
                 parameters.extend(root_ids)
-            if purpose == "management_readiness":
+            if purpose in {
+                "artist_identity_reconciliation",
+                "catalog_identity_hygiene",
+            }:
+                album_ids = [str(value) for value in scope.get("album_ids", [])]
+                album_clause = ""
+                if album_ids:
+                    album_clause = f"AND a.id IN ({','.join('?' for _ in album_ids)})"
+                    parameters.extend(album_ids)
+                active_track_clause = (
+                    "AND EXISTS (SELECT 1 FROM local_tracks active_track "
+                    "WHERE active_track.local_album_id = a.id "
+                    "AND active_track.availability = 'indexed') "
+                    if purpose == "artist_identity_reconciliation"
+                    else ""
+                )
+                rows = connection.execute(
+                    "SELECT a.id, a.row_revision, i.row_revision identity_revision, "
+                    "i.decision_source, i.attempt_id, i.release_mbid "
+                    "FROM local_albums a LEFT JOIN local_album_external_identities i "
+                    "ON i.local_album_id = a.id AND i.provider = 'musicbrainz' "
+                    "WHERE a.retired_into_album_id IS NULL "
+                    f"{active_track_clause}{root_clause} {album_clause} ORDER BY a.id",
+                    parameters,
+                ).fetchall()
+            elif purpose == "management_readiness":
                 rows = connection.execute(
                     "SELECT a.id, a.row_revision, i.row_revision identity_revision, "
                     "i.decision_source, i.attempt_id FROM local_albums a "
                     "LEFT JOIN local_album_external_identities i ON i.local_album_id = a.id "
                     "AND i.provider = 'musicbrainz' "
-                    f"WHERE a.retired_into_album_id IS NULL {root_clause} ORDER BY a.id",
+                    "WHERE a.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks t WHERE t.local_album_id = a.id) "
+                    f"{root_clause} ORDER BY a.id",
                     parameters,
                 ).fetchall()
             else:
@@ -20622,9 +23379,18 @@ class NativeLibraryStore(PersistenceBase):
                         ordinal,
                         row["id"],
                         row["row_revision"],
-                        f"{row['identity_revision'] or ''}:{row['decision_source'] or ''}:{row['attempt_id'] or ''}",
                         (
-                            "management_identity_audit"
+                            f"{row['identity_revision'] or ''}:"
+                            f"{row['decision_source'] or ''}:"
+                            f"{row['attempt_id'] or ''}:"
+                            f"{(row['release_mbid'] if 'release_mbid' in row.keys() else '') or ''}"
+                        ),
+                        (
+                            "artist_identity_reconciliation"
+                            if purpose == "artist_identity_reconciliation"
+                            else "catalog_identity_hygiene"
+                            if purpose == "catalog_identity_hygiene"
+                            else "management_identity_audit"
                             if purpose == "management_readiness"
                             else "repair_audit"
                         ),
@@ -21364,9 +24130,18 @@ class NativeLibraryStore(PersistenceBase):
                 cursor = "AND (f.updated_at < ? OR (f.updated_at = ? AND f.id < ?))"
                 params.extend((cursor_updated_at, cursor_updated_at, cursor_id))
             rows = connection.execute(
-                "SELECT f.*, (SELECT r.id FROM library_identification_reviews r "
+                "SELECT f.*, a.title AS album_title, "
+                "a.album_artist_name, a.year AS album_year, "
+                "CASE WHEN artwork.source IS NOT NULL OR identity.release_group_mbid IS NOT NULL "
+                "THEN 1 ELSE 0 END AS cover_available, "
+                "(SELECT r.id FROM library_identification_reviews r "
                 "WHERE r.local_album_id = f.local_album_id ORDER BY r.updated_at DESC, r.id DESC "
-                "LIMIT 1) review_id FROM library_identity_repair_findings f WHERE f.job_id = ? "
+                "LIMIT 1) review_id FROM library_identity_repair_findings f "
+                "JOIN local_albums a ON a.id = f.local_album_id "
+                "LEFT JOIN local_album_artwork artwork ON artwork.local_album_id = a.id "
+                "LEFT JOIN local_album_external_identities identity "
+                "ON identity.local_album_id = a.id AND identity.provider = 'musicbrainz' "
+                "WHERE f.job_id = ? "
                 f"{finding_filter} {cursor} ORDER BY f.updated_at DESC, f.id DESC LIMIT ?",
                 (*params, limit + 1),
             ).fetchall()

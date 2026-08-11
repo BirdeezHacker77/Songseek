@@ -156,6 +156,28 @@ async def run_target_one_time_migrations(
         logger.info(
             "Backfilled %d identified album artwork associations", artwork_count
         )
+    release_year_count = await store.backfill_manual_identity_release_years(
+        updated_at=time.time()
+    )
+    if release_year_count:
+        logger.info("Backfilled %d accepted release catalog years", release_year_count)
+    from core.dependencies.service_providers import (
+        get_artist_identity_reconciliation_service,
+        get_catalog_identity_hygiene_service,
+    )
+
+    hygiene_job = await get_catalog_identity_hygiene_service().enqueue_backfill()
+    logger.info(
+        "Queued bounded catalog identity hygiene backfill %s",
+        hygiene_job["id"],
+    )
+    reconciliation_job = (
+        await get_artist_identity_reconciliation_service().enqueue_backfill()
+    )
+    logger.info(
+        "Queued bounded artist identity reconciliation backfill %s",
+        reconciliation_job["id"],
+    )
     await auth_store.backfill_usernames()
     await auth_store.migrate_local_provider_to_username()
     await _migrate_shared_avatar(auth_store, cache_dir)

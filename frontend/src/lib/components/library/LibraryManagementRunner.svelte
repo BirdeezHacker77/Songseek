@@ -12,6 +12,8 @@
 		X
 	} from 'lucide-svelte';
 
+	import AlbumImage from '$lib/components/AlbumImage.svelte';
+	import ArtistImage from '$lib/components/ArtistImage.svelte';
 	import { getLibrarySearchQuery } from '$lib/queries/library/LibraryQueries.svelte';
 	import type { LibraryRootSettings } from '$lib/queries/library/LibraryOperationsTypes';
 	import {
@@ -40,6 +42,11 @@
 		id: string;
 		title: string;
 		subtitle: string;
+		image: {
+			kind: 'album' | 'artist';
+			id: string;
+			available: boolean;
+		} | null;
 	}
 
 	let { mode = 'manage', roots, settings, policyRevision, onclose }: Props = $props();
@@ -86,6 +93,19 @@
 		Boolean(
 			filterSearch.trim() || filterGenre.trim() || filterFromYear !== null || filterToYear !== null
 		)
+	);
+	const progressSteps = $derived(
+		mode === 'baseline_restore'
+			? [
+					{ step: 1, number: 1, label: 'Scope' },
+					{ step: 4, number: 2, label: 'Review' }
+				]
+			: [
+					{ step: 1, number: 1, label: 'Scope' },
+					{ step: 2, number: 2, label: 'Profile' },
+					{ step: 3, number: 3, label: 'Work' },
+					{ step: 4, number: 4, label: 'Review' }
+				]
 	);
 
 	$effect(() => {
@@ -137,6 +157,21 @@
 		selectedItems = [];
 	}
 
+	function quantity(value: number, singular: string, plural = `${singular}s`): string {
+		return `${value.toLocaleString()} ${value === 1 ? singular : plural}`;
+	}
+
+	function selectionNoun(kind: ManagementSelectionKind, count = 2): string {
+		const nouns: Record<ManagementSelectionKind, [string, string]> = {
+			roots: ['root', 'roots'],
+			artists: ['artist', 'artists'],
+			albums: ['release', 'releases'],
+			tracks: ['track', 'tracks'],
+			filter: ['catalog filter', 'catalog filters']
+		};
+		return nouns[kind][count === 1 ? 0 : 1];
+	}
+
 	function currentScopeItems(): SelectedScopeItem[] {
 		if (selectionKind === 'roots') {
 			return roots
@@ -144,7 +179,8 @@
 				.map((root) => ({
 					id: root.id,
 					title: root.label,
-					subtitle: `${root.policy.replaceAll('_', ' ')} scanning policy`
+					subtitle: `${root.policy.replaceAll('_', ' ')} scanning policy`,
+					image: null
 				}));
 		}
 		return selectedItems;
@@ -156,21 +192,28 @@
 			return searchQuery.data.artists.map((artist) => ({
 				id: artist.id,
 				title: artist.name,
-				subtitle: `${artist.album_count} albums · ${artist.track_count} tracks`
+				subtitle: `${quantity(artist.album_count, 'release')} · ${quantity(artist.track_count, 'track')}`,
+				image: {
+					kind: 'artist',
+					id: artist.id,
+					available: artist.musicbrainz_artist_id !== null
+				}
 			}));
 		}
 		if (selectionKind === 'albums') {
 			return searchQuery.data.albums.map((album) => ({
 				id: album.id,
 				title: album.title,
-				subtitle: `${album.artist_name} · ${album.track_count} tracks`
+				subtitle: `${album.artist_name} · ${quantity(album.track_count, 'track')}`,
+				image: { kind: 'album', id: album.id, available: album.cover_available }
 			}));
 		}
 		if (selectionKind === 'tracks') {
 			return searchQuery.data.tracks.map((track) => ({
 				id: track.id,
 				title: track.title,
-				subtitle: `${track.artist_name} · ${track.album_title}`
+				subtitle: `${track.artist_name} · ${track.album_title}`,
+				image: { kind: 'album', id: track.album_id, available: track.cover_available }
 			}));
 		}
 		return [];
@@ -262,7 +305,7 @@
 		}
 		if (selectionKind === 'roots' && selectedIds.length === roots.length)
 			return 'All library roots';
-		return `${selectedIds.length} selected ${selectionKind}`;
+		return `${selectedIds.length.toLocaleString()} selected ${selectionNoun(selectionKind, selectedIds.length)}`;
 	}
 
 	function profileWork(value: LibraryManagementProfile): string[] {
@@ -318,10 +361,10 @@
 		</header>
 
 		<div class="management-runner-progress" aria-label="Runner progress">
-			{#each [1, 2, 3, 4] as value (value)}
-				<span data-state={step === value ? 'current' : step > value ? 'done' : 'waiting'}
-					>{#if step > value}<Check class="h-3.5 w-3.5" />{:else}{value}{/if}<small
-						>{['Scope', 'Profile', 'Work', 'Review'][value - 1]}</small
+			{#each progressSteps as value (value.step)}
+				<span data-state={step === value.step ? 'current' : step > value.step ? 'done' : 'waiting'}
+					>{#if step > value.step}<Check class="h-3.5 w-3.5" />{:else}{value.number}{/if}<small
+						>{value.label}</small
 					></span
 				>
 			{/each}
@@ -333,14 +376,14 @@
 					<div>
 						<h3 class="font-display text-lg font-semibold">Choose scope</h3>
 						<p class="text-sm text-base-content/55">
-							Album organization expands selected tracks to complete album bundles before planning.
+							Release organization expands selected tracks to complete release bundles before
+							planning.
 						</p>
 					</div>
-					<div class="management-scope-tabs" role="tablist" aria-label="Management scope type">
-						{#each [{ value: 'roots', label: 'Roots' }, { value: 'artists', label: 'Artists' }, { value: 'albums', label: 'Albums' }, { value: 'tracks', label: 'Tracks' }, { value: 'filter', label: 'Catalog filter' }] as option (option.value)}
+					<div class="management-scope-tabs" role="group" aria-label="Management scope type">
+						{#each [{ value: 'roots', label: 'Roots' }, { value: 'artists', label: 'Artists' }, { value: 'albums', label: 'Releases' }, { value: 'tracks', label: 'Tracks' }, { value: 'filter', label: 'Catalog filter' }] as option (option.value)}
 							<button
-								role="tab"
-								aria-selected={selectionKind === option.value}
+								aria-pressed={selectionKind === option.value}
 								onclick={() => selectKind(option.value as ManagementSelectionKind)}
 								>{option.label}</button
 							>
@@ -384,7 +427,30 @@
 								<div class="management-selected-scope__items">
 									{#each currentScopeItems() as item (item.id)}
 										<div class="management-selected-scope__item">
-											<span><strong>{item.title}</strong><small>{item.subtitle}</small></span>
+											{#if item.image?.kind === 'album'}
+												<AlbumImage
+													mbid={item.image.id}
+													source="local"
+													available={item.image.available}
+													alt=""
+													size="xs"
+													rounded="md"
+													className="h-9 w-9 border border-base-content/10"
+													testId={`selected-scope-artwork-${item.id}`}
+												/>
+											{:else if item.image?.kind === 'artist'}
+												<ArtistImage
+													mbid={item.image.id}
+													source="local"
+													available={item.image.available}
+													alt=""
+													size="xs"
+													className="h-9 w-9 border border-base-content/10"
+												/>
+											{/if}
+											<span class="min-w-0 flex-1"
+												><strong>{item.title}</strong><small>{item.subtitle}</small></span
+											>
 											<button
 												class="btn btn-ghost btn-xs btn-square"
 												aria-label={`Remove ${item.title} from scope`}
@@ -417,7 +483,7 @@
 								><span>Catalog search</span><input
 									class="input input-bordered bg-base-100"
 									bind:value={filterSearch}
-									placeholder="Artist, album, or title"
+									placeholder="Artist, release, or title"
 								/></label
 							>
 							<label class="grid gap-1 text-sm"
@@ -447,8 +513,8 @@
 							><Search class="h-4 w-4 text-base-content/40" /><input
 								class="grow"
 								bind:value={searchTerm}
-								placeholder={`Search library ${selectionKind}`}
-								aria-label={`Search library ${selectionKind}`}
+								placeholder={`Search library ${selectionNoun(selectionKind)}`}
+								aria-label={`Search library ${selectionNoun(selectionKind)}`}
 							/></label
 						>
 						{#if searchTerm.trim().length < 2}<p class="text-sm text-base-content/45">
@@ -464,7 +530,7 @@
 							</div>{:else if resultItems().length === 0}<p
 								class="rounded-xl border border-dashed border-base-content/15 p-4 text-sm text-base-content/50"
 							>
-								No matching {selectionKind} found.
+								No matching {selectionNoun(selectionKind)} found.
 							</p>{:else}<div class="grid gap-2">
 								{#each resultItems() as item (item.id)}<label class="management-selection-card"
 										><input
@@ -472,7 +538,24 @@
 											class="checkbox checkbox-sm"
 											checked={selectedIds.includes(item.id)}
 											onchange={() => toggleResult(item)}
-										/><span><strong>{item.title}</strong><small>{item.subtitle}</small></span
+										/>{#if item.image?.kind === 'album'}<AlbumImage
+												mbid={item.image.id}
+												source="local"
+												available={item.image.available}
+												alt=""
+												size="xs"
+												rounded="md"
+												className="h-11 w-11 border border-base-content/10"
+												testId={`search-scope-artwork-${item.id}`}
+											/>{:else if item.image?.kind === 'artist'}<ArtistImage
+												mbid={item.image.id}
+												source="local"
+												available={item.image.available}
+												alt=""
+												size="xs"
+												className="h-11 w-11 border border-base-content/10"
+											/>{/if}<span class="min-w-0 flex-1"
+											><strong>{item.title}</strong><small>{item.subtitle}</small></span
 										></label
 									>{/each}
 							</div>{/if}
@@ -583,7 +666,7 @@
 					</div>
 					{#if expansionRequired}<div class="alert alert-warning items-start">
 							<ShieldAlert class="mt-0.5 h-5 w-5" /><span
-								>Track selection expands to complete albums because organization or sidecar work
+								>Track selection expands to complete releases because organization or sidecar work
 								must remain atomic.</span
 							>
 						</div>{/if}{#if mode === 'baseline_restore'}<div

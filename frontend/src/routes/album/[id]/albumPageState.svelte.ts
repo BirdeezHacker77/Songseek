@@ -748,9 +748,10 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 			title,
 			album,
 			jellyfinMatch,
-			localMatch,
+			localMatchForPlayback,
 			navidromeMatch,
-			plexMatch
+			plexMatch,
+			tracksInfo?.tracks ?? []
 		);
 	}
 
@@ -788,6 +789,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		'jellyfin',
 		albumGetter,
 		tracksGetters,
+		() => tracksInfo?.tracks ?? [],
 		playlistRefGetter
 	);
 	const localCallbacks: SourceCallbacks = buildSourceCallbacks(
@@ -796,6 +798,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		'local',
 		albumGetter,
 		tracksGetters,
+		() => tracksInfo?.tracks ?? [],
 		playlistRefGetter
 	);
 	const navidromeCallbacks: SourceCallbacks = buildSourceCallbacks(
@@ -804,6 +807,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		'navidrome',
 		albumGetter,
 		tracksGetters,
+		() => tracksInfo?.tracks ?? [],
 		playlistRefGetter
 	);
 	const plexCallbacks: SourceCallbacks = buildSourceCallbacks(
@@ -812,6 +816,7 @@ export function createAlbumPageState(albumIdGetter: () => string) {
 		'plex',
 		albumGetter,
 		tracksGetters,
+		() => tracksInfo?.tracks ?? [],
 		playlistRefGetter
 	);
 

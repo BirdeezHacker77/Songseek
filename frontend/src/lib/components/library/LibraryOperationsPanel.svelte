@@ -3,6 +3,7 @@
 		CirclePause,
 		CirclePlay,
 		FolderSync,
+		Fingerprint,
 		History,
 		ListChecks,
 		OctagonX,
@@ -28,6 +29,7 @@
 	} from '$lib/queries/library/LibraryOperationMutations.svelte';
 	import { getTargetLibrarySettingsQuery } from '$lib/queries/library/LibraryPolicyQueries.svelte';
 	import { getLibraryReviewsQuery } from '$lib/queries/library/LibraryReviewQueries.svelte';
+	import { getArtistReconciliationProgressQuery } from '$lib/queries/artist-reconciliation/ArtistReconciliationQueries.svelte';
 	import {
 		getLibraryScanScheduleQuery,
 		getLibraryStatsQuery
@@ -45,6 +47,7 @@
 	const statsQuery = getLibraryStatsQuery();
 	const historyQuery = getLibraryRunHistoryQuery(() => authStore.isAdmin);
 	const reviewsQuery = getLibraryReviewsQuery(() => ({ state: 'needs_review' }));
+	const artistReconciliationQuery = getArtistReconciliationProgressQuery(() => authStore.isAdmin);
 	const runDetailQuery = getLibraryRunQuery(() => runsQuery.data?.active?.id ?? null);
 	const requestRun = requestLibraryRun();
 	const pauseRun = controlLibraryRun('pause');
@@ -481,6 +484,47 @@
 							</div>
 						</div>
 					</article>
+
+					<a
+						href="/library/management/artists"
+						class="flex flex-wrap items-center gap-4 rounded-box border border-base-content/10 bg-base-100 p-4 hover:bg-base-200"
+					>
+						<div
+							class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary"
+						>
+							<Fingerprint class="h-5 w-5" />
+						</div>
+						<div class="min-w-0 flex-1">
+							<h3 class="font-semibold">Artist identity desk</h3>
+							<p class="text-sm text-base-content/55">
+								Provider-proven reconciliation and duplicate groups that need administrator
+								judgement.
+							</p>
+						</div>
+						<div class="flex gap-5 text-sm">
+							<span
+								><strong
+									>{(
+										artistReconciliationQuery.data?.automatically_resolved_count ?? 0
+									).toLocaleString()}</strong
+								><span class="block text-xs text-base-content/50">resolved</span></span
+							>
+							<span
+								><strong
+									>{(
+										artistReconciliationQuery.data?.waiting_for_identity_count ?? 0
+									).toLocaleString()}</strong
+								><span class="block text-xs text-base-content/50">waiting</span></span
+							>
+							<span
+								><strong
+									>{(
+										artistReconciliationQuery.data?.genuine_review_count ?? 0
+									).toLocaleString()}</strong
+								><span class="block text-xs text-base-content/50">review</span></span
+							>
+						</div>
+					</a>
 				</div>
 
 				<div class="flex flex-wrap gap-2">

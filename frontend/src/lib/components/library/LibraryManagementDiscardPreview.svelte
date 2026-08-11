@@ -30,14 +30,15 @@
 
 	async function discard(): Promise<void> {
 		errorMessage = '';
+		const completeDiscard = ondiscard;
 		try {
 			await discardPreview.mutateAsync({
 				jobId,
 				request: { expected_operation_row_revision: expectedRevision }
 			});
 			forgetLibraryManagementPreviewToken(jobId);
-			dialog.close();
-			await ondiscard?.();
+			await completeDiscard?.();
+			if (dialog.isConnected && dialog.open) dialog.close();
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : 'Could not discard this preview.';
 		}

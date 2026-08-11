@@ -82,7 +82,13 @@ from models.library_management import (
     LibraryManagementTagEditIntent,
     ManagementOrigin,
 )
-from models.library_management_artwork import ExistingArtworkDescriptor, ArtworkOutput
+from models.library_management_artwork import (
+    ArtworkImageType,
+    ArtworkOutput,
+    ExistingArtworkDescriptor,
+    InspectedArtwork,
+)
+from models.library_management_canonical import CanonicalTrackDocument
 from models.library_management_enrichment import (
     LyricsProjection,
     ReplayGainAnalysis,
@@ -629,7 +635,6 @@ class LibraryManagementPlanner:
             )
         identity = await self._store.get_accepted_library_management_identity(
             subjects[0].local_album_id,
-            local_track_ids=tuple(value.subject.local_track_id for value in readable),
         )
         identity_reason = self._identity_reason(identity, readable)
         if identity_reason is not None:
@@ -723,6 +728,51 @@ class LibraryManagementPlanner:
         ) = await self._store.list_management_overrides(
             subject_kind="album", subject_id=subjects[0].local_album_id
         )
+        shared_artwork: dict[ArtworkImageType, InspectedArtwork] = {}
+        planned_artwork_types: dict[int, frozenset[ArtworkImageType]] = {}
+        planning_inputs: dict[
+            int, tuple[_SourceInspection, CanonicalTrackDocument]
+        ] = {}
+
+        async def plan_track(
+            source: _SourceInspection, canonical_track: CanonicalTrackDocument
+        ) -> LibraryManagementPlanItem:
+            (
+                track_overrides,
+                track_override_revision,
+            ) = await self._store.list_management_overrides(
+                subject_kind="track", subject_id=source.subject.local_track_id
+            )
+            try:
+                return await self._plan_track(
+                    snapshot=snapshot,
+                    pinned=pinned,
+                    source=source,
+                    canonical_release=canonical.document,
+                    canonical_track=canonical_track,
+                    album_overrides=album_overrides,
+                    track_overrides=track_overrides,
+                    override_revision=_sha256_text(
+                        f"{album_override_revision}\x00{track_override_revision}"
+                    ),
+                    identity=identity,
+                    roots=roots,
+                    replaygain_result=(
+                        replaygain_by_path.get(str(source.path))
+                        if source.path is not None
+                        else None
+                    ),
+                    replaygain_analysis=replaygain_analysis,
+                    tag_edit_intent=tag_edit_intent,
+                    selected_artwork=shared_artwork,
+                )
+            except ScriptValidationError:
+                return self._blocked_item(snapshot, source, PATH_TOO_LONG)
+            except AudioFormatError:
+                return self._blocked_item(snapshot, source, FORMAT_UNSUPPORTED)
+            except ValidationError:
+                return self._blocked_item(snapshot, source, FIELD_UNSUPPORTED_BY_FORMAT)
+
         planned: list[LibraryManagementPlanItem] = []
         for value in inspected:
             if value.document is None or value.path is None:
@@ -736,41 +786,28 @@ class LibraryManagementPlanner:
             if track is None:
                 planned.append(self._blocked_item(snapshot, value, TRACK_NOT_MAPPED))
                 continue
-            (
-                track_overrides,
-                track_override_revision,
-            ) = await self._store.list_management_overrides(
-                subject_kind="track", subject_id=value.subject.local_track_id
-            )
-            try:
-                item = await self._plan_track(
-                    snapshot=snapshot,
-                    pinned=pinned,
-                    source=value,
-                    canonical_release=canonical.document,
-                    canonical_track=track,
-                    album_overrides=album_overrides,
-                    track_overrides=track_overrides,
-                    override_revision=_sha256_text(
-                        f"{album_override_revision}\x00{track_override_revision}"
-                    ),
-                    identity=identity,
-                    roots=roots,
-                    replaygain_result=(
-                        replaygain_by_path.get(str(value.path))
-                        if value.path is not None
-                        else None
-                    ),
-                    replaygain_analysis=replaygain_analysis,
-                    tag_edit_intent=tag_edit_intent,
-                )
-            except ScriptValidationError:
-                item = self._blocked_item(snapshot, value, PATH_TOO_LONG)
-            except AudioFormatError:
-                item = self._blocked_item(snapshot, value, FORMAT_UNSUPPORTED)
-            except ValidationError:
-                item = self._blocked_item(snapshot, value, FIELD_UNSUPPORTED_BY_FORMAT)
+            item = await plan_track(value, track)
             planned.append(item)
+            index = len(planned) - 1
+            planned_artwork_types[index] = frozenset(shared_artwork)
+            planning_inputs[index] = (value, track)
+
+        final_artwork_types = frozenset(shared_artwork)
+        while final_artwork_types:
+            stale = tuple(
+                (index, *planning_inputs[index])
+                for index, selected_types in planned_artwork_types.items()
+                if selected_types != final_artwork_types
+            )
+            if not stale:
+                break
+            for index, source, track in stale:
+                planned[index] = await plan_track(source, track)
+                planned_artwork_types[index] = frozenset(shared_artwork)
+            updated_artwork_types = frozenset(shared_artwork)
+            if updated_artwork_types == final_artwork_types:
+                break
+            final_artwork_types = updated_artwork_types
         return planned, [canonical.metadata_snapshot_id]
 
     async def _plan_track(
@@ -789,6 +826,7 @@ class LibraryManagementPlanner:
         replaygain_result: ReplayGainTrackResult | None = None,
         replaygain_analysis: ReplayGainAnalysis | None = None,
         tag_edit_intent: LibraryManagementTagEditIntent | None = None,
+        selected_artwork: dict[ArtworkImageType, InspectedArtwork] | None = None,
     ) -> LibraryManagementPlanItem:
         assert source.document is not None and source.path is not None
         profile = pinned.profile
@@ -961,6 +999,7 @@ class LibraryManagementPlanner:
                 for value in source.document.artwork
             ),
             existing_external=existing_external,
+            selected_cache=selected_artwork,
             priority=RequestPriority.BACKGROUND_SYNC,
         )
         desired_artwork = (
@@ -1173,6 +1212,34 @@ class LibraryManagementPlanner:
         )
         stored_desired = msgspec.structs.replace(desired, artwork=None)
         desired_json = _json(stored_desired)
+        catalog_values = {
+            name: value
+            for name, value in canonical_values.items()
+            if value is not None and value != () and value != ""
+        }
+        catalog_artist = catalog_values.get("artist")
+        catalog_album_artist = catalog_values.get("album_artist")
+        catalog_document = DesiredAudioDocument(
+            fields=tuple(
+                DesiredAudioField(name=name, action="unchanged", value=value)
+                for name, value in sorted(catalog_values.items())
+            ),
+            artist_display=(
+                "; ".join(catalog_artist)
+                if isinstance(catalog_artist, tuple)
+                else catalog_artist
+                if isinstance(catalog_artist, str)
+                else None
+            ),
+            album_artist_display=(
+                "; ".join(catalog_album_artist)
+                if isinstance(catalog_album_artist, tuple)
+                else catalog_album_artist
+                if isinstance(catalog_album_artist, str)
+                else None
+            ),
+        )
+        catalog_json = _json(catalog_document)
         path_changed = (
             destination_root_id != source.subject.root_id
             or destination_relative != source.subject.relative_path
@@ -1319,6 +1386,8 @@ class LibraryManagementPlanner:
             destination_collision_key=collision_key,
             desired_document_json=desired_json,
             desired_document_hash=_sha256_text(desired_json),
+            catalog_document_json=catalog_json,
+            catalog_document_hash=_sha256_text(catalog_json),
             artwork_choices_json=_json(artwork_choices),
             diff_json=_json(diff),
             capability_json=_json(capability),
@@ -1874,6 +1943,12 @@ class LibraryManagementPlanner:
             return RELEASE_NOT_SELECTED
         by_id = {value.local_track_id: value for value in identity.tracks}
         release_track_ids: set[str] = set()
+        for track in identity.tracks:
+            if track.release_track_mbid is None:
+                continue
+            if track.release_track_mbid in release_track_ids:
+                return TRACK_NOT_MAPPED
+            release_track_ids.add(track.release_track_mbid)
         for source in inspected:
             track = by_id.get(source.subject.local_track_id)
             if (
@@ -1884,9 +1959,6 @@ class LibraryManagementPlanner:
                 or track.release_mbid != identity.release_mbid
             ):
                 return TRACK_NOT_MAPPED
-            if track.release_track_mbid in release_track_ids:
-                return TRACK_NOT_MAPPED
-            release_track_ids.add(track.release_track_mbid)
         return None
 
     @staticmethod
@@ -1988,7 +2060,18 @@ class LibraryManagementPlanner:
             desired_document_json=desired_json,
             desired_document_hash=_sha256_text(desired_json),
             diff_json=_json({"requires_write": False}),
-            capability_json=_json({"audio_format": source.subject.file_format}),
+            capability_json=_json(
+                {
+                    "audio_format": source.subject.file_format,
+                    "catalog_track_title": source.subject.track_title,
+                    "catalog_artist_name": source.subject.artist_name,
+                    "catalog_album_title": source.subject.album_title,
+                    "catalog_album_artist_name": source.subject.album_artist_name,
+                    "catalog_disc_number": source.subject.disc_number,
+                    "catalog_track_number": source.subject.track_number,
+                    "album_artwork_version": source.subject.album_artwork_version,
+                }
+            ),
             eligibility="blocked",
             reason_code=reason_code,
             created_at=self._clock(),

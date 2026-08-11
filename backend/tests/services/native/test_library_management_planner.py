@@ -19,7 +19,7 @@ from api.v1.schemas.library_management import (
     settings_revision,
 )
 from core.config import Settings
-from core.exceptions import StaleRevisionError
+from core.exceptions import ExternalServiceError, StaleRevisionError
 from infrastructure.audio.artwork_processor import ArtworkProcessor
 from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
@@ -162,11 +162,16 @@ def _planner(
     artwork_repository=None,
     lyrics=None,
     replaygain=None,
+    canonical_release: MbManagementRelease | None = None,
 ) -> LibraryManagementPlanner:
     repository = AsyncMock()
-    repository.get_canonical_release.return_value = msgspec.json.decode(
-        (FIXTURES / "musicbrainz" / "management_release.json").read_bytes(),
-        type=MbManagementRelease,
+    repository.get_canonical_release.return_value = (
+        canonical_release
+        if canonical_release is not None
+        else msgspec.json.decode(
+            (FIXTURES / "musicbrainz" / "management_release.json").read_bytes(),
+            type=MbManagementRelease,
+        )
     )
     artwork_repository = artwork_repository or AsyncMock()
     audio = AudioMetadataEngine()
@@ -225,6 +230,67 @@ class _ArtworkRepository:
         del candidate, priority
         assert len(self.content) <= maximum_bytes
         return self.content, "image/png"
+
+
+class _InitiallyFailingArtworkRepository(_ArtworkRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.download_calls = 0
+
+    async def download_management_artwork(
+        self,
+        candidate: ArtworkCandidate,
+        *,
+        maximum_bytes: int,
+        priority: RequestPriority,
+    ) -> tuple[bytes, str | None]:
+        self.download_calls += 1
+        if self.download_calls == 1:
+            raise ExternalServiceError("transient artwork failure")
+        return await super().download_management_artwork(
+            candidate,
+            maximum_bytes=maximum_bytes,
+            priority=priority,
+        )
+
+
+def _add_second_track(
+    database: Path, source: Path, *, release_track_mbid: str, recording_mbid: str
+) -> None:
+    metadata = source.stat()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE local_tracks SET track_number = 1 WHERE id = 'track-1'"
+        )
+        connection.execute(
+            "INSERT INTO local_tracks "
+            "(id, local_album_id, root_id, file_path, relative_path, path_hash, "
+            "file_size_bytes, file_mtime_ns, stat_revision, stat_revision_kind, "
+            "tag_revision, title, title_folded, artist_name, artist_name_folded, "
+            "album_title, album_title_folded, album_artist_name, "
+            "album_artist_name_folded, disc_number, track_number, year, genre, "
+            "genre_folded, file_format, ingest_source, imported_at, membership_source) "
+            "VALUES ('track-2', 'album-1', 'root-1', ?, 'source-2.flac', ?, ?, ?, ?, "
+            "'exact', 'tag-2', 'Management Track Two', 'management track two', "
+            "'Alpha', 'alpha', 'Management Album', 'management album', 'Alpha', "
+            "'alpha', 1, 2, 2024, 'Electronic', 'electronic', 'flac', 'scan', 1, "
+            "'automatic')",
+            (
+                str(source),
+                hashlib.sha256(b"source-2.flac").hexdigest(),
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                f"{metadata.st_size}:{metadata.st_mtime_ns}",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO local_track_external_identities "
+            "(local_track_id, provider, recording_mbid, release_mbid, "
+            "release_track_mbid, medium_position, release_track_position, "
+            "decision_source, selected_at) VALUES ('track-2', 'musicbrainz', ?, "
+            "'aff0622e-7bd3-4fb6-9ca3-0fa19dd2340b', ?, 1, 2, 'manual', 1)",
+            (recording_mbid, release_track_mbid),
+        )
 
 
 def _configured(tmp_path: Path, source_setup=None):  # noqa: ANN001
@@ -307,11 +373,25 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
         "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
     )
     desired = json.loads(plan[0].desired_document_json)
+    catalog = json.loads(str(plan[0].catalog_document_json))
     assert any(
         value["name"] == "musicbrainz_release_track_id"
         and value["value"] == "22222222-2222-4222-8222-222222222222"
         for value in desired["fields"]
     )
+    assert (
+        plan[0].catalog_document_hash
+        == hashlib.sha256(str(plan[0].catalog_document_json).encode()).hexdigest()
+    )
+    catalog_fields = {value["name"]: value for value in catalog["fields"]}
+    assert catalog_fields["title"] == {
+        "name": "title",
+        "action": "unchanged",
+        "value": "Aria",
+    }
+    assert catalog_fields["album"]["value"] == "Goldberg Variations, BWV 988"
+    assert catalog["artist_display"] == "Glenn Gould"
+    assert catalog["album_artist_display"] == "Johann Sebastian Bach; Glenn Gould"
     assert source.read_bytes() == before
     assert sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == [
         "source.flac"
@@ -920,6 +1000,17 @@ async def test_preview_blocks_unsafe_sources(
     assert len(plan) == 1
     assert plan[0].eligibility == "blocked"
     assert plan[0].reason_code == expected_reason
+    capability = json.loads(plan[0].capability_json)
+    assert capability == {
+        "album_artwork_version": None,
+        "audio_format": "flac",
+        "catalog_album_artist_name": "Alpha",
+        "catalog_album_title": "Management Album",
+        "catalog_artist_name": "Alpha",
+        "catalog_disc_number": 1,
+        "catalog_track_number": 2,
+        "catalog_track_title": "Management Track",
+    }
 
 
 @pytest.mark.asyncio
@@ -1198,3 +1289,100 @@ async def test_preview_materializes_custom_external_artwork_path_without_writing
     assert (
         sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == before
     )
+
+
+@pytest.mark.asyncio
+async def test_preview_reuses_later_artwork_success_across_the_release_bundle(
+    tmp_path: Path,
+) -> None:
+    (
+        root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    second_source = root / "source-2.flac"
+    shutil.copy2(FIXTURES / "library" / "management_full.flac", second_source)
+
+    release = msgspec.json.decode(
+        (FIXTURES / "musicbrainz" / "management_release.json").read_bytes(),
+        type=MbManagementRelease,
+    )
+    first_track = release.media[0].tracks[0]
+    second_recording = msgspec.structs.replace(
+        first_track.recording,
+        id="55555555-5555-4555-8555-555555555555",
+        title="Variation One",
+    )
+    second_track = msgspec.structs.replace(
+        first_track,
+        id="44444444-4444-4444-8444-444444444444",
+        title="Variation One",
+        position=2,
+        number="2",
+        recording=second_recording,
+    )
+    release.media[0] = msgspec.structs.replace(
+        release.media[0],
+        track_count=2,
+        tracks=[first_track, second_track],
+    )
+    _add_second_track(
+        tmp_path / "library.db",
+        second_source,
+        release_track_mbid=second_track.id,
+        recording_mbid=second_recording.id,
+    )
+
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    profile.artwork.embedded_enabled = True
+    profile.artwork.external_enabled = True
+    profile.artwork.providers = ["cover_art_archive_release"]
+    profile.artwork.never_replace_with_smaller = False
+    profile.artwork.external_format = "png"
+    saved = preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=settings_revision
+    )
+    artwork_repository = _InitiallyFailingArtworkRepository()
+    planner = _planner(
+        tmp_path,
+        store,
+        preferences,
+        artwork_repository=artwork_repository,
+        canonical_release=release,
+    )
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="albums", ids=("album-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=saved.settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key=None,
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    await planner.run_claimed_preview(claimed, "worker-1")
+    plan = await store.list_library_management_plan_items(handle.job_id)
+    by_track = {item.local_track_id: item for item in plan}
+    first_choices = json.loads(by_track["track-1"].artwork_choices_json)
+    second_choices = json.loads(by_track["track-2"].artwork_choices_json)
+
+    assert artwork_repository.download_calls == 2
+    assert len(plan) == 2
+    assert {value["output_kind"] for value in first_choices} == {
+        "embedded",
+        "external",
+    }
+    assert [value["output_kind"] for value in second_choices] == ["embedded"]
+    assert {
+        value["source_candidate_id"] for value in (*first_choices, *second_choices)
+    } == {"exact-front"}
+    assert all(item.reason_code != "OPTIONAL_ENRICHMENT_DEFERRED" for item in plan)

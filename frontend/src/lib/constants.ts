@@ -194,9 +194,17 @@ export const API = {
 			if (q) url += `&q=${encodeURIComponent(q)}`;
 			return url;
 		},
-		artists: (limit = 50, offset = 0, sortBy = 'name', sortOrder = 'asc', q?: string) => {
+		artists: (
+			limit = 50,
+			offset = 0,
+			sortBy = 'name',
+			sortOrder = 'asc',
+			q?: string,
+			scope: 'album' | 'contributors' = 'album'
+		) => {
 			let url = `/api/v1/library/artists?limit=${limit}&offset=${offset}&sort_by=${sortBy}&sort_order=${sortOrder}`;
 			if (q) url += `&q=${encodeURIComponent(q)}`;
+			url += `&scope=${scope}`;
 			return url;
 		},
 		album: (mbid: string) => `/api/v1/library/albums/${mbid}/status`,
@@ -231,6 +239,8 @@ export const API = {
 			`/api/v1/library/albums/${encodeURIComponent(albumId)}/artwork/cached?v=${coverVersion}`,
 		artistDetail: (artistId: string) => `/api/v1/library/artists/${artistId}`,
 		artistAlbums: (artistId: string) => `/api/v1/library/artists/${artistId}/albums`,
+		artistAppearances: (artistId: string, limit = 20, offset = 0) =>
+			`/api/v1/library/artists/${artistId}/appearances?limit=${limit}&offset=${offset}`,
 		recentlyAdded: (limit = 20) => `/api/v1/library/recently-added?limit=${limit}`,
 		stats: () => '/api/v1/library/stats',
 		scanSchedule: () => '/api/v1/settings/library/schedule',
@@ -311,6 +321,27 @@ export const API = {
 		resetAlbumGrouping: (albumId: string) => `/api/v1/library/albums/${albumId}/reset-grouping`,
 		previewArtistMerge: () => '/api/v1/library/artists/merge-preview',
 		mergeArtists: () => '/api/v1/library/artists/merge',
+		artistReconciliation: () => '/api/v1/library/artists/reconciliation',
+		artistDuplicateGroups: (
+			params: {
+				limit?: number;
+				cursor?: string;
+				state?: string;
+				search?: string;
+			} = {}
+		) => {
+			const query = new URLSearchParams();
+			if (params.limit !== undefined) query.set('limit', String(params.limit));
+			if (params.cursor) query.set('cursor', params.cursor);
+			if (params.state) query.set('state', params.state);
+			if (params.search) query.set('search', params.search);
+			const suffix = query.size ? `?${query.toString()}` : '';
+			return `/api/v1/library/artists/duplicate-groups${suffix}`;
+		},
+		artistDuplicateGroup: (groupId: string) =>
+			`/api/v1/library/artists/duplicate-groups/${groupId}`,
+		dismissArtistDuplicateGroup: (groupId: string) =>
+			`/api/v1/library/artists/duplicate-groups/${groupId}/dismiss`,
 		identityRepairs: (limit?: number, cursor?: string) => {
 			const query = new URLSearchParams();
 			if (limit !== undefined) query.set('limit', String(limit));

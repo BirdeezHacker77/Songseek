@@ -1,5 +1,8 @@
 <script lang="ts">
+	import { replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { SvelteURL } from 'svelte/reactivity';
 	import {
 		AlertTriangle,
 		ArrowRight,
@@ -41,7 +44,9 @@
 	);
 	const pauseOperation = controlLibraryManagementOperationMutation('pause');
 	const resumeOperation = controlLibraryManagementOperationMutation('resume');
-	let runnerMode = $state<'manage' | 'baseline_restore' | null>(null);
+	type RunnerMode = 'manage' | 'baseline_restore';
+
+	let runnerMode = $state<RunnerMode | null>(runnerModeFromUrl());
 	let runnerOpener = $state<HTMLButtonElement | null>(null);
 
 	const history = $derived(operationsQuery.data?.pages.flatMap((page) => page.items) ?? []);
@@ -74,14 +79,30 @@
 		return events.stop;
 	});
 
-	function openRunner(mode: 'manage' | 'baseline_restore', opener: HTMLButtonElement): void {
+	function runnerModeFromUrl(): RunnerMode | null {
+		const requested = page.url.searchParams.get('runner');
+		return requested === 'manage' || requested === 'baseline_restore' ? requested : null;
+	}
+
+	function updateRunnerUrl(mode: RunnerMode | null): void {
+		const url = new SvelteURL(page.url);
+		if (mode) url.searchParams.set('runner', mode);
+		else url.searchParams.delete('runner');
+		url.hash = 'management-controls';
+		replaceState(url, page.state);
+	}
+
+	function openRunner(mode: RunnerMode, opener: HTMLButtonElement): void {
 		runnerOpener = opener;
 		runnerMode = mode;
+		updateRunnerUrl(mode);
 	}
 
 	function closeRunner(): void {
 		runnerMode = null;
+		updateRunnerUrl(null);
 		runnerOpener?.focus();
+		runnerOpener = null;
 	}
 
 	function title(value: string): string {

@@ -8,10 +8,12 @@ import { GenreQueryKeyFactory } from '$lib/queries/genre/GenreQueryKeyFactory';
 import { DropImportQueryKeyFactory } from '$lib/queries/import/DropImportQueryKeyFactory';
 import { LibraryQueryKeyFactory } from '$lib/queries/library/LibraryQueryKeyFactory';
 import { LOCAL_KEYS } from '$lib/queries/local/LocalQueries.svelte';
+import { searchStore } from '$lib/stores/search';
 
 import { LibraryManagementQueryKeyFactory } from './LibraryManagementQueryKeyFactory';
 
 export async function invalidateLibraryManagementSurfaces(): Promise<void> {
+	searchStore.clear();
 	await Promise.all([
 		invalidateQueriesWithPersister({ queryKey: LibraryManagementQueryKeyFactory.prefix }),
 		invalidateQueriesWithPersister({ queryKey: LibraryQueryKeyFactory.operationsPrefix() }),

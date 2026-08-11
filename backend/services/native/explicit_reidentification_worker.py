@@ -113,8 +113,28 @@ class ExplicitReidentificationWorker:
         degradation = init_degradation_context()
         try:
             tracks = [_to_grouping_track(row) for row in context["tracks"]]
-            cached_release_groups: list[str] = []
+            album_identity = context["identity"]
+            legacy_release_mbid = (
+                str(album_identity["release_mbid"])
+                if album_identity is not None
+                and album_identity["decision_source"] == "legacy_import"
+                and album_identity["release_mbid"]
+                else None
+            )
+            cached_release_groups: list[str] = (
+                [str(album_identity["release_group_mbid"])]
+                if legacy_release_mbid is not None
+                and album_identity["release_group_mbid"]
+                else []
+            )
             for track, row in zip(tracks, context["tracks"], strict=True):
+                if (
+                    legacy_release_mbid is not None
+                    and row["track_identity_source"] == "legacy_import"
+                    and row["identity_release_mbid"] == legacy_release_mbid
+                    and row["recording_mbid"]
+                ):
+                    track.recording_mbid = str(row["recording_mbid"])
                 cached = await self._store.get_fingerprint_outcome(
                     track.local_track_id,
                     str(row["stat_revision"]),

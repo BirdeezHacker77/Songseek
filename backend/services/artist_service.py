@@ -258,6 +258,7 @@ class ArtistService:
         artist_info = await self._build_artist_from_musicbrainz(
             artist_id, library_artist_mbids, library_album_mbids
         )
+        await self._refresh_library_flags(artist_info)
         artist_info = await self._apply_audiodb_artist_images(
             artist_info,
             artist_id,
@@ -341,6 +342,7 @@ class ArtistService:
             artist_info = await self._build_artist_from_musicbrainz(
                 artist_id, include_extended=False, include_releases=False
             )
+            await self._refresh_library_flags(artist_info)
             artist_info = await self._apply_audiodb_artist_images(
                 artist_info,
                 artist_id,
@@ -398,7 +400,10 @@ class ArtistService:
                         and release.id.casefold() in requested_mbids
                         and not projection.owned
                     )
-                artist_info.in_library = await self._ownership.provider_artist_owned(
+                (
+                    artist_info.in_library,
+                    artist_info.appears_in_library,
+                ) = await self._ownership.provider_artist_relationship(
                     artist_info.musicbrainz_id
                 )
                 return
@@ -420,6 +425,7 @@ class ArtistService:
                     rg.requested = rg_id in requested_mbids and not rg.in_library
             mbid_lower = artist_info.musicbrainz_id.lower()
             artist_info.in_library = mbid_lower in artist_mbids
+            artist_info.appears_in_library = False
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to refresh library flags: {e}")
 
@@ -658,13 +664,13 @@ class ArtistService:
                 )
                 requested_mbids = set()
         elif self._ownership is not None:
-            mb_artist, artist_owned = await asyncio.gather(
+            mb_artist, artist_relationship = await asyncio.gather(
                 self._mb_repo.get_artist_by_id(artist_id),
-                self._ownership.provider_artist_owned(artist_id),
+                self._ownership.provider_artist_relationship(artist_id),
             )
             if not mb_artist:
                 raise ResourceNotFoundError("Artist not found")
-            library_mbids = {artist_id.casefold()} if artist_owned else set()
+            library_mbids = {artist_id.casefold()} if artist_relationship[0] else set()
             if include_releases:
                 album_mbids, requested_mbids = await self._target_release_group_flags(
                     mb_artist.get("release-group-list", []),

@@ -74,7 +74,7 @@ def extract_tracks(release_data: dict) -> tuple[list[Track], int]:
                 Track(
                     position=int(track.get("position") or track.get("number", 0)),
                     disc_number=disc_number,
-                    title=recording.get("title") or track.get("title", "Unknown"),
+                    title=track.get("title") or recording.get("title") or "Unknown",
                     length=int(length_ms) if length_ms else None,
                     recording_id=recording.get("id"),
                     release_track_id=track.get("id"),

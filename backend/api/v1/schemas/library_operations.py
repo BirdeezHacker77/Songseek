@@ -219,6 +219,7 @@ class OperationResponse(AppStruct):
     reidentification_candidates: list[ReviewCandidateDetail] = msgspec.field(
         default_factory=list
     )
+    selected_reidentification_candidate_key: str | None = None
 
 
 class OperationListResponse(AppStruct):
@@ -336,6 +337,10 @@ class RepairApplyRequest(AppStruct):
 class RepairFindingResponse(AppStruct):
     id: str
     local_album_id: str
+    album_title: str
+    album_artist_name: str | None
+    album_year: int | None
+    cover_available: bool
     evidence_id: str | None
     review_id: str | None
     finding_code: str

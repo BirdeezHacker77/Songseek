@@ -93,6 +93,8 @@ def clear_library_management_provider_graph() -> None:
         get_target_import_library_service,
         get_target_library_operation_service,
         get_target_library_operation_supervisor,
+        get_artist_identity_reconciliation_service,
+        get_catalog_identity_hygiene_service,
         get_target_library_review_service,
         get_target_status_service,
     )
@@ -111,6 +113,8 @@ def clear_library_management_provider_graph() -> None:
         get_target_status_service,
         get_target_import_library_service,
         get_target_library_operation_supervisor,
+        get_artist_identity_reconciliation_service,
+        get_catalog_identity_hygiene_service,
         get_target_album_identification_service,
         get_target_library_review_service,
         get_target_library_operation_service,

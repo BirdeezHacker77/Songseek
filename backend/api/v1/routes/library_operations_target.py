@@ -34,7 +34,16 @@ from api.v1.schemas.library_operations import (
     ReviewDetailResponse,
     ReviewListResponse,
 )
+from api.v1.schemas.artist_reconciliation import (
+    ArtistDuplicateGroupDetail,
+    ArtistDuplicateGroupDismissRequest,
+    ArtistDuplicateGroupDismissResponse,
+    ArtistDuplicateGroupListResponse,
+    ArtistReconciliationGroupState,
+    ArtistReconciliationProgress,
+)
 from core.dependencies.type_aliases import (
+    ArtistIdentityReconciliationServiceDep,
     CatalogCorrectionServiceDep,
     ExplicitReidentificationWorkerDep,
     IdentityRepairServiceDep,
@@ -52,6 +61,64 @@ router = APIRouter(
     prefix="/library",
     tags=["library-operations-target"],
 )
+
+
+@router.get("/artists/reconciliation", response_model=ArtistReconciliationProgress)
+async def get_artist_reconciliation(
+    _: CurrentAdminDep,
+    service: ArtistIdentityReconciliationServiceDep,
+) -> ArtistReconciliationProgress:
+    return await service.progress()
+
+
+@router.get(
+    "/artists/duplicate-groups", response_model=ArtistDuplicateGroupListResponse
+)
+async def list_artist_duplicate_groups(
+    _: CurrentAdminDep,
+    service: ArtistIdentityReconciliationServiceDep,
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = None,
+    state: ArtistReconciliationGroupState | None = None,
+    search: str | None = None,
+) -> ArtistDuplicateGroupListResponse:
+    return await service.list_groups(
+        limit=limit,
+        cursor=cursor,
+        state=state,
+        search=search,
+    )
+
+
+@router.get(
+    "/artists/duplicate-groups/{group_id}",
+    response_model=ArtistDuplicateGroupDetail,
+)
+async def get_artist_duplicate_group(
+    _: CurrentAdminDep,
+    group_id: str,
+    service: ArtistIdentityReconciliationServiceDep,
+) -> ArtistDuplicateGroupDetail:
+    return await service.group_detail(group_id)
+
+
+@router.post(
+    "/artists/duplicate-groups/{group_id}/dismiss",
+    response_model=ArtistDuplicateGroupDismissResponse,
+)
+async def dismiss_artist_duplicate_group(
+    admin: CurrentAdminDep,
+    group_id: str,
+    service: ArtistIdentityReconciliationServiceDep,
+    body: ArtistDuplicateGroupDismissRequest = MsgSpecBody(
+        ArtistDuplicateGroupDismissRequest
+    ),
+) -> ArtistDuplicateGroupDismissResponse:
+    return await service.dismiss_group(
+        group_id,
+        body.expected_member_revisions,
+        admin.id,
+    )
 
 
 @router.get("/reviews", response_model=ReviewListResponse)

@@ -232,6 +232,33 @@ class _FingerprintIdentificationProvider(_IdentificationProvider):
         )
 
 
+class _LegacyTrackIdentityProvider(_IdentificationProvider):
+    async def search_album_candidate_ids(self, query, limit, priority):
+        return ["rg-1"]
+
+    async def search_recording_candidate_ids(self, artist, title, limit, priority):
+        return ["rg-1"]
+
+    async def get_album_candidate(
+        self, release_group_mbid, target_track_count, priority
+    ):
+        return AlbumCandidate(
+            release_group_mbid="rg-1",
+            release_mbid="release-1",
+            album_title="Album 1",
+            album_artist_name="Artist 1",
+            tracks=[
+                CandidateTrack(
+                    title="Track 1",
+                    position=1,
+                    absolute_position=1,
+                    recording_mbid="recording-track-1-1",
+                    release_track_mbid="release-track-1",
+                )
+            ],
+        )
+
+
 class _FingerprintBackend:
     def __init__(self) -> None:
         self.generate_calls = 0
@@ -1861,6 +1888,11 @@ async def test_explicit_reidentification_exposes_candidates_and_rejects_stale_se
     assert second_context is not None
     assert second_context["identity"]["decision_source"] == "manual"
     assert second_context["tracks"][0]["recording_mbid"] == "recording-explicit"
+    response = await LibraryOperationService(store).get(second["id"])
+    assert (
+        response.selected_reidentification_candidate_key
+        == "rg-explicit:release-explicit"
+    )
     callback.assert_awaited_once_with(
         "album-2", album_input_revisions(second_context["tracks"])[2]
     )
@@ -1919,6 +1951,100 @@ async def test_explicit_reidentification_requires_confirmation_for_conflicting_c
     )
 
     assert selected["state"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_explicit_reidentification_rejects_changed_album_file_inputs(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    created = await ReidentificationService(store).create_or_coalesce(
+        "album-1", "admin", now=1
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=2, lease_seconds=60, kind="explicit_reidentification"
+    )
+    assert claimed is not None
+    worker = ExplicitReidentificationWorker(
+        store,
+        AlbumCandidateService(_IdentificationProvider()),
+        AlbumEvidenceEngine(),
+    )
+    ready = await worker.run_claimed(claimed, "worker", now=3)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE local_tracks SET tag_revision='changed-after-evidence' "
+            "WHERE local_album_id='album-1'"
+        )
+
+    with pytest.raises(StaleRevisionError, match="files changed"):
+        await worker.select_candidate(
+            created["id"],
+            expected_job_revision=int(ready["row_revision"]),
+            candidate_key="rg-explicit:release-explicit",
+            confirmation=False,
+            actor_user_id="admin",
+            now=4,
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_reidentification_uses_release_consistent_legacy_track_ids(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE local_tracks SET title = 'Artist - Album - 01 - Track', "
+            "album_title = 'Artist - Album - 01 - Track', "
+            "artist_name = 'Unknown Artist', album_artist_name = 'Unknown Artist', "
+            "track_number = 0 WHERE id = 'track-1-1'"
+        )
+
+    created = await ReidentificationService(store).create_or_coalesce(
+        "album-1", "admin", idempotency_key="legacy-evidence-explicit", now=3
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="explicit_reidentification"
+    )
+    assert claimed is not None
+    worker = ExplicitReidentificationWorker(
+        store,
+        AlbumCandidateService(_LegacyTrackIdentityProvider()),
+        AlbumEvidenceEngine(),
+    )
+
+    ready = await worker.run_claimed(claimed, "worker", now=5)
+    evidence = await store.get_latest_album_candidate_evidence(
+        "album-1", "rg-1:release-1"
+    )
+
+    assert ready["state"] == "ready"
+    assert evidence is not None
+    assert evidence.evidence.reason_code == "CONFLICTING_TRACK_EVIDENCE"
+    assert evidence.evidence.unmatched_expected_tracks == []
+    assert len(evidence.evidence.track_evidence) == 1
+    track_evidence = evidence.evidence.track_evidence[0]
+    assert track_evidence.classification == "supported"
+    assert track_evidence.evidence_kinds == ["recording_mbid"]
+    assert track_evidence.release_track_mbid == "release-track-1"
+
+    selected = await worker.select_candidate(
+        created["id"],
+        expected_job_revision=int(ready["row_revision"]),
+        candidate_key="rg-1:release-1",
+        confirmation=True,
+        actor_user_id="admin",
+        now=6,
+    )
+    context = await store.get_album_identification_context("album-1")
+
+    assert selected["state"] == "succeeded"
+    assert context is not None
+    assert context["identity"]["decision_source"] == "manual"
+    assert context["tracks"][0]["recording_mbid"] == "recording-track-1-1"
+    assert context["tracks"][0]["release_track_mbid"] == "release-track-1"
+    assert context["tracks"][0]["release_track_position"] == 1
 
 
 @pytest.mark.asyncio
@@ -2935,6 +3061,10 @@ async def test_management_identity_preparation_maps_only_the_accepted_exact_rele
     ).items[0]
     assert finding.reason_code == "EXACT_RELEASE_MAPPING_SUPPORTED"
     assert finding.apply_eligible is True
+    assert finding.album_title == "Album 1"
+    assert finding.album_artist_name == "Artist 1"
+    assert finding.album_year is None
+    assert finding.cover_available is True
     with pytest.raises(ResourceNotFoundError):
         await preparation.begin_apply(
             created.id,
@@ -2978,6 +3108,35 @@ async def test_management_identity_preparation_maps_only_the_accepted_exact_rele
         "accept_management_track_mappings",
         "EXACT_RELEASE_MAPPINGS_ACCEPTED",
     )
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_excludes_trackless_albums(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    await _seed_album(store, "2", identity_source="legacy_import")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DELETE FROM local_tracks WHERE local_album_id = 'album-2'")
+
+    preparation = IdentityRepairService(store)
+    estimate = await preparation.estimate_management_preparation(["root"])
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(
+            idempotency_key="exclude-trackless", root_ids=["root"]
+        ),
+        "admin",
+        now=3,
+    )
+
+    assert estimate.album_count == 1
+    assert created.expected_work_count == 1
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT local_album_id FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("album-1",)]
 
 
 @pytest.mark.asyncio

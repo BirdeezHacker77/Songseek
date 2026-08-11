@@ -72,8 +72,10 @@ describe('library route page', () => {
 		authStore.setUser(user('user'));
 		render(LibraryPage);
 		const controls = page.getByRole('button', { name: 'Controls' });
-		await expect.element(controls).toBeDisabled();
-		await expect.element(controls).toHaveAttribute('title', 'Administrator access required');
+		await expect.element(controls).toHaveAttribute('aria-disabled', 'true');
+		await expect
+			.element(page.getByText('Library controls require administrator access.'))
+			.toBeInTheDocument();
 		await expect.element(page.getByRole('link', { name: 'Controls' })).not.toBeInTheDocument();
 	});
 });

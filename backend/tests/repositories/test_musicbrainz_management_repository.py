@@ -64,12 +64,20 @@ def test_verified_fixture_decodes_full_management_surface_tolerantly() -> None:
 
 
 def test_partial_provider_document_uses_tolerant_defaults() -> None:
-    release = msgspec.json.decode(b'{"id":"release-id"}', type=MbManagementRelease)
+    release = msgspec.json.decode(
+        b'{"id":"release-id","packaging":null,"packaging-id":null,'
+        b'"label-info":[{"catalog-number":null,"label":null}]}',
+        type=MbManagementRelease,
+    )
     assert release.id == "release-id"
     assert release.media == []
     assert release.artist_credit == []
     assert release.release_group.id == ""
     assert release.text_representation.language is None
+    assert release.packaging is None
+    assert release.packaging_id is None
+    assert release.label_info[0].catalog_number is None
+    assert release.label_info[0].label is None
 
 
 @pytest.mark.asyncio

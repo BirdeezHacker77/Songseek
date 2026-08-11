@@ -16,6 +16,7 @@
 	} from 'lucide-svelte';
 
 	import BackButton from '$lib/components/BackButton.svelte';
+	import { API } from '$lib/constants';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { createLibraryManagementEvents } from '$lib/queries/library-management/LibraryManagementEvents';
 	import {
@@ -29,10 +30,25 @@
 	import { rememberLibraryManagementPreviewToken } from '$lib/queries/library-management/LibraryManagementPreviewTokens';
 	import { createUuid } from '$lib/utils/uuid';
 	import {
-		formatManagementValue,
 		managementAudioFormat,
+		managementAlbumArtworkVersion,
+		managementArtworkPreviewHash,
+		managementPlanAlbum,
+		managementPlanAlbumArtist,
+		managementPlanArtist,
+		managementPlanChanges,
+		managementPlanTitle,
+		managementPlanTrackLabel,
 		titleManagementValue
 	} from './LibraryManagementDisplay';
+	import LibraryManagementAuditDossiers from './LibraryManagementAuditDossiers.svelte';
+	import LibraryManagementResultInspector from './LibraryManagementResultInspector.svelte';
+	import {
+		groupManagementAuditEntries,
+		type ManagementAuditEntry,
+		type ManagementAuditTone
+	} from './LibraryManagementAuditTypes';
+	import type { LibraryManagementResultItem } from '$lib/queries/library-management/types';
 
 	interface Props {
 		jobId: string;
@@ -65,6 +81,9 @@
 	const operation = $derived(operationQuery.data ?? null);
 	const externalRefreshes = $derived(operation?.external_refreshes ?? []);
 	const results = $derived(resultsQuery.data?.pages.flatMap((page) => page.items) ?? []);
+	const resultDossiers = $derived(
+		groupManagementAuditEntries(results.map((item) => resultAuditEntry(item)))
+	);
 	const planningPreview = $derived(
 		Boolean(
 			operation &&
@@ -225,12 +244,56 @@
 		if (state === 'unavailable') return 'This integration is unavailable or not configured.';
 		return 'Waiting for the operation worker.';
 	}
+
+	function resultTone(item: LibraryManagementResultItem): ManagementAuditTone {
+		if (item.failure_code || item.work_state === 'failed') return 'error';
+		if (item.work_state === 'skipped') return 'warning';
+		if (item.work_state === 'succeeded' || item.work_state === 'completed') return 'success';
+		return 'neutral';
+	}
+
+	function resultAuditEntry(item: LibraryManagementResultItem): ManagementAuditEntry {
+		const artworkHash = (Array.isArray(item.plan.artwork_choices) ? item.plan.artwork_choices : [])
+			.map(managementArtworkPreviewHash)
+			.find((value): value is string => Boolean(value));
+		return {
+			ordinal: item.plan.ordinal,
+			bundleOrdinal: item.plan.bundle_ordinal,
+			trackLabel: managementPlanTrackLabel(item.plan),
+			title: managementPlanTitle(item.plan),
+			artist: managementPlanArtist(item.plan),
+			albumTitle: managementPlanAlbum(item.plan),
+			albumArtist: managementPlanAlbumArtist(item.plan),
+			albumId: item.plan.local_album_id,
+			albumArtworkVersion: managementAlbumArtworkVersion(item.plan),
+			format: managementAudioFormat(item.plan),
+			status: titleManagementValue(item.failure_code ?? item.work_state),
+			statusTone: resultTone(item),
+			reason: item.failure_code ? titleManagementValue(item.failure_code) : null,
+			changes: managementPlanChanges(item.plan),
+			exceptional: Boolean(
+				item.failure_code || !['succeeded', 'completed'].includes(item.work_state)
+			),
+			sourceRoot: 'Source',
+			sourcePath: item.plan.source_relative_path,
+			destinationRoot: 'Destination',
+			destinationPath: item.plan.destination_relative_path,
+			artworkUrl: artworkHash
+				? API.libraryManagement.previewArtwork(jobId, item.plan.ordinal, artworkHash)
+				: null
+		};
+	}
 </script>
 
 <svelte:head><title>Library Management operation · DroppedNeedle</title></svelte:head>
 
+{#snippet resultInspector(ordinal: number)}
+	{@const result = results.find((candidate) => candidate.plan.ordinal === ordinal)}
+	{#if result}<LibraryManagementResultInspector item={result} />{/if}
+{/snippet}
+
 <div class="management-preview-shell px-4 py-8 sm:px-6 lg:px-8">
-	<main class="mx-auto max-w-6xl space-y-5">
+	<main class="mx-auto max-w-7xl space-y-5">
 		<BackButton fallback="/library/management#management-controls" />
 
 		{#if operationQuery.isLoading}
@@ -412,40 +475,12 @@
 						class="rounded-xl border border-dashed border-base-content/15 p-5 text-sm text-base-content/50"
 					>
 						No per-file results have been recorded yet.
-					</div>{:else}<div class="space-y-2">
-						{#each results as item (`${item.plan.ordinal}:${item.work_state}`)}<article
-								class="rounded-xl border border-base-content/10 p-3"
-							>
-								<div class="flex flex-wrap items-start justify-between gap-2">
-									<div>
-										<strong
-											>{item.plan.source_relative_path?.split('/').at(-1) ??
-												`Item ${item.plan.ordinal + 1}`}</strong
-										>
-										<p class="text-xs text-base-content/50">
-											{managementAudioFormat(item.plan).toUpperCase()} · bundle {item.plan
-												.bundle_ordinal + 1}
-										</p>
-									</div>
-									<span
-										class="badge badge-sm {item.failure_code
-											? 'badge-error'
-											: item.work_state === 'succeeded' || item.work_state === 'completed'
-												? 'badge-success'
-												: 'badge-outline'}"
-										>{titleManagementValue(item.failure_code ?? item.work_state)}</span
-									>
-								</div>
-								{#if item.journal_states.length}<p class="mt-2 text-xs text-base-content/50">
-										Journal: {item.journal_states.map(titleManagementValue).join(' → ')}
-									</p>{/if}{#if Object.keys(item.result).length}<details class="mt-2 text-sm">
-										<summary class="cursor-pointer font-semibold">Result evidence</summary>
-										<p class="mt-2 break-words font-mono text-xs text-base-content/60">
-											{formatManagementValue(item.result)}
-										</p>
-									</details>{/if}
-							</article>{/each}
-					</div>
+					</div>{:else}<LibraryManagementAuditDossiers
+						dossiers={resultDossiers}
+						inspector={resultInspector}
+						detailLabel="Inspect result evidence"
+						incomplete={Boolean(resultsQuery.hasNextPage)}
+					/>
 					{#if resultsQuery.hasNextPage}<button
 							class="btn btn-outline w-full"
 							disabled={resultsQuery.isFetchingNextPage}
@@ -489,8 +524,9 @@
 					{#if operation.baseline_available_count > 0}<p class="mt-2 text-xs text-base-content/55">
 							{baselineStatus}
 						</p>{/if}
-					<a href="/library/management#management-controls" class="btn btn-ghost btn-sm mt-3"
-						>Open baseline restore...</a
+					<a
+						href="/library/management?runner=baseline_restore#management-controls"
+						class="btn btn-ghost btn-sm mt-3">Open baseline restore...</a
 					>
 				</div>
 			</section>

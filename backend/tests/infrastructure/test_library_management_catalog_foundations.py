@@ -53,6 +53,63 @@ def _seed_scalar_catalog(path: Path) -> None:
         )
 
 
+def test_scan_reuses_provider_identical_album_artist_for_track_credit() -> None:
+    indexer = LibraryIndexer(object(), object())
+    artist_mbid = "7002bf88-1269-4965-a772-4ba1e7a91eaa"
+    tag = AudioTag(
+        title="Track",
+        artist="Same Artist",
+        album="Album",
+        album_artist="Same Artist",
+        track_number=1,
+        album_artists=[
+            AudioArtistCredit(
+                name="Same Artist",
+                sort_name="Artist, Same",
+                musicbrainz_artist_id=artist_mbid,
+            )
+        ],
+        artists=[
+            AudioArtistCredit(
+                name="Same Artist",
+                sort_name="Same Artist",
+                musicbrainz_artist_id=artist_mbid,
+            )
+        ],
+    )
+    info = AudioInfo(
+        duration_seconds=180,
+        bitrate=900,
+        sample_rate=44_100,
+        channels=2,
+        file_format="flac",
+        file_size_bytes=100,
+        bit_depth=16,
+    )
+    write = indexer._prepare_tagged(
+        "scan-1",
+        {
+            "root_id": "root-1",
+            "relative_path": "Album/track.flac",
+            "absolute_path": "/music/Album/track.flac",
+            "local_track_id": None,
+            "file_size_bytes": 100,
+            "file_mtime_ns": 1_000_000_000,
+            "stat_revision": "stat-1",
+            "policy_revision": "policy-1",
+            "effective_policy": "automatic",
+            "comparison_result": "new",
+        },
+        tag,
+        info,
+    )
+
+    assert (
+        write.album_credits[0].local_artist_id == write.track_credits[0].local_artist_id
+    )
+    assert len(write.artists) == 1
+
+
 def test_scalar_genre_migration_preserves_one_opaque_value_and_is_idempotent(
     tmp_path: Path,
 ) -> None:

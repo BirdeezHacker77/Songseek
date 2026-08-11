@@ -15,7 +15,14 @@ from api.v1.schemas.library_operations import (
     ReviewListItem,
     ReviewListResponse,
 )
+from api.v1.schemas.artist_reconciliation import (
+    ArtistDuplicateGroupDetail,
+    ArtistDuplicateGroupDismissResponse,
+    ArtistDuplicateGroupListResponse,
+    ArtistReconciliationProgress,
+)
 from core.dependencies import (
+    get_artist_identity_reconciliation_service,
     get_target_catalog_correction_service,
     get_target_explicit_reidentification_worker,
     get_target_identity_repair_service,
@@ -72,6 +79,23 @@ def services() -> dict[str, AsyncMock]:
         "kind": "explicit_reidentification",
         "state": "queued",
     }
+    artist_reconciliation = AsyncMock()
+    artist_reconciliation.progress.return_value = ArtistReconciliationProgress(
+        state="idle"
+    )
+    artist_reconciliation.list_groups.return_value = ArtistDuplicateGroupListResponse(
+        items=[]
+    )
+    artist_reconciliation.group_detail.return_value = ArtistDuplicateGroupDetail(
+        id="group-1",
+        display_name="Artist",
+        state="same_name_only",
+        member_count=0,
+        members=[],
+    )
+    artist_reconciliation.dismiss_group.return_value = (
+        ArtistDuplicateGroupDismissResponse(group_id="group-1", dismissed_pairs=1)
+    )
     return {
         "review": review,
         "operation": operation,
@@ -80,6 +104,7 @@ def services() -> dict[str, AsyncMock]:
         "diagnostics": diagnostics,
         "reidentification": reidentification,
         "explicit_worker": AsyncMock(),
+        "artist_reconciliation": artist_reconciliation,
     }
 
 
@@ -102,6 +127,7 @@ def app(services: dict[str, AsyncMock]) -> FastAPI:
         get_target_library_diagnostics_service: services["diagnostics"],
         get_target_reidentification_service: services["reidentification"],
         get_target_explicit_reidentification_worker: services["explicit_worker"],
+        get_artist_identity_reconciliation_service: services["artist_reconciliation"],
     }
     for provider, service in overrides.items():
         application.dependency_overrides[provider] = provide(service)
@@ -136,12 +162,49 @@ def test_target_operation_routes_are_admin_only(app: FastAPI) -> None:
     assert client.get("/library/operations/job-1").status_code == 403
     assert client.get("/library/identity-repairs/job-1/findings").status_code == 403
     assert client.get("/library/scan-runs/run-1/diagnostics").status_code == 403
+    assert client.get("/library/artists/reconciliation").status_code == 403
+    assert client.get("/library/artists/duplicate-groups").status_code == 403
 
     unauthenticated = FastAPI()
     unauthenticated.include_router(router)
     client = build_test_client(unauthenticated)
     assert client.get("/library/reviews").status_code == 401
     assert client.get("/library/operations/job-1").status_code == 401
+    assert client.get("/library/artists/reconciliation").status_code == 401
+
+
+def test_artist_reconciliation_routes_forward_group_workflow(
+    app: FastAPI, services: dict[str, AsyncMock]
+) -> None:
+    override_admin_auth(app)
+    client = build_test_client(app)
+
+    assert client.get("/library/artists/reconciliation").status_code == 200
+    listing = client.get(
+        "/library/artists/duplicate-groups",
+        params={
+            "limit": 25,
+            "cursor": "group-0",
+            "state": "same_name_only",
+            "search": "art",
+        },
+    )
+    assert listing.status_code == 200
+    services["artist_reconciliation"].list_groups.assert_awaited_once_with(
+        limit=25,
+        cursor="group-0",
+        state="same_name_only",
+        search="art",
+    )
+    assert client.get("/library/artists/duplicate-groups/group-1").status_code == 200
+    dismissed = client.post(
+        "/library/artists/duplicate-groups/group-1/dismiss",
+        json={"expected_member_revisions": {"artist-1": 2, "artist-2": 3}},
+    )
+    assert dismissed.status_code == 200
+    services["artist_reconciliation"].dismiss_group.assert_awaited_once_with(
+        "group-1", {"artist-1": 2, "artist-2": 3}, "test-admin-id"
+    )
 
 
 def test_repair_findings_forwards_category_and_pagination(
@@ -300,6 +363,10 @@ def test_target_operation_route_inventory_is_complete() -> None:
         ("POST", "/library/albums/{album_id}/reset-grouping"),
         ("POST", "/library/artists/merge-preview"),
         ("POST", "/library/artists/merge"),
+        ("GET", "/library/artists/reconciliation"),
+        ("GET", "/library/artists/duplicate-groups"),
+        ("GET", "/library/artists/duplicate-groups/{group_id}"),
+        ("POST", "/library/artists/duplicate-groups/{group_id}/dismiss"),
         ("POST", "/library/identity-repairs"),
         ("GET", "/library/identity-repairs"),
         ("GET", "/library/identity-repairs/estimate"),

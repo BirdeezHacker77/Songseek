@@ -17,6 +17,9 @@ const artist: LibraryArtistSummary = {
 	artist_identity_state: 'local_only',
 	album_count: 3,
 	track_count: 30,
+	appearance_release_count: 0,
+	appearance_track_count: 0,
+	library_relationship: 'album_artist',
 	date_added: 1,
 	row_revision: 1
 };

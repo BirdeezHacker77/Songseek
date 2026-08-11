@@ -36,7 +36,17 @@ INDEX_FETCH_SIZE = 256
 TAG_BATCH_SIZE = 64
 INDEX_BATCH_SIZE = TAG_BATCH_SIZE
 CHECKPOINT_INTERVAL_SECONDS = 0.25
+TAG_READ_TIMEOUT_SECONDS = 30.0
+MAX_DETACHED_TAG_READS = 4
 _SCAN_NAMESPACE = uuid.UUID("c65f5557-43c6-4550-bd8a-ea7dcaac6411")
+
+
+class _TagReadCapacityExhausted(Exception):
+    pass
+
+
+class _TagReadTimedOut(Exception):
+    pass
 
 
 def _fold_value(value: str) -> str:
@@ -61,13 +71,25 @@ class LibraryIndexer:
         tag_reader: AudioTagReaderProtocol,
         grouping: LocalAlbumGroupingService | None = None,
         filesystem_coordinator: LibraryFilesystemCoordinator | None = None,
+        *,
+        tag_read_timeout_seconds: float = TAG_READ_TIMEOUT_SECONDS,
+        max_detached_tag_reads: int = MAX_DETACHED_TAG_READS,
     ) -> None:
+        if tag_read_timeout_seconds <= 0:
+            raise ValueError("The tag-read timeout must be positive.")
+        if max_detached_tag_reads < 1:
+            raise ValueError("The detached tag-read limit must be positive.")
         self._store = store
         self._tag_reader = tag_reader
         self._grouping = grouping or LocalAlbumGroupingService(
             store, IdentificationQueueService(store)
         )
         self._filesystem = filesystem_coordinator
+        self._tag_read_timeout_seconds = tag_read_timeout_seconds
+        self._max_detached_tag_reads = max_detached_tag_reads
+        self._detached_tag_reads: set[
+            asyncio.Task[tuple[AudioTag, AudioInfo, os.stat_result]]
+        ] = set()
 
     async def index(
         self,
@@ -172,6 +194,12 @@ class LibraryIndexer:
                         batch_counts["new"] += 1
                     elif item["comparison_result"] == "changed":
                         batch_counts["changed"] += 1
+                except _TagReadCapacityExhausted:
+                    failures.append((*key[0], "TAG_READ_DEFERRED"))
+                    batch_counts["errored"] += 1
+                except _TagReadTimedOut:
+                    failures.append((*key[0], "TAG_READ_TIMEOUT"))
+                    batch_counts["errored"] += 1
                 except (AudioFormatError, OSError, ValueError):
                     failures.append((*key[0], "TAG_READ_FAILED"))
                     batch_counts["errored"] += 1
@@ -224,13 +252,7 @@ class LibraryIndexer:
         root_id = str(item["root_id"])
         reads = 0
         for _attempt in range(2):
-            if self._filesystem is None:
-                tag, info = await asyncio.to_thread(self._read_tags, path)
-                stat = await asyncio.to_thread(path.stat)
-            else:
-                async with self._filesystem.read(root_id):
-                    tag, info = await asyncio.to_thread(self._read_tags, path)
-                    stat = await asyncio.to_thread(path.stat)
+            tag, info, stat = await self._read_tags_and_stat(path, root_id)
             reads += 1
             if checkpoint is not None and not await checkpoint(
                 run_id, frozen_policy_revision
@@ -241,6 +263,53 @@ class LibraryIndexer:
             expected_size = stat.st_size
             expected_mtime_ns = stat.st_mtime_ns
         return None, None, None, reads, False
+
+    async def _read_tags_and_stat(
+        self, path: Path, root_id: str
+    ) -> tuple[AudioTag, AudioInfo, os.stat_result]:
+        if len(self._detached_tag_reads) >= self._max_detached_tag_reads:
+            raise _TagReadCapacityExhausted
+
+        async def read() -> tuple[AudioTag, AudioInfo, os.stat_result]:
+            task = asyncio.create_task(
+                asyncio.to_thread(self._read_tags_and_stat_sync, path)
+            )
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(task), timeout=self._tag_read_timeout_seconds
+                )
+            except asyncio.CancelledError:
+                self._detach_tag_read(task)
+                raise
+            except TimeoutError as error:
+                self._detach_tag_read(task)
+                raise _TagReadTimedOut from error
+
+        if self._filesystem is None:
+            return await read()
+        async with self._filesystem.read(root_id):
+            return await read()
+
+    def _read_tags_and_stat_sync(
+        self, path: Path
+    ) -> tuple[AudioTag, AudioInfo, os.stat_result]:
+        tag, info = self._read_tags(path)
+        return tag, info, path.stat()
+
+    def _finish_detached_tag_read(
+        self, task: asyncio.Task[tuple[AudioTag, AudioInfo, os.stat_result]]
+    ) -> None:
+        self._detached_tag_reads.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    def _detach_tag_read(
+        self, task: asyncio.Task[tuple[AudioTag, AudioInfo, os.stat_result]]
+    ) -> None:
+        if task.done():
+            return
+        self._detached_tag_reads.add(task)
+        task.add_done_callback(self._finish_detached_tag_read)
 
     def _read_tags(self, path: Path) -> tuple[AudioTag, AudioInfo]:
         richer_reader = getattr(self._tag_reader, "read_document", None)
@@ -307,15 +376,35 @@ class LibraryIndexer:
                 updated_at=now,
             )
 
-        artist_by_candidate_id = {
-            artist.id: artist
-            for artist in (
-                candidate_artist(credit)
-                for credit in [*album_audio_credits, *track_audio_credits]
-            )
-        }
         album_artists = [candidate_artist(credit) for credit in album_audio_credits]
-        track_artists = [candidate_artist(credit) for credit in track_audio_credits]
+
+        def matching_album_artist(
+            track_credit: AudioArtistCredit,
+        ) -> LocalArtist | None:
+            matches: list[LocalArtist] = []
+            track_name = _fold_value(track_credit.credited_name or track_credit.name)
+            for album_credit, album_artist_candidate in zip(
+                album_audio_credits, album_artists, strict=True
+            ):
+                album_name = _fold_value(
+                    album_credit.credited_name or album_credit.name
+                )
+                if track_name != album_name:
+                    continue
+                track_mbid = (track_credit.musicbrainz_artist_id or "").casefold()
+                album_mbid = (album_credit.musicbrainz_artist_id or "").casefold()
+                if track_mbid and album_mbid and track_mbid != album_mbid:
+                    continue
+                matches.append(album_artist_candidate)
+            return matches[0] if len(matches) == 1 else None
+
+        track_artists = [
+            matching_album_artist(credit) or candidate_artist(credit)
+            for credit in track_audio_credits
+        ]
+        artist_by_candidate_id = {
+            artist.id: artist for artist in [*album_artists, *track_artists]
+        }
         primary_album_artist = album_artists[0]
         artist_candidate_id = primary_album_artist.id
         grouping_key = (

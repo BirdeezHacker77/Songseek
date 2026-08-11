@@ -25,6 +25,7 @@ from infrastructure.audio.metadata_engine import (
 )
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
 from infrastructure.persistence.native_library_store import NativeLibraryStore
+from models.audio import AudioArtistCredit, AudioTag
 from models.audio_metadata import (
     DesiredAudioDocument,
     DesiredAudioField,
@@ -55,6 +56,8 @@ from services.native.file_revision import revision_from_stat
 from services.native.library_filesystem_coordinator import (
     MANAGEMENT_ARTIFACT_PREFIX,
     LibraryFilesystemCoordinator,
+    replace_rooted,
+    unlink_rooted,
 )
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.recycle_bin import recycle
@@ -73,6 +76,163 @@ ImportCommitCallback = Callable[
     [str, tuple[LibraryManagementPublishedImportFile, ...]],
     Awaitable[tuple[str, ...]],
 ]
+
+
+def _catalog_tag_projection(
+    tag: AudioTag,
+    desired: DesiredAudioDocument,
+    destination_relative_path: str,
+    *,
+    native_fields: frozenset[str],
+) -> AudioTag:
+    desired_values = {
+        field.name: field.value
+        for field in desired.fields
+        if field.action != "clear" and field.value is not None
+    }
+
+    def strings(name: str) -> tuple[str, ...]:
+        value = desired_values.get(name)
+        if isinstance(value, str):
+            stripped = value.strip()
+            return (stripped,) if stripped else ()
+        if isinstance(value, tuple):
+            return tuple(
+                item.strip() for item in value if isinstance(item, str) and item.strip()
+            )
+        return ()
+
+    def text(name: str) -> str:
+        return next(iter(strings(name)), "")
+
+    def integer(name: str) -> int | None:
+        value = desired_values.get(name)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def boolean(name: str) -> bool | None:
+        value = desired_values.get(name)
+        return value if isinstance(value, bool) else None
+
+    def year() -> int | None:
+        date = text("date")
+        return int(date[:4]) if len(date) >= 4 and date[:4].isdigit() else None
+
+    fallback_title = PurePosixPath(destination_relative_path).stem.strip()
+    title = tag.title.strip() or text("title") or fallback_title or "Unknown Track"
+    album = tag.album.strip() or text("album") or fallback_title or "Unknown Album"
+    raw_artist = tag.artist.strip()
+    desired_artist_names = strings("artist")
+    desired_artist = (desired.artist_display or "").strip() or next(
+        iter(desired_artist_names), ""
+    )
+    raw_album_artist = (tag.album_artist or "").strip()
+    desired_album_artist_names = strings("album_artist")
+    desired_album_artist = (desired.album_artist_display or "").strip() or next(
+        iter(desired_album_artist_names), ""
+    )
+    album_artist = (
+        raw_album_artist
+        or desired_album_artist
+        or raw_artist
+        or desired_artist
+        or "Unknown Artist"
+    )
+    artist = raw_artist or desired_artist or album_artist
+    artist_ids = strings("musicbrainz_artist_id")
+    album_artist_ids = strings("musicbrainz_album_artist_id")
+    artist_sorts = strings("artist_sort")
+    album_artist_sorts = strings("album_artist_sort")
+    desired_genres = strings("genre")
+    genres = list(tag.genres or desired_genres)
+    genre = tag.genre or ("; ".join(genres) if genres else None)
+    desired_compilation = boolean("compilation")
+
+    def credits(
+        names: tuple[str, ...],
+        sorts: tuple[str, ...],
+        identifiers: tuple[str, ...],
+    ) -> list[AudioArtistCredit]:
+        return [
+            AudioArtistCredit(
+                name=name,
+                credited_name=name,
+                sort_name=sorts[position] if position < len(sorts) else None,
+                musicbrainz_artist_id=(
+                    identifiers[position] if position < len(identifiers) else None
+                ),
+            )
+            for position, name in enumerate(names)
+        ]
+
+    return msgspec.structs.replace(
+        tag,
+        title=title,
+        artist=artist,
+        album=album,
+        album_artist=album_artist,
+        track_number=tag.track_number or integer("track_number") or 0,
+        disc_number=(
+            tag.disc_number
+            if "disc_number" in native_fields
+            else integer("disc_number") or tag.disc_number
+        ),
+        year=tag.year if tag.year is not None else year(),
+        genre=genre,
+        compilation=(
+            tag.compilation
+            if "compilation" in native_fields
+            else desired_compilation
+            if desired_compilation is not None
+            else tag.compilation
+        ),
+        title_sort=tag.title_sort or text("title_sort") or None,
+        artist_sort=tag.artist_sort or text("artist_sort") or None,
+        album_sort=tag.album_sort or text("album_sort") or None,
+        album_artist_sort=(tag.album_artist_sort or text("album_artist_sort") or None),
+        disc_subtitle=tag.disc_subtitle or text("disc_subtitle") or None,
+        original_release_date=(
+            tag.original_release_date or text("original_date") or None
+        ),
+        musicbrainz_release_group_id=(
+            tag.musicbrainz_release_group_id
+            or text("musicbrainz_release_group_id")
+            or None
+        ),
+        musicbrainz_release_id=(
+            tag.musicbrainz_release_id or text("musicbrainz_release_id") or None
+        ),
+        musicbrainz_recording_id=(
+            tag.musicbrainz_recording_id or text("musicbrainz_recording_id") or None
+        ),
+        musicbrainz_release_track_id=(
+            tag.musicbrainz_release_track_id
+            or text("musicbrainz_release_track_id")
+            or None
+        ),
+        musicbrainz_artist_id=(
+            tag.musicbrainz_artist_id or next(iter(artist_ids), None)
+        ),
+        musicbrainz_album_artist_id=(
+            tag.musicbrainz_album_artist_id or next(iter(album_artist_ids), None)
+        ),
+        acoustid_id=tag.acoustid_id or text("acoustid_id") or None,
+        genres=genres,
+        artists=(
+            tag.artists or credits(desired_artist_names, artist_sorts, artist_ids)
+        ),
+        album_artists=(
+            tag.album_artists
+            or credits(
+                desired_album_artist_names,
+                album_artist_sorts,
+                album_artist_ids,
+            )
+        ),
+        musicbrainz_artist_ids=(tag.musicbrainz_artist_ids or list(artist_ids)),
+        musicbrainz_album_artist_ids=(
+            tag.musicbrainz_album_artist_ids or list(album_artist_ids)
+        ),
+    )
 
 
 @dataclass
@@ -112,6 +272,9 @@ class _PreparedImportArtifact:
     temporary: Path
     destination: Path
     fingerprint: str
+    destination_root_id: str
+    destination_relative_path: str
+    temporary_relative_path: str
 
 
 class LibraryManagementPublisher:
@@ -247,10 +410,12 @@ class LibraryManagementPublisher:
                 async def critical() -> tuple[str, ...]:
                     self._root_paths(bundle.policy_revision)
                     for value in prepared:
-                        await self._recover_import_publish_boundary(value)
-                    await asyncio.to_thread(self._recheck_import_bundle, prepared)
+                        await self._recover_import_publish_boundary(value, roots)
+                    await asyncio.to_thread(
+                        self._recheck_import_bundle, prepared, roots
+                    )
                     for value in prepared:
-                        await self._publish_import_file(value)
+                        await self._publish_import_file(value, roots)
                     await asyncio.to_thread(self._fsync_import_directories, prepared)
                     published = tuple(
                         [await self._published_import_file(value) for value in prepared]
@@ -278,7 +443,7 @@ class LibraryManagementPublisher:
                 record = refreshed
             else:
                 rollback_task = asyncio.create_task(
-                    self._rollback_import_bundle(record, prepared)
+                    self._rollback_import_bundle(record, prepared, roots)
                 )
                 await self._finish_critical_task(rollback_task)
                 raise
@@ -349,7 +514,7 @@ class LibraryManagementPublisher:
                 )
                 for journal in journals
             ]
-            await self._rollback_import_bundle(record, prepared)
+            await self._rollback_import_bundle(record, prepared, roots)
             recovered = await self._store.get_library_management_import_bundle(
                 record.id
             )
@@ -874,12 +1039,19 @@ class LibraryManagementPublisher:
                     temporary=temporary,
                     destination=destination,
                     fingerprint=fingerprint,
+                    destination_root_id=artifact.destination_root_id,
+                    destination_relative_path=artifact.destination_relative_path,
+                    temporary_relative_path=temporary.relative_to(root).as_posix(),
                 )
             )
         return prepared
 
     @classmethod
-    def _recheck_import_bundle(cls, prepared: list[_PreparedImportMutation]) -> None:
+    def _recheck_import_bundle(
+        cls,
+        prepared: list[_PreparedImportMutation],
+        roots: dict[str, Path],
+    ) -> None:
         for value in prepared:
             journal = value.journal
             if journal.state == "published":
@@ -894,7 +1066,11 @@ class LibraryManagementPublisher:
                             raise ConflictError(
                                 "A redundant staged import artifact changed."
                             )
-                        artifact.temporary.unlink()
+                        unlink_rooted(
+                            roots,
+                            artifact.destination_root_id,
+                            artifact.temporary_relative_path,
+                        )
                     if (
                         not artifact.destination.exists()
                         or cls._hash_file(artifact.destination) != artifact.fingerprint
@@ -957,7 +1133,7 @@ class LibraryManagementPublisher:
                     raise ConflictError("An import artifact is missing after publish.")
 
     async def _recover_import_publish_boundary(
-        self, value: _PreparedImportMutation
+        self, value: _PreparedImportMutation, roots: dict[str, Path]
     ) -> None:
         journal = value.journal
         if journal.state not in {"validated", "replacement_backed_up"}:
@@ -969,7 +1145,7 @@ class LibraryManagementPublisher:
             and await asyncio.to_thread(self._hash_file, value.destination)
             == journal.staged_fingerprint
         ):
-            await self._publish_import_artifacts(value)
+            await self._publish_import_artifacts(value, roots)
             value.journal = (
                 await self._store.transition_library_management_import_journal(
                     journal.bundle_id,
@@ -1001,14 +1177,23 @@ class LibraryManagementPublisher:
                 )
             )
 
-    async def _publish_import_file(self, value: _PreparedImportMutation) -> None:
+    async def _publish_import_file(
+        self, value: _PreparedImportMutation, roots: dict[str, Path]
+    ) -> None:
         journal = value.journal
         if journal.state == "published":
             return
         if value.replacement == value.destination and journal.state == "validated":
             assert value.replacement_backup is not None
+            assert value.request.replacement_root_id is not None
+            assert journal.replacement_backup_relative_path is not None
             await asyncio.to_thread(
-                os.replace, value.destination, value.replacement_backup
+                replace_rooted,
+                roots,
+                value.request.destination_root_id,
+                value.request.destination_relative_path,
+                value.request.replacement_root_id,
+                journal.replacement_backup_relative_path,
             )
             journal = await self._store.transition_library_management_import_journal(
                 journal.bundle_id,
@@ -1019,8 +1204,15 @@ class LibraryManagementPublisher:
                 updated_at=self._clock(),
             )
             value.journal = journal
-        await asyncio.to_thread(os.replace, value.temporary, value.destination)
-        await self._publish_import_artifacts(value)
+        await asyncio.to_thread(
+            replace_rooted,
+            roots,
+            value.request.destination_root_id,
+            journal.temporary_relative_path,
+            value.request.destination_root_id,
+            value.request.destination_relative_path,
+        )
+        await self._publish_import_artifacts(value, roots)
         value.journal = await self._store.transition_library_management_import_journal(
             journal.bundle_id,
             journal.ordinal,
@@ -1030,13 +1222,20 @@ class LibraryManagementPublisher:
             updated_at=self._clock(),
         )
 
-    async def _publish_import_artifacts(self, value: _PreparedImportMutation) -> None:
+    async def _publish_import_artifacts(
+        self, value: _PreparedImportMutation, roots: dict[str, Path]
+    ) -> None:
         for artifact in value.artifacts:
             if artifact.temporary.exists():
                 if artifact.destination.exists():
                     raise ConflictError("An import artifact destination is occupied.")
                 await asyncio.to_thread(
-                    os.replace, artifact.temporary, artifact.destination
+                    replace_rooted,
+                    roots,
+                    artifact.destination_root_id,
+                    artifact.temporary_relative_path,
+                    artifact.destination_root_id,
+                    artifact.destination_relative_path,
                 )
             elif (
                 not artifact.destination.exists()
@@ -1062,6 +1261,7 @@ class LibraryManagementPublisher:
         self,
         record: LibraryManagementImportBundleRecord,
         prepared: list[_PreparedImportMutation],
+        roots: dict[str, Path],
     ) -> None:
         if not prepared:
             refreshed = await self._store.get_library_management_import_bundle(
@@ -1088,7 +1288,7 @@ class LibraryManagementPublisher:
             }
         )
         async with self._filesystem.write_many(root_ids):
-            await self._rollback_import_bundle_locked(record, prepared)
+            await self._rollback_import_bundle_locked(record, prepared, roots)
 
     async def _rollback_import_preparation(
         self,
@@ -1110,7 +1310,7 @@ class LibraryManagementPublisher:
             prepared.append(
                 self._prepared_import_from_journal(record.id, request, journal, roots)
             )
-        await self._rollback_import_bundle(record, prepared)
+        await self._rollback_import_bundle(record, prepared, roots)
 
     def _prepared_import_from_journal(
         self,
@@ -1155,6 +1355,17 @@ class LibraryManagementPublisher:
                     ),
                     destination=artifact_destination,
                     fingerprint=artifact.source_fingerprint or "",
+                    destination_root_id=artifact.destination_root_id,
+                    destination_relative_path=artifact.destination_relative_path,
+                    temporary_relative_path=self._artifact_path(
+                        artifact_destination,
+                        bundle_id,
+                        request.ordinal,
+                        f"import-{artifact.kind}-{index}",
+                        artifact_destination.suffix,
+                    )
+                    .relative_to(artifact_root)
+                    .as_posix(),
                 )
             )
         return _PreparedImportMutation(
@@ -1172,6 +1383,7 @@ class LibraryManagementPublisher:
         self,
         record: LibraryManagementImportBundleRecord,
         prepared: list[_PreparedImportMutation],
+        roots: dict[str, Path],
     ) -> None:
         needs_attention = False
         for value in reversed(prepared):
@@ -1207,6 +1419,7 @@ class LibraryManagementPublisher:
                 await asyncio.to_thread(
                     self._restore_import_filesystem,
                     value,
+                    roots,
                     was_published=was_published,
                 )
                 await self._store.remove_management_blob_references(
@@ -1251,6 +1464,7 @@ class LibraryManagementPublisher:
     def _restore_import_filesystem(
         cls,
         value: _PreparedImportMutation,
+        roots: dict[str, Path],
         *,
         was_published: bool,
     ) -> None:
@@ -1262,7 +1476,11 @@ class LibraryManagementPublisher:
         ):
             if cls._hash_file(value.destination) != journal.staged_fingerprint:
                 raise ConflictError("A published import changed during rollback.")
-            value.destination.unlink()
+            unlink_rooted(
+                roots,
+                value.request.destination_root_id,
+                value.request.destination_relative_path,
+            )
         if was_published:
             for artifact in value.artifacts:
                 if artifact.destination.exists():
@@ -1270,17 +1488,39 @@ class LibraryManagementPublisher:
                         raise ConflictError(
                             "A published import artifact changed during rollback."
                         )
-                    artifact.destination.unlink()
+                    unlink_rooted(
+                        roots,
+                        artifact.destination_root_id,
+                        artifact.destination_relative_path,
+                    )
         for artifact in value.artifacts:
-            artifact.temporary.unlink(missing_ok=True)
+            unlink_rooted(
+                roots,
+                artifact.destination_root_id,
+                artifact.temporary_relative_path,
+                missing_ok=True,
+            )
         if value.replacement_backup is not None and value.replacement_backup.exists():
             if (
                 cls._hash_file(value.replacement_backup)
                 != journal.replacement_fingerprint
             ):
                 raise ConflictError("An import replacement backup changed.")
-            os.replace(value.replacement_backup, value.destination)
-        value.temporary.unlink(missing_ok=True)
+            assert value.request.replacement_root_id is not None
+            assert journal.replacement_backup_relative_path is not None
+            replace_rooted(
+                roots,
+                value.request.replacement_root_id,
+                journal.replacement_backup_relative_path,
+                value.request.destination_root_id,
+                value.request.destination_relative_path,
+            )
+        unlink_rooted(
+            roots,
+            value.request.destination_root_id,
+            journal.temporary_relative_path,
+            missing_ok=True,
+        )
 
     async def _resume_import_cleanup(
         self,
@@ -1526,8 +1766,10 @@ class LibraryManagementPublisher:
         except BaseException:
 
             async def rollback() -> None:
-                await self._rollback(prepared)
-                await asyncio.to_thread(self._remove_unpublished_temporaries, prepared)
+                await self._rollback(prepared, roots)
+                await asyncio.to_thread(
+                    self._remove_unpublished_temporaries, prepared, roots
+                )
 
             rollback_task = asyncio.create_task(rollback())
             await self._finish_critical_task(rollback_task)
@@ -1566,7 +1808,7 @@ class LibraryManagementPublisher:
                 await self._record_late_collisions(prepared)
                 raise
             for value in prepared:
-                await self._publish_one(value)
+                await self._publish_one(value, roots)
             await asyncio.to_thread(self._fsync_directories, prepared)
             self._validate_pinned_configuration(snapshot, pinned)
             self._root_paths(snapshot.policy_revision, pinned)
@@ -1582,7 +1824,7 @@ class LibraryManagementPublisher:
                 mutations,
                 now=self._clock(),
             )
-            await self._cleanup_committed(prepared)
+            await self._cleanup_committed(prepared, roots)
             if (
                 pinned.profile.organization.remove_empty_directories
                 and pinned.profile.organization.source_cleanup
@@ -1594,7 +1836,7 @@ class LibraryManagementPublisher:
                 )
             return result, mutations
         except BaseException:
-            rollback_task = asyncio.create_task(self._rollback(prepared))
+            rollback_task = asyncio.create_task(self._rollback(prepared, roots))
             await self._finish_critical_task(rollback_task)
             raise
 
@@ -1707,6 +1949,8 @@ class LibraryManagementPublisher:
                     file_mode=write_plan.snapshot.file_attributes.permission_bits,
                     identity_revision=item.expected_identity_revision,
                     created_at=now,
+                    catalog_document_json=item.catalog_document_json,
+                    catalog_document_hash=item.catalog_document_hash,
                 )
             )
             operation_snapshot = await self._store.ensure_management_operation_snapshot(
@@ -1898,8 +2142,10 @@ class LibraryManagementPublisher:
         except BaseException:
 
             async def rollback() -> None:
-                await self._rollback(prepared)
-                await asyncio.to_thread(self._remove_unpublished_temporaries, prepared)
+                await self._rollback(prepared, roots)
+                await asyncio.to_thread(
+                    self._remove_unpublished_temporaries, prepared, roots
+                )
 
             rollback_task = asyncio.create_task(rollback())
             await self._finish_critical_task(rollback_task)
@@ -2096,6 +2342,15 @@ class LibraryManagementPublisher:
             )
         result_document = await asyncio.to_thread(self._audio.read, content_path)
         tag, info = legacy_audio_projection(result_document)
+        desired = self._catalog_document(item)
+        catalog_tag = _catalog_tag_projection(
+            tag,
+            desired,
+            str(journal.destination_relative_path),
+            native_fields=frozenset(
+                field.name for field in result_document.metadata.fields
+            ),
+        )
         content_stat = await asyncio.to_thread(content_path.stat)
         destination_relative = str(journal.destination_relative_path)
         diff = json.loads(item.diff_json)
@@ -2128,6 +2383,7 @@ class LibraryManagementPublisher:
             tag_revision=hashlib.sha256(msgspec.json.encode(tag)).hexdigest(),
             file_fingerprint=fingerprint,
             tag=tag,
+            catalog_tag=catalog_tag,
             info=info,
             baseline_id=str(journal.baseline_id),
             operation_snapshot_id=str(journal.operation_snapshot_id),
@@ -2270,6 +2526,17 @@ class LibraryManagementPublisher:
         return msgspec.structs.replace(
             desired, artwork=tuple(embedded) if embedded else desired.artwork
         )
+
+    @staticmethod
+    def _catalog_document(item: LibraryManagementPlanItem) -> DesiredAudioDocument:
+        encoded = item.catalog_document_json or item.desired_document_json
+        expected_hash = item.catalog_document_hash or item.desired_document_hash
+        if hashlib.sha256(encoded.encode()).hexdigest() != expected_hash:
+            raise ConflictError("Pinned catalog metadata changed after preview.")
+        try:
+            return msgspec.json.decode(encoded.encode(), type=DesiredAudioDocument)
+        except msgspec.DecodeError as error:
+            raise ValidationError("Pinned catalog metadata is invalid.") from error
 
     async def _prepare_external_artwork(
         self,
@@ -2764,11 +3031,22 @@ class LibraryManagementPublisher:
                 for entry in entries
             )
 
-    async def _publish_one(self, value: _PreparedMutation) -> None:
+    async def _publish_one(
+        self, value: _PreparedMutation, roots: dict[str, Path]
+    ) -> None:
         journal = value.journal
         if value.recycle_move:
             assert value.backup is not None and value.source is not None
-            await asyncio.to_thread(os.replace, value.source, value.backup)
+            assert journal.source_root_id and journal.source_relative_path
+            assert journal.backup_root_id and journal.backup_relative_path
+            await asyncio.to_thread(
+                replace_rooted,
+                roots,
+                journal.source_root_id,
+                journal.source_relative_path,
+                journal.backup_root_id,
+                journal.backup_relative_path,
+            )
             value.source_backed_up = True
             journal = await self._store.transition_file_mutation_journal(
                 journal.id,
@@ -2782,7 +3060,16 @@ class LibraryManagementPublisher:
             journal.subject_kind == "external_art" and value.source is not None
         ):
             assert value.backup is not None and value.source is not None
-            await asyncio.to_thread(os.replace, value.source, value.backup)
+            assert journal.source_root_id and journal.source_relative_path
+            assert journal.backup_root_id and journal.backup_relative_path
+            await asyncio.to_thread(
+                replace_rooted,
+                roots,
+                journal.source_root_id,
+                journal.source_relative_path,
+                journal.backup_root_id,
+                journal.backup_relative_path,
+            )
             value.source_backed_up = True
             journal = await self._store.transition_file_mutation_journal(
                 journal.id,
@@ -2802,7 +3089,16 @@ class LibraryManagementPublisher:
                 updated_at=self._clock(),
             )
             return
-        await asyncio.to_thread(os.replace, value.temporary, value.destination)
+        assert journal.temporary_root_id and journal.temporary_relative_path
+        assert journal.destination_root_id and journal.destination_relative_path
+        await asyncio.to_thread(
+            replace_rooted,
+            roots,
+            journal.temporary_root_id,
+            journal.temporary_relative_path,
+            journal.destination_root_id,
+            journal.destination_relative_path,
+        )
         value.published = True
         value.journal = await self._store.transition_file_mutation_journal(
             journal.id,
@@ -2820,7 +3116,9 @@ class LibraryManagementPublisher:
                 stat_revision=revision_from_stat(published_stat),
             )
 
-    async def _rollback(self, prepared: list[_PreparedMutation]) -> None:
+    async def _rollback(
+        self, prepared: list[_PreparedMutation], roots: dict[str, Path]
+    ) -> None:
         for value in reversed(prepared):
             journal = value.journal
             if journal.state in {
@@ -2839,7 +3137,9 @@ class LibraryManagementPublisher:
                         expected_row_revision=journal.row_revision,
                         updated_at=self._clock(),
                     )
-                    await asyncio.to_thread(self._restore_prepared_filesystem, value)
+                    await asyncio.to_thread(
+                        self._restore_prepared_filesystem, value, roots
+                    )
                     value.journal = await self._store.transition_file_mutation_journal(
                         journal.id,
                         expected_state="rollback_pending",
@@ -2860,11 +3160,15 @@ class LibraryManagementPublisher:
                     except (StaleRevisionError, ValidationError):
                         pass
 
-    async def _cleanup_committed(self, prepared: list[_PreparedMutation]) -> None:
+    async def _cleanup_committed(
+        self, prepared: list[_PreparedMutation], roots: dict[str, Path]
+    ) -> None:
         for value in prepared:
             journal = value.journal
             try:
-                await asyncio.to_thread(self._cleanup_committed_filesystem, value)
+                await asyncio.to_thread(
+                    self._cleanup_committed_filesystem, value, roots
+                )
                 value.journal = await self._store.transition_file_mutation_journal(
                     journal.id,
                     expected_state="catalog_committed",
@@ -2883,7 +3187,9 @@ class LibraryManagementPublisher:
                 )
 
     @classmethod
-    def _restore_prepared_filesystem(cls, value: _PreparedMutation) -> None:
+    def _restore_prepared_filesystem(
+        cls, value: _PreparedMutation, roots: dict[str, Path]
+    ) -> None:
         if value.published and value.destination.exists():
             if (
                 value.destination.is_symlink()
@@ -2894,20 +3200,48 @@ class LibraryManagementPublisher:
                 raise ConflictError(
                     "A published management destination changed during rollback."
                 )
-            value.destination.unlink()
+            assert value.journal.destination_root_id
+            assert value.journal.destination_relative_path
+            unlink_rooted(
+                roots,
+                value.journal.destination_root_id,
+                value.journal.destination_relative_path,
+            )
         if (
             value.source_backed_up
             and value.backup is not None
             and value.source is not None
         ):
-            os.replace(value.backup, value.source)
-        value.temporary.unlink(missing_ok=True)
+            assert value.journal.backup_root_id and value.journal.backup_relative_path
+            assert value.journal.source_root_id and value.journal.source_relative_path
+            replace_rooted(
+                roots,
+                value.journal.backup_root_id,
+                value.journal.backup_relative_path,
+                value.journal.source_root_id,
+                value.journal.source_relative_path,
+            )
+        assert value.journal.temporary_root_id
+        assert value.journal.temporary_relative_path
+        unlink_rooted(
+            roots,
+            value.journal.temporary_root_id,
+            value.journal.temporary_relative_path,
+            missing_ok=True,
+        )
 
-    def _cleanup_committed_filesystem(self, value: _PreparedMutation) -> None:
+    def _cleanup_committed_filesystem(
+        self, value: _PreparedMutation, roots: dict[str, Path]
+    ) -> None:
         if value.source_backed_up and value.backup is not None:
             if self._hash_file(value.backup) != value.source_fingerprint:
                 raise ConflictError("A management backup changed before cleanup.")
-            value.backup.unlink()
+            assert value.journal.backup_root_id and value.journal.backup_relative_path
+            unlink_rooted(
+                roots,
+                value.journal.backup_root_id,
+                value.journal.backup_relative_path,
+            )
         elif (
             value.remove_source
             and value.source is not None
@@ -2915,9 +3249,21 @@ class LibraryManagementPublisher:
         ):
             if self._hash_file(value.source) != value.source_fingerprint:
                 raise ConflictError("A management source changed before cleanup.")
-            value.source.unlink()
+            assert value.journal.source_root_id and value.journal.source_relative_path
+            unlink_rooted(
+                roots,
+                value.journal.source_root_id,
+                value.journal.source_relative_path,
+            )
         if value.temporary != value.destination:
-            value.temporary.unlink(missing_ok=True)
+            assert value.journal.temporary_root_id
+            assert value.journal.temporary_relative_path
+            unlink_rooted(
+                roots,
+                value.journal.temporary_root_id,
+                value.journal.temporary_relative_path,
+                missing_ok=True,
+            )
 
     @staticmethod
     def _remove_empty_source_directories(
@@ -3062,7 +3408,13 @@ class LibraryManagementPublisher:
                 continue
 
     @staticmethod
-    def _remove_unpublished_temporaries(prepared: list[_PreparedMutation]) -> None:
+    def _remove_unpublished_temporaries(
+        prepared: list[_PreparedMutation], roots: dict[str, Path]
+    ) -> None:
         for value in prepared:
             if not value.published:
-                value.temporary.unlink(missing_ok=True)
+                root_id = value.journal.temporary_root_id
+                relative_path = value.journal.temporary_relative_path
+                if root_id is None or relative_path is None:
+                    continue
+                unlink_rooted(roots, root_id, relative_path, missing_ok=True)

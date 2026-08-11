@@ -685,6 +685,17 @@ class LibraryManagementPreviewService:
         if choice is None or self._blobs is None:
             raise ResourceNotFoundError("Library Management artwork not found.")
         mime_type = choice.get("mime_type")
+        if mime_type is None:
+            blob = await self._store.get_management_blob(sha256)
+            if blob is None or blob.kind != "image":
+                raise ResourceNotFoundError("Library Management artwork not found.")
+            try:
+                metadata = json.loads(blob.media_metadata_json)
+            except json.JSONDecodeError:
+                metadata = None
+            mime_type = (
+                metadata.get("mime_type") if isinstance(metadata, dict) else None
+            )
         if mime_type not in _ARTWORK_PREVIEW_MIME_TYPES:
             raise ResourceNotFoundError("Library Management artwork not found.")
         return await self._blobs.read_bytes(sha256), mime_type

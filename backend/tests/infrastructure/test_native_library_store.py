@@ -1797,6 +1797,51 @@ async def test_operation_materialization_claim_heartbeat_recovery_and_work_compl
 
 
 @pytest.mark.asyncio
+async def test_deferred_repair_rotates_behind_other_queued_repairs(
+    store: NativeLibraryStore,
+) -> None:
+    await store.create_catalog_membership(_membership())
+    for ordinal, created_at in enumerate((1.0, 2.0), start=1):
+        await store.create_operation_with_work(
+            OperationJob(
+                id=f"operation-{ordinal}", kind="repair", created_at=created_at
+            ),
+            [
+                OperationWorkItem(
+                    ordinal=0,
+                    local_album_id="album-1",
+                    expected_subject_revision=1,
+                    expected_input_revision=f"input-{ordinal}",
+                    action="repair",
+                    idempotency_key=f"album-{ordinal}",
+                )
+            ],
+        )
+
+    first = await store.claim_operation_job(
+        "worker", now=3, lease_seconds=10, kind="repair"
+    )
+    assert first is not None
+    assert first["id"] == "operation-1"
+    work = await store.claim_operation_work("operation-1", "worker", now=3)
+    assert work is not None
+
+    await store.defer_catalog_identity_hygiene_work(
+        job_id="operation-1",
+        ordinal=0,
+        worker_id="worker",
+        reason_code="SCAN_ACTIVE",
+        now=4,
+    )
+
+    second = await store.claim_operation_job(
+        "worker", now=5, lease_seconds=10, kind="repair"
+    )
+    assert second is not None
+    assert second["id"] == "operation-2"
+
+
+@pytest.mark.asyncio
 async def test_operation_completion_rolls_back_work_job_and_stream_revisions(
     store: NativeLibraryStore, db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

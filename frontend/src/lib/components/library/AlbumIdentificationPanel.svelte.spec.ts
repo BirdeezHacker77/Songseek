@@ -52,6 +52,7 @@ function job(overrides: Partial<OperationResponse> = {}): OperationResponse {
 		results_truncated: false,
 		repair_summary: null,
 		reidentification_candidates: [],
+		selected_reidentification_candidate_key: null,
 		...overrides
 	};
 }
@@ -95,6 +96,8 @@ const h = vi.hoisted(() => ({
 	pause: vi.fn(),
 	resume: vi.fn(),
 	stop: vi.fn(),
+	resetSelect: vi.fn(),
+	selectError: false,
 	queryError: false
 }));
 
@@ -120,7 +123,10 @@ vi.mock('$lib/queries/library/LibraryCatalogMutations.svelte', () => ({
 	selectReidentificationCandidate: () => ({
 		mutateAsync: h.select,
 		isPending: false,
-		isError: false
+		get isError() {
+			return h.selectError;
+		},
+		reset: h.resetSelect
 	})
 }));
 vi.mock('$lib/queries/library/LibraryOperationMutations.svelte', () => ({
@@ -136,6 +142,7 @@ beforeEach(() => {
 	sessionStorage.clear();
 	h.jobs = {};
 	h.queryError = false;
+	h.selectError = false;
 	h.start.mockResolvedValue(job({ state: 'queued' }));
 	h.select.mockResolvedValue(job({ state: 'succeeded' }));
 	h.pause.mockResolvedValue(job({ state: 'paused' }));
@@ -148,10 +155,16 @@ describe('AlbumIdentificationPanel', () => {
 		render(AlbumIdentificationPanel, {
 			props: { album }
 		} as unknown as Parameters<typeof render>[1]);
-		const opener = page.getByRole('button', { name: 'Re-identify...' });
+		const opener = page.getByRole('button', { name: 'Re-identify…' });
 		await opener.click();
+		await expect
+			.element(page.getByTestId('identification-workspace'))
+			.toHaveClass(/identification-workspace/);
+		await expect
+			.element(page.getByTestId('identification-scroll-region'))
+			.toHaveClass(/identification-scroll-region/);
 		await expect.element(page.getByText(/one-off identification check/)).toBeVisible();
-		await expect.element(page.getByText(/continues on the server if you close/)).toBeVisible();
+		await expect.element(page.getByText(/job continues/)).toBeVisible();
 		await page.getByRole('button', { name: 'Start identification' }).click();
 		expect(h.start).toHaveBeenCalledWith({
 			albumId: 'album-1',
@@ -172,8 +185,8 @@ describe('AlbumIdentificationPanel', () => {
 		render(AlbumIdentificationPanel, {
 			props: { album }
 		} as unknown as Parameters<typeof render>[1]);
-		await page.getByRole('button', { name: 'Re-identify...' }).click();
-		await expect.element(page.getByText('The Right Release')).toBeVisible();
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await expect.element(page.getByRole('heading', { name: 'The Right Release' })).toBeVisible();
 		await expect.element(page.getByText('Strong evidence')).toBeVisible();
 		await page.getByRole('button', { name: 'Use this identity' }).click();
 		expect(h.select).toHaveBeenCalledWith({
@@ -185,13 +198,122 @@ describe('AlbumIdentificationPanel', () => {
 		expect(h.start).not.toHaveBeenCalled();
 	});
 
+	it('turns an accepted candidate into a terminal identity receipt', async () => {
+		const accepted = structuredClone(candidateJob);
+		accepted.state = 'succeeded';
+		accepted.terminal_code = 'IDENTIFIED';
+		accepted.selected_reidentification_candidate_key = 'rg-1:release-1';
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': accepted };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await expect.element(page.getByRole('heading', { name: 'Identity attached' })).toBeVisible();
+		await expect.element(page.getByText('Accepted edition')).toBeVisible();
+		await expect.element(page.getByRole('heading', { name: 'The Right Release' })).toBeVisible();
+		await expect.element(page.getByText('Music filesUnchanged')).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Use this identity' }))
+			.not.toBeInTheDocument();
+		await expect.element(page.getByText(/administrator must confirm/)).not.toBeInTheDocument();
+	});
+
+	it('uses the candidate rail to inspect one release dossier at a time', async () => {
+		const multipleCandidates = structuredClone(candidateJob);
+		const alternate = structuredClone(multipleCandidates.reidentification_candidates[0]);
+		alternate.candidate_key = 'rg-2:release-2';
+		alternate.evidence.release_group_mbid = 'rg-2';
+		alternate.evidence.release_mbid = 'release-2';
+		alternate.evidence.album_title = 'Alternate Release';
+		alternate.evidence.album_artist_name = 'Another Artist';
+		alternate.evidence.score = 0.72;
+		multipleCandidates.reidentification_candidates.push(alternate);
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': multipleCandidates };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		const alternateButton = page.getByRole('button', { name: /02 Alternate Release/ });
+		await alternateButton.click();
+
+		await expect.element(alternateButton).toHaveAttribute('aria-pressed', 'true');
+		await expect.element(page.getByRole('heading', { name: 'Alternate Release' })).toBeVisible();
+		expect(page.getByTestId('identification-evidence-dossier').element().textContent).toContain(
+			'Another Artist'
+		);
+	});
+
+	it('describes a complete track map with tag-only conflicts accurately', async () => {
+		const tagConflict = structuredClone(candidateJob);
+		const candidate = tagConflict.reidentification_candidates[0];
+		candidate.automatic_safe = false;
+		candidate.evidence.album_title_classification = 'contradictory';
+		candidate.evidence.album_artist_classification = 'contradictory';
+		candidate.evidence.reason_code = 'CONTRADICTORY_TRACK_EVIDENCE';
+		candidate.evidence.track_evidence = Array.from({ length: 8 }, (_, index) => ({
+			local_track_id: `local-${index + 1}`,
+			classification: 'supported' as const,
+			evidence_kinds: ['recording_id'],
+			candidate_track_title: `Track ${index + 1}`,
+			candidate_disc_number: 1,
+			candidate_track_position: index + 1,
+			recording_mbid: `recording-${index + 1}`,
+			release_track_mbid: `release-track-${index + 1}`
+		}));
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': tagConflict };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByRole('button', { name: 'Review and use...' }).click();
+		const confirmation = page.getByRole('dialog', {
+			name: 'Use this identity despite conflicting evidence?'
+		});
+
+		await expect.element(confirmation.getByText('All 8 tracks mapped')).toBeVisible();
+		await expect
+			.element(
+				confirmation.getByText('The local album title and album artist do not match this edition')
+			)
+			.toBeVisible();
+		expect(confirmation.element().textContent).not.toContain('conflicting track evidence');
+	});
+
+	it('can supersede a ready candidate report with a fresh check', async () => {
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': candidateJob };
+		h.start.mockResolvedValue(job({ id: 'job-2', state: 'queued' }));
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByRole('button', { name: 'Check again' }).click();
+
+		expect(h.start).toHaveBeenCalledWith({
+			albumId: 'album-1',
+			expectedAlbumRevision: 5,
+			expectedInputRevision: 'input-5',
+			oneOffLocalMetadata: true
+		});
+		expect(sessionStorage.getItem('droppedneedle:album-identification:admin-1:album-1')).toBe(
+			'job-2'
+		);
+	});
+
 	it('controls the persisted job without a fixed-delay refresh', async () => {
 		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': job() };
 		render(AlbumIdentificationPanel, {
 			props: { album }
 		} as unknown as Parameters<typeof render>[1]);
-		await page.getByRole('button', { name: 'Re-identify...' }).click();
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
 		await page.getByRole('button', { name: 'Pause identification' }).click();
 		await page.getByRole('button', { name: 'Stop identification' }).click();
 		expect(h.pause).toHaveBeenCalledWith({ jobId: 'job-1', expectedRevision: 8 });
@@ -244,7 +366,7 @@ describe('AlbumIdentificationPanel', () => {
 			props: { album }
 		} as unknown as Parameters<typeof render>[1]);
 
-		await page.getByRole('button', { name: 'Re-identify...' }).click();
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
 		await expect.element(page.getByText('Different Song')).toBeVisible();
 		await page.getByRole('button', { name: 'Review and use...' }).click();
 		const confirmation = page.getByRole('dialog', {
@@ -258,13 +380,14 @@ describe('AlbumIdentificationPanel', () => {
 			)
 			.toHaveFocus();
 		await expect
-			.element(confirmation.getByText('The local evidence conflicts with this release'))
+			.element(confirmation.getByText('1 local track conflicts with this edition'))
 			.toBeVisible();
 		await expect
 			.element(confirmation.getByRole('heading', { name: 'Failed evidence gates' }))
 			.toBeVisible();
 		await expect.element(confirmation.getByText('track-1', { exact: true })).toBeVisible();
 		await expect.element(confirmation.getByText('track-unknown', { exact: true })).toBeVisible();
+		await confirmation.getByText('Technical identity record').click();
 		await expect.element(confirmation.getByText('Release group: rg-1')).toBeVisible();
 		await expect.element(confirmation.getByText('Release: release-1')).toBeVisible();
 		await expect
@@ -278,5 +401,28 @@ describe('AlbumIdentificationPanel', () => {
 			candidateKey: 'rg-1:release-1',
 			confirmation: true
 		});
+	});
+
+	it('keeps a failed manual decision visible inside its confirmation dialog', async () => {
+		const unsafe = structuredClone(candidateJob);
+		unsafe.reidentification_candidates[0].automatic_safe = false;
+		unsafe.reidentification_candidates[0].evidence.album_title_classification = 'contradictory';
+		h.selectError = true;
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': unsafe };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByRole('button', { name: 'Review and use...' }).click();
+		const confirmation = page.getByRole('dialog', {
+			name: 'Use this identity despite conflicting evidence?'
+		});
+
+		expect(h.resetSelect).toHaveBeenCalledOnce();
+		await expect
+			.element(confirmation.getByRole('alert'))
+			.toHaveTextContent(/album changed while this decision was open/i);
 	});
 });

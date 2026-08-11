@@ -56,6 +56,7 @@ class LibraryOperationService:
         ]
         repair_summary = None
         reidentification_candidates: list[ReviewCandidateDetail] = []
+        selected_reidentification_candidate_key = None
         if row["kind"] == "explicit_reidentification" and results:
             attempt_id = results[0].result.get("attempt_id")
             if isinstance(attempt_id, str):
@@ -77,6 +78,11 @@ class LibraryOperationService:
                         item.candidate_key,
                     ),
                 )
+            operation = await self._store.get_operation_snapshot(job_id)
+            if operation is not None and operation["snapshot"] is not None:
+                selected_reidentification_candidate_key = operation["snapshot"][
+                    "selected_candidate_key"
+                ]
         if row["kind"] == "repair":
             operation = await self._store.get_operation_snapshot(job_id)
             raw_summary = (
@@ -94,6 +100,7 @@ class LibraryOperationService:
             results_truncated=len(raw_results) > 100,
             repair_summary=repair_summary,
             reidentification_candidates=reidentification_candidates,
+            selected_reidentification_candidate_key=selected_reidentification_candidate_key,
         )
 
     async def history(
@@ -241,6 +248,7 @@ class LibraryOperationService:
         results_truncated: bool = False,
         repair_summary: RepairReportSummary | None = None,
         reidentification_candidates: list[ReviewCandidateDetail] | None = None,
+        selected_reidentification_candidate_key: str | None = None,
     ) -> OperationResponse:
         return OperationResponse(
             id=str(row["id"]),
@@ -261,4 +269,5 @@ class LibraryOperationService:
             results_truncated=results_truncated,
             repair_summary=repair_summary,
             reidentification_candidates=reidentification_candidates or [],
+            selected_reidentification_candidate_key=selected_reidentification_candidate_key,
         )

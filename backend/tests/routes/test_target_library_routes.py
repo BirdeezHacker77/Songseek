@@ -27,6 +27,8 @@ def app() -> FastAPI:
     application.include_router(router)
     native = AsyncMock()
     native.artists.return_value = ([], 0)
+    native.artist_scope_counts.return_value = (0, 0)
+    native.artist_appearances.return_value = ([], 0, 0)
     native.albums.return_value = ([], 0)
     native.tracks.return_value = ([], 0)
     native.recently_added.return_value = []
@@ -76,6 +78,7 @@ def test_every_target_library_route_rejects_unauthenticated(app: FastAPI) -> Non
         ("GET", "/library/recently-added", None),
         ("GET", "/library/artists/a", None),
         ("GET", "/library/artists/a/albums", None),
+        ("GET", "/library/artists/a/appearances", None),
         ("GET", "/library/albums/a", None),
         ("GET", "/library/albums/a/copies", None),
         ("GET", "/library/albums/a/artwork/cached?v=1", None),
@@ -152,7 +155,77 @@ def test_target_artist_browse_forwards_supported_sort(app: FastAPI) -> None:
         search="Jazz",
         sort_by="album_count",
         sort_order="desc",
+        scope="album",
     )
+
+
+def test_target_contributor_browse_forwards_scope_and_appearance_sort(
+    app: FastAPI,
+) -> None:
+    override_user_auth(app, role="user")
+
+    response = build_test_client(app).get(
+        "/library/artists?scope=contributors&sort_by=appearance_count"
+    )
+    service = app.dependency_overrides[get_target_native_library_service]()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "album_artist_total": 0,
+        "contributor_total": 0,
+    }
+    service.artists.assert_awaited_once_with(
+        limit=50,
+        offset=0,
+        search=None,
+        sort_by="appearance_count",
+        sort_order="asc",
+        scope="contributors",
+    )
+
+
+def test_target_artist_appearances_forwards_bounded_pagination(app: FastAPI) -> None:
+    override_user_auth(app, role="user")
+
+    response = build_test_client(app).get(
+        "/library/artists/artist-1/appearances?limit=500&offset=3"
+    )
+    service = app.dependency_overrides[get_target_native_library_service]()
+
+    assert response.status_code == 422
+
+    response = build_test_client(app).get(
+        "/library/artists/artist-1/appearances?limit=25&offset=3"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "total": 0,
+        "total_tracks": 0,
+        "offset": 3,
+        "limit": 25,
+    }
+    service.artist_appearances.assert_awaited_once_with("artist-1", limit=25, offset=3)
+
+
+def test_target_artist_appearances_alias_redirect_preserves_page(app: FastAPI) -> None:
+    override_user_auth(app, role="user")
+    service = app.dependency_overrides[get_target_native_library_service]()
+    service.canonical_id.return_value = "local-artist"
+
+    response = build_test_client(app).get(
+        "/library/artists/provider-artist/appearances?limit=20&offset=40",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 308
+    assert response.headers["location"].endswith(
+        "/library/artists/local-artist/appearances?limit=20&offset=40"
+    )
+    service.artist_appearances.assert_not_awaited()
 
 
 def test_target_provider_ids_preserve_existing_library_store_contract(
@@ -245,6 +318,7 @@ def test_target_library_route_inventory_is_complete() -> None:
         ("GET", "/library/recently-added"),
         ("GET", "/library/artists/{artist_id}"),
         ("GET", "/library/artists/{artist_id}/albums"),
+        ("GET", "/library/artists/{artist_id}/appearances"),
         ("GET", "/library/albums/{album_id}"),
         ("GET", "/library/albums/{album_id}/copies"),
         ("GET", "/library/albums/{album_id}/artwork/cached"),

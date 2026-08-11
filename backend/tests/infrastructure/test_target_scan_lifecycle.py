@@ -106,6 +106,9 @@ def _coordinator(
     resolver: LibraryPolicyResolver,
     tag_reader: _TagReader | None = None,
     directory_walker: DirectoryWalker | None = None,
+    *,
+    tag_read_timeout_seconds: float = 30.0,
+    max_detached_tag_reads: int = 4,
 ) -> LibraryScanCoordinator:
     reader = tag_reader or _TagReader()
     scanner = (
@@ -116,7 +119,12 @@ def _coordinator(
     return LibraryScanCoordinator(
         store,
         scanner,
-        LibraryIndexer(store, reader),
+        LibraryIndexer(
+            store,
+            reader,
+            tag_read_timeout_seconds=tag_read_timeout_seconds,
+            max_detached_tag_reads=max_detached_tag_reads,
+        ),
         LibraryReconciler(store),
         lambda: resolver,
         clock=lambda: 1_800_000_000.0,
@@ -889,6 +897,216 @@ async def test_blocking_tag_read_stays_pausing_until_the_safe_boundary(
     result = await worker
     assert result is not None and result.state == "paused"
     assert await target_store.search_local_tracks("Track") == []
+
+
+@pytest.mark.asyncio
+async def test_stalled_tag_read_is_recorded_and_later_files_continue(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    for number in (1, 2):
+        (root / f"track-{number}.flac").write_bytes(b"audio")
+    resolver = _resolver(root)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class StalledReader(_TagReader):
+        def read_tags(self, path: Path) -> tuple[AudioTag, AudioInfo]:
+            if path.name == "track-1.flac":
+                entered.set()
+                release.wait()
+            return super().read_tags(path)
+
+    coordinator = _coordinator(
+        target_store,
+        resolver,
+        StalledReader(),
+        tag_read_timeout_seconds=0.02,
+    )
+    await coordinator.request_run(_request(resolver))
+    try:
+        result = await asyncio.wait_for(
+            coordinator.run_once({"root-a": root}), timeout=1
+        )
+        assert result is not None and result.state == "completed"
+        assert entered.is_set()
+        _, _, counters = await target_store.get_scan_run(result.id)
+        assert counters["indexed_count"] == 1
+        assert counters["errored_count"] == 1
+        failures = await target_store.get_scan_inventory_batch(
+            result.id, processing_state="failed", limit=10
+        )
+        assert [row["failure_code"] for row in failures] == ["TAG_READ_TIMEOUT"]
+        tracks = await target_store.search_local_tracks("Track")
+        assert [track["title"] for track in tracks] == ["Track 2"]
+    finally:
+        release.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_stalled_tag_reads_have_bounded_executor_capacity(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    for number in (1, 2, 3):
+        (root / f"track-{number}.flac").write_bytes(b"audio")
+    resolver = _resolver(root)
+    release = threading.Event()
+
+    class StalledReader(_TagReader):
+        def read_tags(self, path: Path) -> tuple[AudioTag, AudioInfo]:
+            self.calls.append(path)
+            release.wait()
+            return super().read_tags(path)
+
+    reader = StalledReader()
+    coordinator = _coordinator(
+        target_store,
+        resolver,
+        reader,
+        tag_read_timeout_seconds=0.02,
+        max_detached_tag_reads=1,
+    )
+    await coordinator.request_run(_request(resolver))
+    try:
+        result = await asyncio.wait_for(
+            coordinator.run_once({"root-a": root}), timeout=1
+        )
+        assert result is not None and result.state == "completed"
+        _, _, counters = await target_store.get_scan_run(result.id)
+        assert counters["indexed_count"] == 0
+        assert counters["errored_count"] == 3
+        assert len(reader.calls) == 1
+        failures = await target_store.get_scan_inventory_batch(
+            result.id, processing_state="failed", limit=10
+        )
+        assert sorted(row["failure_code"] for row in failures) == [
+            "TAG_READ_DEFERRED",
+            "TAG_READ_DEFERRED",
+            "TAG_READ_TIMEOUT",
+        ]
+    finally:
+        release.set()
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_tag_read_remains_counted_until_worker_finishes(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    track = tmp_path / "track-1.flac"
+    track.write_bytes(b"audio")
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingReader(_TagReader):
+        def read_tags(self, path: Path) -> tuple[AudioTag, AudioInfo]:
+            entered.set()
+            release.wait()
+            return super().read_tags(path)
+
+    indexer = LibraryIndexer(
+        target_store,
+        BlockingReader(),
+        tag_read_timeout_seconds=30,
+        max_detached_tag_reads=1,
+    )
+    read = asyncio.create_task(indexer._read_tags_and_stat(track, "root-a"))
+    assert await asyncio.to_thread(entered.wait, 1)
+    read.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await read
+    assert len(indexer._detached_tag_reads) == 1
+
+    release.set()
+    for _ in range(20):
+        if not indexer._detached_tag_reads:
+            break
+        await asyncio.sleep(0.01)
+    assert indexer._detached_tag_reads == set()
+
+
+@pytest.mark.asyncio
+async def test_forced_rescan_preserves_accepted_catalog_projection(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    (root / "track-1.flac").write_bytes(b"audio")
+    resolver = _resolver(root)
+    coordinator = _coordinator(target_store, resolver)
+    await coordinator.request_run(_request(resolver))
+    first = await coordinator.run_once({"root-a": root})
+    assert first is not None and first.state == "completed"
+
+    with sqlite3.connect(target_store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        track = connection.execute("SELECT * FROM local_tracks").fetchone()
+        assert track is not None
+        track_id = str(track["id"])
+        album_id = str(track["local_album_id"])
+        connection.execute(
+            "UPDATE local_tracks SET title='Feel It Inside',title_folded='feel it inside',"
+            "artist_name='Trapeze',artist_name_folded='trapeze',album_title='Hot Wire',"
+            "album_title_folded='hot wire',album_artist_name='Trapeze',"
+            "album_artist_name_folded='trapeze',track_number=8,year=1974,"
+            "membership_locked=1 WHERE id=?",
+            (track_id,),
+        )
+        connection.execute(
+            "UPDATE local_albums SET title='Hot Wire',title_folded='hot wire',"
+            "album_artist_name='Trapeze',album_artist_name_folded='trapeze',year=1974 "
+            "WHERE id=?",
+            (album_id,),
+        )
+        connection.execute(
+            "INSERT INTO local_album_external_identities "
+            "(local_album_id,provider,release_group_mbid,release_mbid,decision_source,selected_at) "
+            "VALUES (?,'musicbrainz','release-group','release','manual',1)",
+            (album_id,),
+        )
+        connection.execute(
+            "INSERT INTO local_track_external_identities "
+            "(local_track_id,provider,recording_mbid,release_mbid,release_track_mbid,"
+            "medium_position,release_track_position,decision_source,selected_at) "
+            "VALUES (?,'musicbrainz','recording','release','release-track',1,8,'manual',1)",
+            (track_id,),
+        )
+        connection.commit()
+
+    class EmptyTagReader(_TagReader):
+        def read_tags(self, path: Path) -> tuple[AudioTag, AudioInfo]:
+            _tag, info = super().read_tags(path)
+            return AudioTag(title="", artist="", album="", track_number=0), info
+
+    forced = _coordinator(target_store, resolver, EmptyTagReader())
+    await forced.request_run(_request(resolver, kind="rescan_files"))
+    result = await forced.run_once({"root-a": root})
+    assert result is not None and result.state == "completed"
+
+    with sqlite3.connect(target_store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        stored = connection.execute(
+            "SELECT * FROM local_tracks WHERE id=?", (track_id,)
+        ).fetchone()
+    assert stored is not None
+    assert stored["title"] == "Feel It Inside"
+    assert stored["artist_name"] == "Trapeze"
+    assert stored["album_title"] == "Hot Wire"
+    assert stored["track_number"] == 8
+    assert stored["year"] == 1974
+    with sqlite3.connect(target_store.db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        album = connection.execute(
+            "SELECT * FROM local_albums WHERE id=?", (album_id,)
+        ).fetchone()
+    assert album is not None
+    assert album["title"] == "Hot Wire"
+    assert album["album_artist_name"] == "Trapeze"
+    assert album["year"] == 1974
 
 
 @pytest.mark.asyncio

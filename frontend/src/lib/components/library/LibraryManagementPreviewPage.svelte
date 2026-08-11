@@ -5,7 +5,6 @@
 		ArrowRight,
 		BookOpenCheck,
 		CheckCircle2,
-		ChevronRight,
 		Clock3,
 		FolderCog,
 		HardDrive,
@@ -45,18 +44,26 @@
 	} from '$lib/queries/library-management/types';
 	import { createUuid } from '$lib/utils/uuid';
 	import {
-		formatManagementValue,
-		isRecord,
-		managementAdapter,
 		managementAudioFormat,
-		managementCollisions,
-		managementCustomTagDiffs,
-		managementFieldDiffs,
-		managementSidecars,
-		managementStringList,
+		managementAlbumArtworkVersion,
+		managementArtworkPreviewHash,
+		managementPlanAlbum,
+		managementPlanAlbumArtist,
+		managementPlanArtist,
+		managementPlanChanges,
+		managementPlanIsExceptional,
+		managementPlanTitle,
+		managementPlanTrackLabel,
 		titleManagementValue,
 		type ManagementCollision
 	} from './LibraryManagementDisplay';
+	import LibraryManagementAuditDossiers from './LibraryManagementAuditDossiers.svelte';
+	import LibraryManagementPlanInspector from './LibraryManagementPlanInspector.svelte';
+	import {
+		groupManagementAuditEntries,
+		type ManagementAuditEntry,
+		type ManagementAuditTone
+	} from './LibraryManagementAuditTypes';
 
 	interface Props {
 		jobId: string;
@@ -76,8 +83,6 @@
 		detail: string;
 		confirmButton: string;
 	}
-	const artworkPreviewMimeTypes = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
-
 	let { jobId }: Props = $props();
 	let eligibility = $state<ManagementEligibility | ''>('');
 	let reasonCode = $state('');
@@ -105,6 +110,8 @@
 	let collisionAction = $state<DuplicateResolutionAction | ''>('');
 	let alternateRelativePath = $state('');
 	let collisionError = $state('');
+	let stickyFooterElement: HTMLElement | null = $state(null);
+	let stickyFooterHeight = $state(0);
 
 	const previewQuery = getLibraryManagementPreviewQuery(
 		() => authStore.user?.id,
@@ -139,6 +146,9 @@
 	const preview = $derived(previewQuery.data ?? null);
 	const items = $derived(itemsQuery.data?.pages.flatMap((page) => page.items) ?? []);
 	const roots = $derived(policyQuery.data?.library_roots ?? []);
+	const auditDossiers = $derived(
+		groupManagementAuditEntries(items.map((item) => planAuditEntry(item)))
+	);
 	const applyPhrase = $derived(
 		preview?.mode === 'undo'
 			? 'UNDO OPERATION'
@@ -241,6 +251,21 @@
 		return events.stop;
 	});
 
+	$effect(() => {
+		const element = stickyFooterElement;
+		if (!element) {
+			stickyFooterHeight = 0;
+			return;
+		}
+		const updateHeight = () => {
+			stickyFooterHeight = Math.ceil(element.getBoundingClientRect().height);
+		};
+		updateHeight();
+		const observer = new ResizeObserver(updateHeight);
+		observer.observe(element);
+		return () => observer.disconnect();
+	});
+
 	function rootLabel(value: string | null): string {
 		return (
 			roots.find((root) => root.id === value)?.label ?? (value ? 'Unavailable root' : 'No root')
@@ -261,27 +286,49 @@
 		);
 	}
 
-	function desiredField(item: LibraryManagementPlanItem, name: string): string | null {
-		const fields = item.desired_document.fields;
-		if (!Array.isArray(fields)) return null;
-		for (const value of fields) {
-			if (isRecord(value) && value.name === name) return formatManagementValue(value.value);
-		}
-		return null;
+	function eligibilityTone(value: ManagementEligibility): ManagementAuditTone {
+		return value === 'eligible' ? 'success' : value === 'warning' ? 'warning' : 'error';
 	}
 
-	function itemTitle(item: LibraryManagementPlanItem): string {
-		return (
-			desiredField(item, 'title') ??
-			item.source_relative_path?.split('/').at(-1) ??
-			`Item ${item.ordinal + 1}`
-		);
+	function planAuditEntry(item: LibraryManagementPlanItem): ManagementAuditEntry {
+		const artworkUrl = item.artwork_choices
+			.map((choice) => {
+				const sha256 = managementArtworkPreviewHash(choice);
+				return sha256 ? API.libraryManagement.previewArtwork(jobId, item.ordinal, sha256) : null;
+			})
+			.find((value): value is string => Boolean(value));
+		return {
+			ordinal: item.ordinal,
+			bundleOrdinal: item.bundle_ordinal,
+			trackLabel: managementPlanTrackLabel(item),
+			title: managementPlanTitle(item),
+			artist: managementPlanArtist(item),
+			albumTitle: managementPlanAlbum(item),
+			albumArtist: managementPlanAlbumArtist(item),
+			albumId: item.local_album_id,
+			albumArtworkVersion: managementAlbumArtworkVersion(item),
+			format: managementAudioFormat(item),
+			status: titleManagementValue(item.eligibility),
+			statusTone: eligibilityTone(item.eligibility),
+			reason: item.reason_code ? managementReasonLabel(item.reason_code) : null,
+			changes: managementPlanChanges(item),
+			exceptional: managementPlanIsExceptional(item),
+			sourceRoot: rootLabel(item.source_root_id),
+			sourcePath: item.source_relative_path,
+			destinationRoot: rootLabel(item.destination_root_id),
+			destinationPath: item.destination_relative_path,
+			artworkUrl: artworkUrl ?? null
+		};
 	}
 
-	function itemSubtitle(item: LibraryManagementPlanItem): string {
-		const artist = desiredField(item, 'artist');
-		const album = desiredField(item, 'album');
-		return [artist, album].filter(Boolean).join(' · ') || `Album bundle ${item.bundle_ordinal + 1}`;
+	function previewHeading(mode: string): string {
+		return mode === 'preview'
+			? 'Library Management preview'
+			: `${titleManagementValue(mode)} preview`;
+	}
+
+	function quantity(value: number, singular: string, plural = `${singular}s`): string {
+		return `${value.toLocaleString()} ${value === 1 ? singular : plural}`;
 	}
 
 	function formatBytes(value: number): string {
@@ -293,31 +340,6 @@
 
 	function formatDate(value: number | null): string {
 		return value ? new Date(value * 1000).toLocaleString() : 'No expiry';
-	}
-
-	function artworkText(choice: Record<string, unknown>, key: string): string | null {
-		const value = choice[key];
-		return typeof value === 'string' && value.trim() ? value : null;
-	}
-
-	function artworkDimensions(choice: Record<string, unknown>): string | null {
-		const width = choice.width;
-		const height = choice.height;
-		return typeof width === 'number' && typeof height === 'number'
-			? `${width.toLocaleString()} × ${height.toLocaleString()} px`
-			: null;
-	}
-
-	function artworkPreviewUrl(
-		item: LibraryManagementPlanItem,
-		choice: Record<string, unknown>
-	): string | null {
-		const sha256 = artworkText(choice, 'blob_sha256');
-		const mimeType = artworkText(choice, 'mime_type');
-		if (!sha256?.match(/^[0-9a-f]{64}$/) || !mimeType || !artworkPreviewMimeTypes.has(mimeType)) {
-			return null;
-		}
-		return API.libraryManagement.previewArtwork(jobId, item.ordinal, sha256);
 	}
 
 	function chooseArtist(id: string, label: string): void {
@@ -420,6 +442,19 @@
 
 <svelte:head><title>Library Management preview · DroppedNeedle</title></svelte:head>
 
+{#snippet previewInspector(ordinal: number)}
+	{@const item = items.find((candidate) => candidate.ordinal === ordinal)}
+	{#if item}
+		<LibraryManagementPlanInspector
+			{item}
+			{jobId}
+			{roots}
+			reasonLabel={managementReasonLabel}
+			onresolve={openCollision}
+		/>
+	{/if}
+{/snippet}
+
 <div class="management-preview-shell px-4 py-8 sm:px-6 lg:px-8">
 	<main class="mx-auto max-w-7xl space-y-5">
 		<BackButton fallback="/library/management#management-controls" />
@@ -440,7 +475,7 @@
 							<ShieldAlert class="h-3.5 w-3.5" /> Read-only plan · no files changed
 						</p>
 						<h1 class="mt-1 font-display text-2xl font-bold sm:text-3xl">
-							{titleManagementValue(preview.mode)} preview
+							{previewHeading(preview.mode)}
 						</h1>
 						<p class="mt-2 text-sm text-base-content/60">
 							{preview.profile_name} · {titleManagementValue(preview.origin)} · created {formatDate(
@@ -481,18 +516,20 @@
 				</div>
 				<div class="mt-3 flex flex-wrap gap-2 text-xs">
 					<span class="badge badge-outline"
-						><Tags class="h-3 w-3" /> {preview.summary.tag_change_count} tag changes</span
+						><Tags class="h-3 w-3" />
+						{quantity(preview.summary.tag_change_count, 'tag change')}</span
 					>
 					<span class="badge badge-outline"
 						><Sparkles class="h-3 w-3" />
-						{preview.summary.artwork_change_count} artwork changes</span
+						{quantity(preview.summary.artwork_change_count, 'artwork change')}</span
 					>
 					<span class="badge badge-outline"
-						><FolderCog class="h-3 w-3" /> {preview.summary.path_change_count} path changes</span
+						><FolderCog class="h-3 w-3" />
+						{quantity(preview.summary.path_change_count, 'path change')}</span
 					>
 					<span class="badge badge-outline"
 						><Layers3 class="h-3 w-3" />
-						{preview.summary.sidecar_change_count} sidecar changes</span
+						{quantity(preview.summary.sidecar_change_count, 'sidecar change')}</span
 					>
 					<span class="badge badge-outline"
 						><Clock3 class="h-3 w-3" /> Expires {formatDate(preview.expires_at)}</span
@@ -543,7 +580,7 @@
 						<strong>{identityBlockerCount.toLocaleString()} files need identity preparation.</strong
 						>
 						<p class="mt-1 text-sm">
-							Selecting a root chooses files; it does not choose each album's exact MusicBrainz
+							Selecting a root chooses files; it does not choose each release's exact MusicBrainz
 							edition. Prepare identities first, then generate a fresh management preview.
 						</p>
 						<a class="btn btn-outline btn-sm mt-3" href="/library/management#identity-readiness"
@@ -617,12 +654,12 @@
 				</div>
 				<details class="rounded-xl border border-base-content/10 bg-base-200/35 p-3">
 					<summary class="cursor-pointer text-sm font-semibold"
-						>Artist, album, collision, and preservation filters</summary
+						>Artist, release, collision, and preservation filters</summary
 					>
 					<div class="mt-3 grid gap-3 lg:grid-cols-2">
 						<div class="space-y-2">
 							<label class="grid gap-1 text-xs"
-								><span>Find an artist or album</span><input
+								><span>Find an artist or release</span><input
 									class="input input-bordered input-sm bg-base-100"
 									bind:value={catalogSearch}
 									placeholder="Type at least two characters"
@@ -640,7 +677,7 @@
 											onclick={() => {
 												albumId = '';
 												albumLabel = '';
-											}}>Album: {albumLabel} ×</button
+											}}>Release: {albumLabel} ×</button
 										>{/if}
 								</div>{/if}
 							{#if catalogSearch.trim().length >= 2}
@@ -650,11 +687,11 @@
 										class="alert alert-error py-2 text-xs"
 										role="alert"
 									>
-										Could not search artists and albums.
+										Could not search artists and releases.
 									</div>{:else if catalogSearchQuery.data && catalogSearchQuery.data.artists.length + catalogSearchQuery.data.albums.length === 0}<p
 										class="rounded-xl border border-dashed border-base-content/15 p-3 text-xs text-base-content/50"
 									>
-										No matching artists or albums.
+										No matching artists or releases.
 									</p>{:else if catalogSearchQuery.data}<div
 										class="grid max-h-44 gap-1 overflow-y-auto rounded-xl border border-base-content/10 bg-base-100 p-2"
 									>
@@ -666,7 +703,7 @@
 												class="btn btn-ghost btn-sm justify-start"
 												onclick={() =>
 													chooseAlbum(album.id, `${album.artist_name} · ${album.title}`)}
-												>Album · {album.artist_name} · {album.title}</button
+												>Release · {album.artist_name} · {album.title}</button
 											>{/each}
 									</div>{/if}
 							{/if}
@@ -723,207 +760,14 @@
 					No files match these filters.
 				</div>
 			{:else}
-				<div class="space-y-3">
-					{#each items as item (item.ordinal)}
-						{@const diffs = [...managementFieldDiffs(item), ...managementCustomTagDiffs(item)]}
-						{@const warnings = managementStringList(item.capability.warnings)}
-						{@const blockers = managementStringList(item.capability.blockers)}
-						{@const losses = managementStringList(item.capability.representation_losses)}
-						{@const sidecars = managementSidecars(item)}
-						{@const collisions = managementCollisions(item)}
-						<article class="management-preview-item" data-eligibility={item.eligibility}>
-							<div class="flex flex-wrap items-start gap-3 p-4">
-								<div class="min-w-0 flex-1">
-									<div class="flex flex-wrap items-center gap-2">
-										<span
-											class="badge badge-sm {item.eligibility === 'eligible'
-												? 'badge-success'
-												: item.eligibility === 'warning'
-													? 'badge-warning'
-													: 'badge-error'}">{titleManagementValue(item.eligibility)}</span
-										><span class="font-mono text-[0.65rem] text-base-content/40"
-											>Bundle {item.bundle_ordinal + 1} · {managementAudioFormat(
-												item
-											).toUpperCase()}</span
-										>
-									</div>
-									<h3 class="mt-2 truncate font-semibold">{itemTitle(item)}</h3>
-									<p class="truncate text-sm text-base-content/55">{itemSubtitle(item)}</p>
-									{#if item.reason_code}<p class="mt-1 text-xs font-semibold text-error">
-											{managementReasonLabel(item.reason_code)}
-										</p>{/if}
-								</div>
-								<div class="text-right text-xs text-base-content/50">
-									<p>{displayPath(item.source_root_id, item.source_relative_path)}</p>
-									{#if item.destination_relative_path && (item.destination_root_id !== item.source_root_id || item.destination_relative_path !== item.source_relative_path)}<p
-											class="mt-1 text-base-content/75"
-										>
-											→ {displayPath(item.destination_root_id, item.destination_relative_path)}
-										</p>{/if}
-								</div>
-							</div>
-							<details class="border-t border-base-content/10">
-								<summary
-									class="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-semibold"
-									><ChevronRight class="h-4 w-4" /> Inspect exact diff</summary
-								>
-								<div class="space-y-4 px-4 pb-4">
-									{#if diffs.length}<section>
-											<h4
-												class="mb-2 text-xs font-bold uppercase tracking-wider text-base-content/50"
-											>
-												Metadata
-											</h4>
-											{#each diffs as diff (`${diff.name}:${diff.operation}`)}<div
-													class="management-diff-row"
-												>
-													<strong class="text-sm">{titleManagementValue(diff.name)}</strong><span
-														class="management-diff-value"
-														data-side="before">{formatManagementValue(diff.before)}</span
-													><span
-														class="management-diff-badge text-xs font-bold uppercase"
-														data-operation={diff.operation}
-														>{titleManagementValue(diff.operation)}
-														<ArrowRight class="inline h-3 w-3" /></span
-													><span class="management-diff-value" data-side="after"
-														>{formatManagementValue(diff.after)}</span
-													>{#if diff.representationLoss}<small class="text-warning sm:col-span-4"
-															>Format representation: {diff.representationLoss}</small
-														>{/if}
-												</div>{/each}
-										</section>{/if}
-									{#if item.source_relative_path !== item.destination_relative_path || item.source_root_id !== item.destination_root_id}<section
-										>
-											<h4
-												class="mb-2 text-xs font-bold uppercase tracking-wider text-base-content/50"
-											>
-												Organization
-											</h4>
-											<div class="grid gap-2 sm:grid-cols-[1fr_auto_1fr]">
-												<code class="management-diff-value" data-side="before"
-													>{displayPath(item.source_root_id, item.source_relative_path)}</code
-												><ArrowRight class="mt-2 h-4 w-4" /><code
-													class="management-diff-value"
-													data-side="after"
-													>{displayPath(
-														item.destination_root_id,
-														item.destination_relative_path
-													)}</code
-												>
-											</div>
-										</section>{/if}
-									{#if warnings.length || blockers.length || losses.length}<section
-											class="grid gap-2 sm:grid-cols-3"
-										>
-											<div>
-												<h4 class="text-xs font-bold uppercase text-base-content/50">Adapter</h4>
-												<p class="text-sm">
-													{managementAdapter(item) ?? 'No writer adapter'} · {managementAudioFormat(
-														item
-													).toUpperCase()}
-												</p>
-											</div>
-											<div>
-												<h4 class="text-xs font-bold uppercase text-base-content/50">Warnings</h4>
-												<p class="text-sm">
-													{[...warnings, ...losses].map(titleManagementValue).join(' · ') || 'None'}
-												</p>
-											</div>
-											<div>
-												<h4 class="text-xs font-bold uppercase text-base-content/50">Blockers</h4>
-												<p class="text-sm">
-													{blockers.map(titleManagementValue).join(' · ') || 'None'}
-												</p>
-											</div>
-										</section>{/if}
-									{#if sidecars.length}<section>
-											<h4 class="text-xs font-bold uppercase text-base-content/50">Sidecars</h4>
-											<ul class="mt-1 space-y-1 text-sm">
-												{#each sidecars as sidecar, index (index)}<li>
-														{formatManagementValue(sidecar)}
-													</li>{/each}
-											</ul>
-										</section>{/if}
-									{#if item.artwork_choices.length}<section>
-											<h4 class="text-xs font-bold uppercase text-base-content/50">Artwork</h4>
-											<div class="mt-2 grid gap-2 sm:grid-cols-2">
-												{#each item.artwork_choices as choice, index (index)}<article
-														class="flex gap-3 rounded-lg border border-base-content/10 bg-base-100/70 p-2 text-xs"
-													>
-														{#if artworkPreviewUrl(item, choice)}
-															<img
-																src={artworkPreviewUrl(item, choice)}
-																alt={`${titleManagementValue(artworkText(choice, 'image_type') ?? 'Artwork')} preview`}
-																class="h-20 w-20 shrink-0 rounded-md bg-base-200 object-cover"
-																loading="lazy"
-																decoding="async"
-															/>
-														{/if}
-														<div class="min-w-0">
-															<strong
-																>{titleManagementValue(
-																	artworkText(choice, 'output_kind') ?? 'artwork'
-																)}{artworkText(choice, 'image_type')
-																	? ` · ${titleManagementValue(artworkText(choice, 'image_type') ?? '')}`
-																	: ''}</strong
-															>
-															<p class="mt-1 text-base-content/55">
-																{[
-																	artworkText(choice, 'source')
-																		? titleManagementValue(artworkText(choice, 'source') ?? '')
-																		: null,
-																	artworkDimensions(choice),
-																	artworkText(choice, 'format')?.toUpperCase(),
-																	artworkText(choice, 'mime_type')
-																]
-																	.filter(Boolean)
-																	.join(' · ') || 'Pinned output details unavailable'}
-															</p>
-															{#if artworkText(choice, 'destination_relative_path')}<code
-																	class="mt-1 block break-all text-base-content/45"
-																	>{artworkText(choice, 'destination_relative_path')}</code
-																>{/if}
-														</div>
-													</article>{/each}
-											</div>
-										</section>{/if}
-									{#if collisions.length}
-										<section class="space-y-2">
-											<h4 class="text-xs font-bold uppercase text-error">Collision evidence</h4>
-											{#each collisions as collision, index (index)}
-												<div
-													class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-error/25 bg-error/5 p-3"
-												>
-													<div>
-														<strong class="text-sm"
-															>{titleManagementValue(collision.classification)}</strong
-														>
-														<p class="text-xs text-base-content/55">
-															No file is assumed safe to delete. Both sides are revalidated in a new
-															preview.
-														</p>
-													</div>
-													{#if collision.requestKind && collision.existingRootId && collision.existingRelativePath}
-														<button
-															class="btn btn-outline btn-sm"
-															onclick={(event) =>
-																openCollision(item, collision, event.currentTarget)}
-															>Choose resolution...</button
-														>
-													{:else}
-														<span class="badge badge-error badge-outline"
-															>Requires fresh scan evidence</span
-														>
-													{/if}
-												</div>
-											{/each}
-										</section>
-									{/if}
-								</div>
-							</details>
-						</article>
-					{/each}
-				</div>
+				<LibraryManagementAuditDossiers
+					dossiers={auditDossiers}
+					inspector={previewInspector}
+					detailLabel="Inspect exact diff"
+					reserveStickyFooter={preview.state === 'ready'}
+					{stickyFooterHeight}
+					incomplete={Boolean(itemsQuery.hasNextPage)}
+				/>
 				{#if itemsQuery.hasNextPage}<button
 						class="btn btn-outline w-full"
 						disabled={itemsQuery.isFetchingNextPage}
@@ -934,7 +778,11 @@
 			{/if}
 
 			{#if preview.state === 'ready'}
-				{#if activationPreview}<div class="management-apply-bar">
+				{#if activationPreview}<div
+						bind:this={stickyFooterElement}
+						class="management-apply-bar"
+						data-testid="management-preview-sticky-footer"
+					>
 						<div class="flex items-start gap-2">
 							<ShieldAlert class="mt-0.5 h-5 w-5 text-library-manage" />
 							<div>
@@ -954,7 +802,11 @@
 							/>
 							<a href="/settings?tab=library" class="btn btn-ghost btn-sm">Library settings</a>
 						</div>
-					</div>{:else}<div class="management-apply-bar">
+					</div>{:else}<div
+						bind:this={stickyFooterElement}
+						class="management-apply-bar"
+						data-testid="management-preview-sticky-footer"
+					>
 						<div class="flex items-start gap-2">
 							<ShieldAlert class="mt-0.5 h-5 w-5 text-library-manage" />
 							<div>

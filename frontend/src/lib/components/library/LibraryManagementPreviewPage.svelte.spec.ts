@@ -194,7 +194,21 @@ describe('LibraryManagementPreviewPage', () => {
 						items: [
 							{
 								...collisionItem,
+								source_relative_path: 'Trapeze/Hot Wire/08 Feel It Inside.mp3',
+								destination_root_id: null,
+								destination_relative_path: null,
 								reason_code: 'TRACK_NOT_MAPPED',
+								desired_document: {},
+								capability: {
+									audio_format: 'mp3',
+									catalog_track_title: 'Feel It Inside',
+									catalog_artist_name: 'Trapeze',
+									catalog_album_title: 'Hot Wire',
+									catalog_album_artist_name: 'Trapeze',
+									catalog_disc_number: 1,
+									catalog_track_number: 8,
+									album_artwork_version: 7
+								},
 								collisions: []
 							}
 						],
@@ -209,12 +223,95 @@ describe('LibraryManagementPreviewPage', () => {
 		await expect.element(page.getByText('16 files need identity preparation.')).toBeVisible();
 		await expect.element(page.getByText(/Selecting a root chooses files/)).toBeVisible();
 		await expect
-			.element(page.getByRole('article').getByText('Exact edition selected; track map missing'))
+			.element(
+				page.getByRole('article').getByText('Exact edition selected; track map missing').first()
+			)
 			.toBeVisible();
 		await expect
 			.element(page.getByRole('link', { name: 'Open identity readiness' }))
 			.toHaveAttribute('href', '/library/management#identity-readiness');
 		await expect.element(page.getByText('TRACK NOT MAPPED')).not.toBeInTheDocument();
+		await expect.element(page.getByRole('heading', { name: 'Hot Wire' })).toBeVisible();
+		await expect.element(page.getByText('Trapeze · 1 file')).toBeVisible();
+		await expect.element(page.getByRole('heading', { name: 'Feel It Inside' })).toBeVisible();
+		await expect
+			.element(page.getByTestId('management-dossier-artwork'))
+			.toHaveAttribute('data-src', '/api/v1/library/albums/album-1/artwork/cached?v=7');
+		await expect.element(page.getByText('No root · No path')).not.toBeInTheDocument();
+	});
+
+	it('groups release files into compact dossiers with persistent inspection controls', async () => {
+		const secondItem = {
+			...collisionItem,
+			ordinal: 1,
+			local_track_id: 'track-2',
+			source_relative_path: 'Incoming/track-two.flac',
+			destination_relative_path: 'Artist/Album/02 Track Two.flac',
+			eligibility: 'warning',
+			reason_code: 'OPTIONAL_ENRICHMENT_DEFERRED',
+			desired_document: {
+				fields: [
+					{ name: 'title', value: 'Track Two' },
+					{ name: 'artist', value: ['Artist'] },
+					{ name: 'album_artist', value: ['Artist'] },
+					{ name: 'album', value: 'Album' },
+					{ name: 'track_number', value: 2 }
+				]
+			},
+			collisions: []
+		};
+		h.items = {
+			...h.items,
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								...collisionItem,
+								eligibility: 'eligible',
+								reason_code: null,
+								collisions: []
+							},
+							secondItem
+						],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			}
+		};
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect.element(page.getByRole('heading', { name: 'Album' }).first()).toBeVisible();
+		await expect.element(page.getByText('2 files')).toBeVisible();
+		await page.getByRole('button', { name: 'Inspect exact diff for Track Two' }).click();
+		await expect.element(page.getByRole('heading', { name: 'Track Two' })).toBeVisible();
+
+		await page.getByRole('checkbox', { name: 'Show full paths' }).click();
+		await expect
+			.element(
+				page
+					.getByRole('button', { name: 'Inspect exact diff for Track Two' })
+					.getByText('Archive · Incoming/track-two.flac')
+			)
+			.toBeVisible();
+
+		await page.getByRole('checkbox', { name: 'Only exceptions' }).click();
+		await expect
+			.element(page.getByRole('button', { name: 'Inspect exact diff for Track', exact: true }))
+			.not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('button', { name: 'Inspect exact diff for Track Two' }))
+			.toBeVisible();
+
+		await page.getByRole('button', { name: 'Collapse Album' }).click();
+		await expect
+			.element(page.getByRole('button', { name: 'Inspect exact diff for Track Two' }))
+			.not.toBeInTheDocument();
+		await page.getByRole('button', { name: 'Expand Album' }).click();
+		await expect
+			.element(page.getByRole('button', { name: 'Inspect exact diff for Track Two' }))
+			.toBeVisible();
 	});
 
 	it('shows exact diffs and requires the private token plus typed apply confirmation', async () => {
@@ -254,6 +351,12 @@ describe('LibraryManagementPreviewPage', () => {
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
 
 		await expect.element(page.getByText('Read-only plan · no files changed')).toBeVisible();
+		await expect
+			.element(page.getByRole('heading', { name: 'Library Management preview' }))
+			.toBeVisible();
+		await expect.element(page.getByText('1 tag change', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('1 path change', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('0 artwork changes', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('/secret/music')).not.toBeInTheDocument();
 		await page.getByText('Inspect exact diff').click();
 		await expect.element(page.getByText('Old title')).toBeVisible();
@@ -289,6 +392,207 @@ describe('LibraryManagementPreviewPage', () => {
 			})
 		});
 		expect(h.goto).toHaveBeenCalledWith('/library/management/operations/preview-1');
+	});
+
+	it('shows the sealed metadata, artwork, and file-attribute state for recovery previews', async () => {
+		h.preview = { data: detail({ mode: 'undo' }), isLoading: false, isError: false };
+		h.items = {
+			...h.items,
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								...collisionItem,
+								eligibility: 'eligible',
+								reason_code: null,
+								collisions: [],
+								capability: { audio_format: 'flac', restoration: true, album_artwork_version: 7 },
+								artwork_choices: [
+									{
+										output_kind: 'external',
+										blob_sha256: 'e'.repeat(64),
+										destination_relative_path: 'Artist/Album/cover.png'
+									}
+								],
+								diff: {
+									requires_write: true,
+									tags_changed: true,
+									artwork_changed: true,
+									path_changed: true,
+									field_mutations: [
+										{
+											name: 'title',
+											operation: 'set',
+											before: 'The Fisherman Will Be Bewildered',
+											after: 'The Fisherman Will Be Bewildered (H&D EP Version)',
+											representation_loss: null
+										}
+									],
+									restoration: {
+										scope: 'operation_before_state',
+										native_tags: {
+											changed: true,
+											current_primary_entries: 32,
+											restored_primary_entries: 18,
+											current_auxiliary_entries: 0,
+											restored_auxiliary_entries: 0,
+											current_encoded_primary: false,
+											restored_encoded_primary: false,
+											current_fingerprint: 'a'.repeat(64),
+											restored_fingerprint: 'b'.repeat(64),
+											changed_raw_keys: ['ARTIST', 'TITLE']
+										},
+										artwork: {
+											changed: true,
+											current: [
+												{
+													image_type: 'front',
+													mime_type: 'image/jpeg',
+													description: '',
+													width: 1200,
+													height: 1200,
+													byte_size: 402600,
+													sha256: 'c'.repeat(64)
+												}
+											],
+											restored: [
+												{
+													image_type: 'front',
+													mime_type: 'image/jpeg',
+													description: '',
+													width: 700,
+													height: 700,
+													byte_size: 206012,
+													sha256: 'd'.repeat(64)
+												}
+											]
+										},
+										file_attributes: {
+											changed: true,
+											current_mtime_ns: '1800000000000000000',
+											restored_mtime_ns: '1700000000000000000',
+											current_permission_bits: 420,
+											restored_permission_bits: 420
+										}
+									}
+								}
+							}
+						],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			}
+		};
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await page.getByText('Inspect exact diff').click();
+		await expect.element(page.getByText('Sealed restoration snapshot')).toBeVisible();
+		await expect.element(page.getByText('Operation before-state')).toBeVisible();
+		await expect
+			.element(page.getByText('The Fisherman Will Be Bewildered (H&D EP Version)'))
+			.toBeVisible();
+		await expect.element(page.getByText(/Primary entries/)).toBeVisible();
+		await expect.element(page.getByText(/Native keys:/)).toBeVisible();
+		await expect.element(page.getByText(/1,200 × 1,200 px/)).toBeVisible();
+		await expect.element(page.getByText(/700 × 700 px/)).toBeVisible();
+		await expect.element(page.getByText('0644 → 0644')).toBeVisible();
+		await expect
+			.element(page.getByTestId('management-dossier-artwork'))
+			.toHaveAttribute(
+				'data-src',
+				`/api/v1/library/management/previews/preview-1/items/0/artwork/${'e'.repeat(64)}`
+			);
+
+		const artwork = page.getByTestId('management-dossier-artwork').element();
+		const artworkFrame = page.getByTestId('management-dossier-art-frame').element();
+		expect(artworkFrame.children).toHaveLength(1);
+		expect(artwork.parentElement?.parentElement).toBe(artworkFrame);
+
+		await expect
+			.element(page.getByTestId('management-audit-layout'))
+			.toHaveAttribute('data-reserve-sticky-footer', 'true');
+		expect(page.getByTestId('management-audit-layout').element().getAttribute('style')).toContain(
+			'--management-sticky-footer-height:'
+		);
+	});
+
+	it('uses the catalog cover for an Undo preview that removes embedded artwork', async () => {
+		h.preview = { data: detail({ mode: 'undo' }), isLoading: false, isError: false };
+		h.items = {
+			...h.items,
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								...collisionItem,
+								eligibility: 'eligible',
+								reason_code: null,
+								collisions: [],
+								artwork_choices: [],
+								capability: {
+									audio_format: 'mp3',
+									restoration: true,
+									album_artwork_version: 7
+								},
+								diff: { ...collisionItem.diff, artwork_changed: true }
+							}
+						],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			}
+		};
+
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect
+			.element(page.getByTestId('management-dossier-artwork'))
+			.toHaveAttribute('data-src', '/api/v1/library/albums/album-1/artwork/cached?v=7');
+	});
+
+	it('uses the pinned baseline identity and catalog cover when no artwork output is planned', async () => {
+		h.preview = { data: detail({ mode: 'baseline_restore' }), isLoading: false, isError: false };
+		h.items = {
+			...h.items,
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								...collisionItem,
+								eligibility: 'eligible',
+								reason_code: null,
+								collisions: [],
+								desired_document: {
+									fields: [
+										{ name: 'title', action: 'unchanged', value: 'She Loves Me So' },
+										{ name: 'artist', action: 'unchanged', value: 'Anthony Green' },
+										{ name: 'album', action: 'unchanged', value: 'Avalon' },
+										{ name: 'album_artist', action: 'unchanged', value: 'Anthony Green' }
+									]
+								},
+								artwork_choices: [],
+								capability: { audio_format: 'flac', album_artwork_version: 7 }
+							}
+						],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			}
+		};
+
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect.element(page.getByRole('heading', { name: 'Avalon' })).toBeVisible();
+		await expect.element(page.getByText('Anthony Green · 1 file')).toBeVisible();
+		await expect
+			.element(page.getByTestId('management-dossier-artwork'))
+			.toHaveAttribute('data-src', '/api/v1/library/albums/album-1/artwork/cached?v=7');
 	});
 
 	it('never preselects a collision action and disables recycling without a configured path', async () => {

@@ -535,6 +535,8 @@ class LibraryManagementDuplicateService:
             destination_collision_key=original.destination_collision_key,
             desired_document_json=original.desired_document_json,
             desired_document_hash=original.desired_document_hash,
+            catalog_document_json=original.catalog_document_json,
+            catalog_document_hash=original.catalog_document_hash,
             artwork_choices_json=original.artwork_choices_json,
             diff_json=original.diff_json,
             capability_json=original.capability_json,
@@ -716,18 +718,20 @@ class LibraryManagementDuplicateService:
     ) -> bool:
         destination_root_id = original.destination_root_id or original.expected_root_id
         destination_relative = original.destination_relative_path
-        if destination_relative is None:
-            return False
         if request.collision_kind in {
             "same_path_same_content",
             "same_path_different_content",
             "destination_created_after_preview",
         }:
+            if destination_relative is None:
+                return False
             return (
                 request.existing_root_id == destination_root_id
                 and request.existing_relative_path == destination_relative
             )
         if request.collision_kind == "normalized_path_collision":
+            if destination_relative is None:
+                return False
             return (
                 request.existing_root_id == destination_root_id
                 and request.existing_relative_path != destination_relative
@@ -735,6 +739,8 @@ class LibraryManagementDuplicateService:
                 == _collision_key(destination_relative)
             )
         if request.collision_kind == "sidecar_collision":
+            if destination_relative is None:
+                return False
             planned_sidecars = json.loads(original.diff_json).get("sidecars", [])
             destination_parent = PurePosixPath(destination_relative).parent
             return request.existing_root_id == destination_root_id and any(

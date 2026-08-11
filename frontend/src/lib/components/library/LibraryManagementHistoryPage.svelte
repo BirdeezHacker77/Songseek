@@ -78,6 +78,12 @@
 	function formatDate(value: number): string {
 		return new Date(value * 1000).toLocaleString();
 	}
+
+	function latestTimestampLabel(state: string): string {
+		if (['succeeded', 'failed', 'cancelled', 'stopped'].includes(state)) return 'Finished';
+		if (state === 'ready') return 'Ready';
+		return 'Updated';
+	}
 </script>
 
 <svelte:head><title>Library Management history · DroppedNeedle</title></svelte:head>
@@ -233,7 +239,14 @@
 								>{titleManagementValue(item.origin)} · {scopeLabel(
 									isRecord(item.selection) ? item.selection : {},
 									item.target_root_id
-								)} · {formatDate(item.operation.created_at)}</small
+								)}</small
+							><small class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-base-content/55"
+								><span>Started {formatDate(item.operation.created_at)}</span><span
+									aria-hidden="true">·</span
+								><span
+									>{latestTimestampLabel(item.operation.state)}
+									{formatDate(item.operation.updated_at)}</span
+								></small
 							><small
 								>{item.operation.succeeded_count} succeeded · {item.operation.failed_count} failed · {item
 									.operation.skipped_count} skipped</small

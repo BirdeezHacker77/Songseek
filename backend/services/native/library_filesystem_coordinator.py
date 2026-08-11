@@ -6,7 +6,10 @@ import asyncio
 import threading
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
+import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import stat
 
 
 class _RootLeaseState:
@@ -178,3 +181,122 @@ def is_management_artifact(path: Path) -> bool:
     """Return whether a path uses the reserved hidden management namespace."""
 
     return any(part.startswith(MANAGEMENT_ARTIFACT_PREFIX) for part in path.parts)
+
+
+@contextmanager
+def _rooted_parent(root: Path, relative_path: str) -> Iterator[tuple[int, str]]:
+    relative = PurePosixPath(relative_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ValueError("A rooted filesystem path must be a safe relative path.")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open(root, flags)
+    try:
+        for component in relative.parts[:-1]:
+            child = os.open(component, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor, relative.parts[-1]
+    finally:
+        os.close(descriptor)
+
+
+def replace_rooted(
+    roots: dict[str, Path],
+    source_root_id: str,
+    source_relative_path: str,
+    destination_root_id: str,
+    destination_relative_path: str,
+) -> None:
+    """Replace one rooted path without following a swapped parent symlink."""
+
+    try:
+        source_root = roots[source_root_id]
+        destination_root = roots[destination_root_id]
+    except KeyError as error:
+        raise ValueError("A rooted replacement references an unknown root.") from error
+    with _rooted_parent(source_root, source_relative_path) as source:
+        with _rooted_parent(destination_root, destination_relative_path) as destination:
+            os.replace(
+                source[1],
+                destination[1],
+                src_dir_fd=source[0],
+                dst_dir_fd=destination[0],
+            )
+
+
+def unlink_rooted(
+    roots: dict[str, Path],
+    root_id: str,
+    relative_path: str,
+    *,
+    missing_ok: bool = False,
+) -> None:
+    """Unlink one rooted path without following a swapped parent symlink."""
+
+    try:
+        root = roots[root_id]
+    except KeyError as error:
+        raise ValueError("A rooted unlink references an unknown root.") from error
+    with _rooted_parent(root, relative_path) as target:
+        try:
+            os.unlink(target[1], dir_fd=target[0])
+        except FileNotFoundError:
+            if not missing_ok:
+                raise
+
+
+def copy_rooted(
+    roots: dict[str, Path],
+    source_root_id: str,
+    source_relative_path: str,
+    destination_root_id: str,
+    destination_relative_path: str,
+) -> None:
+    """Copy one regular file through stable rooted directory descriptors."""
+
+    try:
+        source_root = roots[source_root_id]
+        destination_root = roots[destination_root_id]
+    except KeyError as error:
+        raise ValueError("A rooted copy references an unknown root.") from error
+    with _rooted_parent(source_root, source_relative_path) as source:
+        with _rooted_parent(destination_root, destination_relative_path) as destination:
+            source_fd = os.open(
+                source[1], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=source[0]
+            )
+            try:
+                source_stat = os.fstat(source_fd)
+                if not stat.S_ISREG(source_stat.st_mode):
+                    raise OSError("A rooted copy source is not a regular file.")
+                destination_fd = os.open(
+                    destination[1],
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    source_stat.st_mode & 0o777,
+                    dir_fd=destination[0],
+                )
+                try:
+                    while block := os.read(source_fd, 1024 * 1024):
+                        view = memoryview(block)
+                        while view:
+                            written = os.write(destination_fd, view)
+                            view = view[written:]
+                    os.fchmod(destination_fd, source_stat.st_mode & 0o777)
+                    os.utime(
+                        destination_fd,
+                        ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns),
+                    )
+                    os.fsync(destination_fd)
+                except BaseException:
+                    os.close(destination_fd)
+                    destination_fd = -1
+                    os.unlink(destination[1], dir_fd=destination[0])
+                    raise
+                finally:
+                    if destination_fd >= 0:
+                        os.close(destination_fd)
+            finally:
+                os.close(source_fd)

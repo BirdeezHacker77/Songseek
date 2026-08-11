@@ -50,6 +50,7 @@ function repair(overrides: Partial<OperationResponse> = {}): OperationResponse {
 		results_truncated: false,
 		repair_summary: summary,
 		reidentification_candidates: [],
+		selected_reidentification_candidate_key: null,
 		...overrides
 	};
 }

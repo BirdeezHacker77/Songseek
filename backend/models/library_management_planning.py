@@ -83,6 +83,12 @@ class LibraryManagementSelectionSubject(msgspec.Struct, frozen=True, kw_only=Tru
     file_format: str
     disc_number: int
     track_number: int
+    track_title: str
+    artist_name: str | None
+    album_title: str
+    album_artist_name: str | None
+    year: int | None
+    album_artwork_version: int | None
 
 
 class LibraryManagementSelectionPage(msgspec.Struct, frozen=True, kw_only=True):

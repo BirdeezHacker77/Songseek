@@ -1115,6 +1115,57 @@ async def test_artist_reuse_is_exact_and_folded_collisions_stay_separate(
 
 
 @pytest.mark.asyncio
+async def test_artist_reuse_follows_a_retired_deterministic_candidate(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO local_artists "
+            "(id, display_name, folded_name, normalized_name, kind, created_at, "
+            "updated_at, retired_into_artist_id) VALUES (?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "surviving-artist",
+                    "Circa Survive",
+                    "circa survive",
+                    "circa survive",
+                    "group",
+                    1,
+                    1,
+                    None,
+                ),
+                (
+                    "retired-scan-id",
+                    "Circa Survive",
+                    "circa survive",
+                    "circa survive",
+                    "group",
+                    1,
+                    2,
+                    "surviving-artist",
+                ),
+            ],
+        )
+
+    resolved, reused = await store.resolve_or_create_local_artist(
+        display_name="Circa Survive",
+        sort_name="Circa Survive",
+        kind="group",
+        candidate_id="retired-scan-id",
+        now=3,
+    )
+
+    assert (resolved, reused) == ("surviving-artist", True)
+    with sqlite3.connect(db_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM local_artists WHERE id = 'retired-scan-id'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.asyncio
 async def test_artist_batch_preserves_exact_reuse_and_folded_collision_rules(
     store: NativeLibraryStore, db_path: Path
 ) -> None:

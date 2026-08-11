@@ -115,6 +115,11 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 			return mockLocalCopiesData.value;
 		},
 		isLoading: false
+	}),
+	getLibraryAlbumDetailQuery: () => ({
+		data: undefined,
+		isLoading: false,
+		isError: false
 	})
 }));
 

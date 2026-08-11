@@ -10,6 +10,7 @@
 		Tags,
 		Trash2
 	} from 'lucide-svelte';
+	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { controlLibraryOperation } from '$lib/queries/library/LibraryOperationMutations.svelte';
 	import {
@@ -36,6 +37,8 @@
 	let confirmDialog: HTMLDialogElement;
 	let startHeading: HTMLHeadingElement;
 	let confirmHeading: HTMLHeadingElement;
+	let startOpener: HTMLButtonElement | null = null;
+	let confirmOpener: HTMLButtonElement | null = null;
 	let startOpen = $state(false);
 	let scopeMode = $state<'all' | 'selected'>('all');
 	let selectedRootIds = $state<string[]>([]);
@@ -90,12 +93,19 @@
 		{ id: 'unverifiable', label: 'Try again later' }
 	] as const;
 
-	function openStart(): void {
+	function openStart(opener: HTMLButtonElement): void {
+		startOpener = opener;
 		scopeMode = 'all';
 		selectedRootIds = [];
 		startOpen = true;
 		startDialog.showModal();
 		startHeading.focus();
+	}
+
+	function restoreStartFocus(): void {
+		startOpen = false;
+		startOpener?.focus();
+		startOpener = null;
 	}
 
 	function chooseSelectedRoots(): void {
@@ -127,10 +137,16 @@
 			: (counts[tab] ?? 0);
 	}
 
-	function openConfirmation(action: 'apply' | 'discard'): void {
+	function openConfirmation(action: 'apply' | 'discard', opener: HTMLButtonElement): void {
+		confirmOpener = opener;
 		confirmAction = action;
 		confirmDialog.showModal();
 		confirmHeading.focus();
+	}
+
+	function restoreConfirmFocus(): void {
+		confirmOpener?.focus();
+		confirmOpener = null;
 	}
 
 	async function confirmReportAction(): Promise<void> {
@@ -160,11 +176,11 @@
 				EXACT_RELEASE_MAPPINGS_PRESENT: 'Exact track map already present',
 				EXACT_EDITION_NOT_ACCEPTED: 'Choose the exact MusicBrainz edition',
 				SELECTED_RELEASE_UNAVAILABLE: 'Selected edition is unavailable',
-				SELECTED_RELEASE_CONFLICT: 'Selected edition conflicts with the album',
+				SELECTED_RELEASE_CONFLICT: 'Selected edition conflicts with the release',
 				CONFLICTING_TRACK_EVIDENCE: 'Track evidence conflicts',
 				PROVIDER_DEFERRED: 'MusicBrainz could not be reached',
-				IDENTITY_CHANGED: 'Album changed during the check',
-				STALE_SUBJECT: 'Album changed before Apply'
+				IDENTITY_CHANGED: 'Release changed during the check',
+				STALE_SUBJECT: 'Release changed before Apply'
 			}[reasonCode] ?? reasonCode.replaceAll('_', ' ').toLowerCase()
 		);
 	}
@@ -191,7 +207,10 @@
 				never changes tags, paths, or audio.
 			</p>
 		</div>
-		<button class="btn btn-outline btn-sm" disabled={Boolean(active)} onclick={openStart}
+		<button
+			class="btn btn-outline btn-sm"
+			disabled={Boolean(active)}
+			onclick={(event) => openStart(event.currentTarget)}
 			><ShieldCheck class="h-4 w-4" /> Prepare identities...</button
 		>
 	</div>
@@ -231,10 +250,10 @@
 		<div class="flex flex-wrap items-center gap-3 border-t border-primary/10 p-4">
 			<span class="management-live-dot" aria-hidden="true"></span>
 			<div class="min-w-0 flex-1">
-				<strong>Checking album identities</strong>
+				<strong>Checking release identities</strong>
 				<p class="text-sm text-base-content/55">
 					{active.completed_count.toLocaleString()} of {active.expected_work_count.toLocaleString()}
-					albums checked
+					releases checked
 				</p>
 			</div>
 			<div class="flex flex-wrap gap-1">
@@ -276,18 +295,22 @@
 						{report.state === 'succeeded' ? 'Mappings accepted' : 'Ready for review'}
 					</h4>
 					<p class="mt-1 text-sm text-base-content/55">
-						{report.repair_summary.total_identities.toLocaleString()} albums checked · {report.repair_summary.mapping_candidate_count.toLocaleString()}
+						{report.repair_summary.total_identities.toLocaleString()} releases checked · {report.repair_summary.mapping_candidate_count.toLocaleString()}
 						exact track maps can be accepted
 					</p>
 				</div>
 				<div class="flex flex-wrap gap-1">
 					{#if report.state === 'ready' && report.repair_summary.mapping_candidate_count > 0}
-						<button class="btn btn-primary btn-sm" onclick={() => openConfirmation('apply')}
+						<button
+							class="btn btn-primary btn-sm"
+							onclick={(event) => openConfirmation('apply', event.currentTarget)}
 							><Database class="h-4 w-4" /> Accept mappings...</button
 						>
 					{/if}
 					{#if report.state === 'ready'}
-						<button class="btn btn-ghost btn-sm" onclick={() => openConfirmation('discard')}
+						<button
+							class="btn btn-ghost btn-sm"
+							onclick={(event) => openConfirmation('discard', event.currentTarget)}
 							><Trash2 class="h-4 w-4" /> Dismiss report</button
 						>
 					{/if}
@@ -301,14 +324,13 @@
 				</div>
 			{/if}
 
-			<div class="tabs tabs-box mt-4 overflow-x-auto" role="tablist" aria-label="Identity findings">
+			<div class="tabs tabs-box mt-4 overflow-x-auto" role="group" aria-label="Identity findings">
 				{#each tabs as tab (tab.id)}
 					<button
 						type="button"
-						role="tab"
 						class="tab whitespace-nowrap"
 						class:tab-active={activeTab === tab.id}
-						aria-selected={activeTab === tab.id}
+						aria-pressed={activeTab === tab.id}
 						onclick={() => (activeTab = tab.id)}
 						>{tab.label}<span class="badge badge-sm ml-1">{tabCount(report, tab.id)}</span></button
 					>
@@ -321,17 +343,35 @@
 				<div class="alert alert-error mt-3 text-sm">Could not load these identity findings.</div>
 			{:else if findings.length === 0}
 				<p class="mt-3 rounded-box bg-base-200/50 p-4 text-sm text-base-content/55">
-					No albums in this category.
+					No releases in this category.
 				</p>
 			{:else}
 				<div
-					class="mt-3 max-h-72 divide-y divide-base-content/10 overflow-y-auto rounded-box border border-base-content/10 bg-base-100"
+					class="mt-3 max-h-96 divide-y divide-base-content/10 overflow-y-auto rounded-box border border-base-content/10 bg-base-100"
 				>
 					{#each findings as finding (finding.id)}
 						<div class="flex items-center gap-3 p-3">
+							<AlbumImage
+								mbid={finding.local_album_id}
+								source="local"
+								available={finding.cover_available}
+								alt={`Cover for ${finding.album_title}`}
+								size="sm"
+								className="h-12 w-12 border border-base-content/10"
+							/>
 							<div class="min-w-0 flex-1">
-								<strong class="text-sm">{findingTitle(finding.reason_code)}</strong>
-								<p class="mt-0.5 text-xs text-base-content/50">
+								<div class="flex min-w-0 items-baseline gap-2">
+									<strong class="truncate text-sm">{finding.album_title}</strong>
+									{#if finding.album_year}
+										<span class="shrink-0 text-xs text-base-content/40">{finding.album_year}</span>
+									{/if}
+								</div>
+								<p class="truncate text-xs text-base-content/60">
+									{finding.album_artist_name || 'Unknown release artist'}
+								</p>
+								<p class="mt-1 truncate text-xs text-base-content/45">
+									{findingTitle(finding.reason_code)}
+									<span aria-hidden="true"> · </span>
 									{finding.state === 'stale' ? 'Changed after this report' : finding.confidence}
 								</p>
 							</div>
@@ -340,7 +380,7 @@
 								href={`/album/${encodeURIComponent(finding.local_album_id)}`}
 								>{activeTab === 'exact_release_required'
 									? 'Choose edition'
-									: 'Open album'}<ArrowRight class="h-3.5 w-3.5" /></a
+									: 'Open release'}<ArrowRight class="h-3.5 w-3.5" /></a
 							>
 						</div>
 					{/each}
@@ -351,16 +391,26 @@
 					class="btn btn-ghost btn-sm mt-3"
 					disabled={findingsQuery.isFetchingNextPage}
 					onclick={() => void findingsQuery.fetchNextPage()}
-					>{findingsQuery.isFetchingNextPage ? 'Loading...' : 'Load more albums'}</button
+					>{findingsQuery.isFetchingNextPage ? 'Loading...' : 'Load more releases'}</button
 				>
 			{/if}
 		</div>
 	{/if}
 </section>
 
-<dialog bind:this={startDialog} class="modal" onclose={() => (startOpen = false)}>
+<dialog
+	bind:this={startDialog}
+	class="modal"
+	aria-labelledby="identity-preparation-dialog-title"
+	onclose={restoreStartFocus}
+>
 	<div class="modal-box max-w-xl">
-		<h2 bind:this={startHeading} tabindex="-1" class="flex items-center gap-2 text-lg font-bold">
+		<h2
+			id="identity-preparation-dialog-title"
+			bind:this={startHeading}
+			tabindex="-1"
+			class="flex items-center gap-2 text-lg font-bold"
+		>
 			<ShieldCheck class="h-5 w-5 text-primary" /> Prepare identities
 		</h2>
 		<p class="mt-3 text-sm text-base-content/65">
@@ -381,7 +431,7 @@
 				/>
 				<span
 					><strong>Whole library</strong><small class="block text-base-content/55"
-						>Every active album in every root.</small
+						>Every active release in every root.</small
 					></span
 				>
 			</label>
@@ -423,7 +473,7 @@
 		{/if}
 		{#if startEstimate.data}
 			<p class="mt-4 rounded-box bg-base-200/60 p-3 text-sm">
-				<strong>{startEstimate.data.album_count.toLocaleString()} albums</strong> · {startEstimate.data.mapping_required_count.toLocaleString()}
+				<strong>{startEstimate.data.album_count.toLocaleString()} releases</strong> · {startEstimate.data.mapping_required_count.toLocaleString()}
 				need track maps · {startEstimate.data.exact_release_required_count.toLocaleString()} need an exact
 				edition
 			</p>
@@ -446,15 +496,25 @@
 	<form method="dialog" class="modal-backdrop"><button>Close</button></form>
 </dialog>
 
-<dialog bind:this={confirmDialog} class="modal">
+<dialog
+	bind:this={confirmDialog}
+	class="modal"
+	aria-labelledby="identity-confirmation-dialog-title"
+	onclose={restoreConfirmFocus}
+>
 	<div class="modal-box max-w-lg">
-		<h2 bind:this={confirmHeading} tabindex="-1" class="text-lg font-bold">
+		<h2
+			id="identity-confirmation-dialog-title"
+			bind:this={confirmHeading}
+			tabindex="-1"
+			class="text-lg font-bold"
+		>
 			{confirmAction === 'apply' ? 'Accept exact-release mappings?' : 'Dismiss this report?'}
 		</h2>
 		{#if confirmAction === 'apply'}
 			<p class="mt-3 text-sm text-base-content/65">
 				This writes only verified MusicBrainz identities to DroppedNeedle's catalog. It does not
-				change tags, paths, or audio. Albums may become eligible for a future Library Management
+				change tags, paths, or audio. Releases may become eligible for a future Library Management
 				preview.
 			</p>
 		{:else}

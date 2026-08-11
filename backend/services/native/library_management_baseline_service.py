@@ -37,7 +37,11 @@ from infrastructure.persistence.native_library_store import (
     MANAGEMENT_PERSISTENCE_BATCH_SIZE,
     NativeLibraryStore,
 )
-from models.audio_metadata import DesiredAudioDocument, SemanticTagSnapshot
+from models.audio_metadata import (
+    DesiredAudioDocument,
+    DesiredAudioField,
+    SemanticTagSnapshot,
+)
 from models.library_management import (
     BASELINE_UNAVAILABLE,
     FILE_CHANGED,
@@ -46,6 +50,7 @@ from models.library_management import (
     PATH_COLLISION_IDENTICAL,
     ROOT_UNAVAILABLE,
     MANAGEMENT_RECYCLE_ROOT_ID,
+    LibraryManagementBaseline,
     LibraryManagementJobSnapshot,
     LibraryManagementPlanItem,
 )
@@ -59,7 +64,10 @@ from models.library_management_planning import (
 from models.library_work import OperationJob
 from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
 from services.native.library_management_planner import LibraryManagementPlanner
-from services.native.library_management_undo_service import LibraryManagementUndoService
+from services.native.library_management_undo_service import (
+    LibraryManagementUndoService,
+    _restoration_audio_diff,
+)
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.preferences_service import PreferencesService
 
@@ -78,6 +86,81 @@ def _json(value: object) -> str:
 def _token(job_id: str, idempotency_key: str) -> str:
     digest = hashlib.sha256(f"{job_id}\x00{idempotency_key}".encode()).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _display_document(
+    subject: LibraryManagementSelectionSubject,
+    restore_snapshot: SemanticTagSnapshot | None,
+) -> DesiredAudioDocument:
+    values = (
+        {field.name: field.value for field in restore_snapshot.metadata.fields}
+        if restore_snapshot is not None
+        else {}
+    )
+    for name, value in (
+        ("title", subject.track_title),
+        ("artist", subject.artist_name),
+        ("album", subject.album_title),
+        ("album_artist", subject.album_artist_name),
+        ("disc_number", subject.disc_number),
+        ("track_number", subject.track_number),
+        ("date", str(subject.year) if subject.year is not None else None),
+    ):
+        if value is None:
+            continue
+        current = values.get(name)
+        missing = current is None or current == "" or current == () or current == []
+        if name in {"disc_number", "track_number"}:
+            missing = (
+                not isinstance(current, int)
+                or isinstance(current, bool)
+                or current <= 0
+            )
+        if missing:
+            values[name] = value
+    return DesiredAudioDocument(
+        fields=tuple(
+            DesiredAudioField(name=name, action="unchanged", value=value)
+            for name, value in values.items()
+        ),
+        artist_display=(
+            (restore_snapshot.metadata.artist_display or subject.artist_name)
+            if restore_snapshot is not None
+            else subject.artist_name
+        ),
+        album_artist_display=(
+            (
+                restore_snapshot.metadata.album_artist_display
+                or subject.album_artist_name
+            )
+            if restore_snapshot is not None
+            else subject.album_artist_name
+        ),
+    )
+
+
+def _baseline_catalog_document(
+    baseline: LibraryManagementBaseline | None,
+    subject: LibraryManagementSelectionSubject,
+    restore_snapshot: SemanticTagSnapshot | None,
+) -> DesiredAudioDocument:
+    if baseline is None or baseline.catalog_document_json is None:
+        return _display_document(subject, restore_snapshot)
+    expected_hash = baseline.catalog_document_hash
+    if (
+        expected_hash is None
+        or hashlib.sha256(baseline.catalog_document_json.encode()).hexdigest()
+        != expected_hash
+    ):
+        raise ValidationError("The first-management catalog snapshot is invalid.")
+    try:
+        return msgspec.json.decode(
+            baseline.catalog_document_json.encode(), type=DesiredAudioDocument
+        )
+    except msgspec.DecodeError as error:
+        raise ValidationError(
+            "The first-management catalog snapshot is invalid."
+        ) from error
 
 
 class LibraryManagementBaselineService:
@@ -174,6 +257,7 @@ class LibraryManagementBaselineService:
         selection = LibraryManagementPlanner.normalize_selection(
             self._selection(request), profile, resolver
         )
+        selection = msgspec.structs.replace(selection, expand_album_bundles=True)
         now = self._clock()
         job_id = str(uuid.uuid5(_BASELINE_RESTORE_NAMESPACE, request.idempotency_key))
         preview_token = _token(job_id, request.idempotency_key)
@@ -347,6 +431,7 @@ class LibraryManagementBaselineService:
         source_fingerprint = "missing"
         collisions: list[dict] = []
         ancillary: list[dict] = []
+        current = None
         restore_snapshot: SemanticTagSnapshot | None = None
         if reason is None and baseline is not None:
             try:
@@ -443,10 +528,21 @@ class LibraryManagementBaselineService:
             for value in ancillary
             if value.get("collision") is not None
         )
+        tags_changed, embedded_artwork_changed, field_mutations, restoration = (
+            _restoration_audio_diff(
+                current,
+                restore_snapshot,
+                scope="first_management_baseline",
+            )
+        )
+        artwork_changed = (
+            any(value.get("kind") == "external_art" for value in ancillary)
+            or embedded_artwork_changed
+        )
         diff = {
             "requires_write": True,
-            "tags_changed": True,
-            "artwork_changed": bool(ancillary),
+            "tags_changed": tags_changed,
+            "artwork_changed": artwork_changed,
             "path_changed": destination != source,
             "sidecars_changed": any(
                 value.get("kind") == "sidecar" for value in ancillary
@@ -454,6 +550,8 @@ class LibraryManagementBaselineService:
             "restore_snapshot_blob_sha256": (
                 baseline.semantic_snapshot_blob_sha256 if baseline is not None else None
             ),
+            "field_mutations": field_mutations,
+            "restoration": restoration,
             "restore_management_state": {
                 "baseline_id": baseline.id if baseline is not None else None,
                 "applied_profile_id": None,
@@ -481,7 +579,8 @@ class LibraryManagementBaselineService:
                 if value.get("delete_output") is not None
             ],
         }
-        desired = DesiredAudioDocument(fields=())
+        desired = _baseline_catalog_document(baseline, subject, restore_snapshot)
+        desired_json = msgspec.json.encode(desired).decode()
         destination_relative = (
             baseline.original_relative_path if baseline is not None else None
         )
@@ -516,14 +615,17 @@ class LibraryManagementBaselineService:
                 if destination_relative is not None
                 else None
             ),
-            desired_document_json=msgspec.json.encode(desired).decode(),
-            desired_document_hash=hashlib.sha256(_json(diff).encode()).hexdigest(),
+            desired_document_json=desired_json,
+            desired_document_hash=hashlib.sha256(desired_json.encode()).hexdigest(),
+            catalog_document_json=desired_json,
+            catalog_document_hash=hashlib.sha256(desired_json.encode()).hexdigest(),
             artwork_choices_json=_json(artwork_choices),
             diff_json=_json(diff),
             capability_json=_json(
                 {
                     "audio_format": subject.file_format,
                     "restoration": restore_snapshot is not None,
+                    "album_artwork_version": subject.album_artwork_version,
                 }
             ),
             collision_json=_json(collisions),

@@ -57,6 +57,36 @@ from .repo_providers import (
     get_github_repository,
 )
 
+
+async def _schedule_identified_album_work(
+    local_album_id: str, input_policy_revision: str
+) -> list[object]:
+    return await asyncio.gather(
+        get_automatic_scan_management_service().schedule_identified_album(
+            local_album_id, input_policy_revision
+        ),
+        get_artist_identity_reconciliation_service().enqueue_album(local_album_id),
+        get_catalog_identity_hygiene_service().enqueue_album(local_album_id),
+    )
+
+
+async def _invalidate_artist_reconciliation_catalog() -> None:
+    from services.search_service import SearchService
+
+    SearchService.clear_cached_results()
+    results = await asyncio.gather(
+        *(
+            get_cache().clear_prefix(prefix)
+            for prefix in library_identification_prefixes()
+        ),
+        get_discovery_snapshot_store().mark_discover_stale(),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning("Artist reconciliation cache invalidation failed")
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -163,6 +193,7 @@ def get_library_contribution_service() -> "LibraryContributionService":
         discogs_repository=get_discogs_repository(),
         musicbrainz_repository=get_musicbrainz_repository(),
         cache=get_cache(),
+        on_identified=_schedule_identified_album_work,
     )
 
 
@@ -445,7 +476,7 @@ def get_target_album_identification_service() -> "AlbumIdentificationService":
         AlbumEvidenceEngine(),
         ConditionalFingerprintService(store, get_audio_fingerprinter()),
         invalidate,
-        get_automatic_scan_management_service().schedule_identified_album,
+        _schedule_identified_album_work,
     )
 
 
@@ -478,9 +509,7 @@ def get_target_library_review_service() -> "LibraryReviewService":
     return LibraryReviewService(
         get_native_library_store(),
         resolver_getter=get_library_policy_resolver,
-        on_identified=(
-            get_automatic_scan_management_service().schedule_identified_album
-        ),
+        on_identified=_schedule_identified_album_work,
     )
 
 
@@ -492,9 +521,7 @@ def get_target_library_operation_service() -> "LibraryOperationService":
 
     return LibraryOperationService(
         get_native_library_store(),
-        on_identified=(
-            get_automatic_scan_management_service().schedule_identified_album
-        ),
+        on_identified=_schedule_identified_album_work,
     )
 
 
@@ -505,6 +532,39 @@ def get_target_catalog_correction_service() -> "CatalogCorrectionService":
     from .cache_providers import get_native_library_store
 
     return CatalogCorrectionService(get_native_library_store())
+
+
+@singleton
+def get_artist_identity_reconciliation_service() -> (
+    "ArtistIdentityReconciliationService"
+):
+    from services.native.artist_identity_reconciliation_service import (
+        ArtistIdentityReconciliationService,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    return ArtistIdentityReconciliationService(
+        get_native_library_store(),
+        get_musicbrainz_repository(),
+        get_background_workload_gate(),
+        _invalidate_artist_reconciliation_catalog,
+    )
+
+
+@singleton
+def get_catalog_identity_hygiene_service() -> "CatalogIdentityHygieneService":
+    from services.native.catalog_identity_hygiene_service import (
+        CatalogIdentityHygieneService,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    return CatalogIdentityHygieneService(
+        get_native_library_store(),
+        get_background_workload_gate(),
+        _invalidate_artist_reconciliation_catalog,
+    )
 
 
 @singleton
@@ -551,7 +611,7 @@ def get_target_explicit_reidentification_worker() -> "ExplicitReidentificationWo
         AlbumEvidenceEngine(),
         ConditionalFingerprintService(store, get_audio_fingerprinter()),
         get_background_workload_gate(),
-        get_automatic_scan_management_service().schedule_identified_album,
+        _schedule_identified_album_work,
     )
 
 
@@ -658,6 +718,7 @@ def get_library_management_post_commit_service() -> (
         get_disk_cache(),
         get_discovery_snapshot_store(),
         get_jellyfin_repository,
+        get_artist_identity_reconciliation_service().enqueue_album,
     )
 
 
@@ -800,6 +861,8 @@ def get_target_library_operation_supervisor() -> "LibraryOperationSupervisor":
         get_background_workload_gate(),
         get_library_management_worker(),
         get_library_management_notification_service(),
+        get_artist_identity_reconciliation_service(),
+        get_catalog_identity_hygiene_service(),
     )
 
 

@@ -590,6 +590,14 @@ _ADMIN_ENDPOINTS = [
             "idempotency_key": "artist-merge-1",
         },
     ),
+    ("GET", "/api/v1/library/artists/reconciliation", None),
+    ("GET", "/api/v1/library/artists/duplicate-groups", None),
+    ("GET", "/api/v1/library/artists/duplicate-groups/group-1", None),
+    (
+        "POST",
+        "/api/v1/library/artists/duplicate-groups/group-1/dismiss",
+        {"expected_member_revisions": {"artist-1": 1, "artist-2": 1}},
+    ),
     ("POST", "/api/v1/library/identity-repairs", {"idempotency_key": "repair-1"}),
     ("GET", "/api/v1/library/identity-repairs", None),
     ("GET", "/api/v1/library/identity-repairs/estimate", None),
@@ -706,6 +714,7 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/library/recently-added", None),
     ("GET", "/api/v1/library/artists/artist-1", None),
     ("GET", "/api/v1/library/artists/artist-1/albums", None),
+    ("GET", "/api/v1/library/artists/artist-1/appearances", None),
     ("GET", "/api/v1/library/albums/album-1", None),
     ("GET", "/api/v1/library/albums/album-1/artwork/cached?v=1", None),
     ("POST", "/api/v1/library/resolve-tracks", {"items": []}),
@@ -814,11 +823,11 @@ def _client(scenario: str):
         downloads_routes.router,
         following_routes.router,
         tracks_routes.router,
+        library_operations_target_routes.router,
         target_library_routes.router,
         library_contribution_routes.router,
         target_library_scan_routes.router,
         library_routes.router,
-        library_operations_target_routes.router,
         target_library_policy_routes.router,
         library_management_routes.router,
         library_policy_routes.router,
@@ -860,6 +869,8 @@ def _client(scenario: str):
     target_native.canonical_id.return_value = None
     target_native.artist.return_value = None
     target_native.artist_albums.return_value = []
+    target_native.artist_appearances.return_value = ([], 0, 0)
+    target_native.artist_scope_counts.return_value = (0, 0)
     target_native.album_detail.return_value = None
     target_native.resolve_tracks.return_value = {"items": []}
     target_native.album_tracks.return_value = []

@@ -104,13 +104,14 @@ class ArtworkProjectionService:
         existing_embedded: Sequence[ExistingArtworkDescriptor],
         existing_external: Sequence[ExistingArtworkDescriptor],
         embedded_fallback: Sequence[InspectedArtwork] = (),
+        selected_cache: dict[ArtworkImageType, InspectedArtwork] | None = None,
         priority: RequestPriority,
     ) -> ArtworkProjection:
         if not settings.embedded_enabled and not settings.external_enabled:
             return ArtworkProjection(preserved_existing=True)
 
         desired_types = tuple(settings.image_types)
-        selected: dict[ArtworkImageType, InspectedArtwork] = {}
+        selected = selected_cache if selected_cache is not None else {}
         decisions: list[ArtworkDecision] = []
         deferred: list[ArtworkSource] = []
 

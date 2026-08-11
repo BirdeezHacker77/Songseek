@@ -60,7 +60,7 @@ const COVERAGE: Array<[string, string, string]> = [
 	[
 		'library artists',
 		API.library.artists(),
-		'/api/v1/library/artists?limit=50&offset=0&sort_by=name&sort_order=asc'
+		'/api/v1/library/artists?limit=50&offset=0&sort_by=name&sort_order=asc&scope=album'
 	],
 	['library stats', API.library.stats(), '/api/v1/library/stats'],
 	['library provider IDs', API.library.mbids(), '/api/v1/library/mbids'],
@@ -70,6 +70,11 @@ const COVERAGE: Array<[string, string, string]> = [
 	['local album copies', API.library.albumCopies('A1'), '/api/v1/library/albums/A1/copies'],
 	['local artist detail', API.library.artistDetail('R1'), '/api/v1/library/artists/R1'],
 	['local artist albums', API.library.artistAlbums('R1'), '/api/v1/library/artists/R1/albums'],
+	[
+		'local artist appearances',
+		API.library.artistAppearances('R1'),
+		'/api/v1/library/artists/R1/appearances?limit=20&offset=0'
+	],
 	['album status', API.library.album('M1'), '/api/v1/library/albums/M1/status'],
 	['album tracks', API.library.albumTracks('M1'), '/api/v1/library/albums/M1/tracks'],
 	[
@@ -389,6 +394,26 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/library/artists/merge-preview'
 	],
 	['merge artists', API.library.mergeArtists(), '/api/v1/library/artists/merge'],
+	[
+		'artist reconciliation progress',
+		API.library.artistReconciliation(),
+		'/api/v1/library/artists/reconciliation'
+	],
+	[
+		'artist duplicate groups',
+		API.library.artistDuplicateGroups(),
+		'/api/v1/library/artists/duplicate-groups'
+	],
+	[
+		'artist duplicate group',
+		API.library.artistDuplicateGroup('G1'),
+		'/api/v1/library/artists/duplicate-groups/G1'
+	],
+	[
+		'dismiss artist duplicate group',
+		API.library.dismissArtistDuplicateGroup('G1'),
+		'/api/v1/library/artists/duplicate-groups/G1/dismiss'
+	],
 	['identity repairs', API.library.identityRepairs(), '/api/v1/library/identity-repairs'],
 	[
 		'identity repair estimate',

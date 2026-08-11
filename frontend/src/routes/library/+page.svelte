@@ -60,13 +60,16 @@
 			{:else}
 				<button
 					type="button"
-					disabled
-					title="Administrator access required"
+					aria-disabled="true"
+					aria-describedby="library-controls-admin-only"
 					class="btn btn-sm cursor-not-allowed gap-2 rounded-full border border-base-content/10 bg-base-200/35 text-base-content/35 shadow-none sm:btn-md"
 				>
 					<LockKeyhole class="h-4 w-4" aria-hidden="true" />
 					<span>Controls</span>
 				</button>
+				<span id="library-controls-admin-only" class="sr-only">
+					Library controls require administrator access.
+				</span>
 			{/if}
 		{/snippet}
 	</PageHeader>

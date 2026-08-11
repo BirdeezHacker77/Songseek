@@ -4,6 +4,12 @@ import { render } from 'vitest-browser-svelte';
 
 const h = vi.hoisted(() => ({
 	discard: vi.fn(),
+	goto: vi.fn(),
+	replaceState: vi.fn(),
+	appPage: {
+		url: new URL('https://music.example.test/library/management#management-controls'),
+		state: {}
+	},
 	operations: {
 		data: { pages: [{ items: [] as Array<Record<string, unknown>> }] },
 		isLoading: false,
@@ -40,6 +46,8 @@ const h = vi.hoisted(() => ({
 	}
 }));
 
+vi.mock('$app/navigation', () => ({ goto: h.goto, replaceState: h.replaceState }));
+vi.mock('$app/state', () => ({ page: h.appPage }));
 vi.mock('$lib/stores/authStore.svelte', () => ({
 	authStore: { isAdmin: true, user: { id: 'admin-1' } }
 }));
@@ -54,6 +62,9 @@ vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
 		isLoading: false,
 		isError: false
 	})
+}));
+vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
+	getLibrarySearchQuery: () => ({ data: { artists: [], albums: [], tracks: [] } })
 }));
 vi.mock('$lib/queries/library-management/LibraryManagementEvents', () => ({
 	createLibraryManagementEvents: () => ({ start: vi.fn(), stop: vi.fn() })
@@ -100,6 +111,7 @@ import LibraryManagementControlRoom from './LibraryManagementControlRoom.svelte'
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.appPage.url = new URL('https://music.example.test/library/management#management-controls');
 	h.operations = { data: { pages: [{ items: [] }] }, isLoading: false, isError: false };
 	h.recovery.isError = false;
 	h.identityPreparations = {
@@ -141,6 +153,23 @@ describe('LibraryManagementControlRoom', () => {
 		await expect
 			.element(page.getByRole('button', { name: 'Preview library management...' }))
 			.toBeDisabled();
+	});
+
+	it('opens a deep-linked baseline restore and cleans the URL when closed', async () => {
+		h.appPage.url = new URL(
+			'https://music.example.test/library/management?runner=baseline_restore#management-controls'
+		);
+		render(LibraryManagementControlRoom);
+
+		await expect
+			.element(page.getByRole('heading', { name: 'Restore first-management baselines' }))
+			.toHaveFocus();
+		await page.getByRole('button', { name: 'Close manual management runner' }).click();
+
+		expect(h.replaceState).toHaveBeenCalledOnce();
+		const [url, state] = h.replaceState.mock.calls[0] as [URL, Record<string, unknown>];
+		expect(url.pathname + url.search + url.hash).toBe('/library/management#management-controls');
+		expect(state).toBe(h.appPage.state);
 	});
 
 	it('confirms and discards a ready preview directly from its review card', async () => {

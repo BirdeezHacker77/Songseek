@@ -20,6 +20,7 @@
 		adminOverride = undefined
 	}: Props = $props();
 	let currentTime = $state(Date.now() / 1000);
+	let activityShell: HTMLDivElement | null = $state(null);
 	const effectiveNow = $derived(now ?? currentTime);
 
 	onMount(() => {
@@ -28,6 +29,26 @@
 			currentTime = Date.now() / 1000;
 		}, 60_000);
 		return () => window.clearInterval(timer);
+	});
+
+	$effect(() => {
+		const shell = activityShell;
+		if (!shell || typeof ResizeObserver === 'undefined') return;
+		const container = shell.parentElement;
+		if (!container) return;
+		const updateOffset = () => {
+			container.style.setProperty(
+				'--droppedneedle-library-activity-height',
+				`${shell.offsetHeight}px`
+			);
+		};
+		const observer = new ResizeObserver(updateOffset);
+		observer.observe(shell);
+		updateOffset();
+		return () => {
+			observer.disconnect();
+			container.style.removeProperty('--droppedneedle-library-activity-height');
+		};
 	});
 
 	const userId = $derived(userIdOverride ?? authStore.user?.id);
@@ -142,7 +163,11 @@
 </script>
 
 {#if showStrip}
-	<div class="library-activity-shell" data-testid="library-activity-strip">
+	<div
+		bind:this={activityShell}
+		class="library-activity-shell"
+		data-testid="library-activity-strip"
+	>
 		<span class="sr-only" aria-live="polite" aria-atomic="true">{headline}</span>
 		{#if failureVisible}
 			<div class="library-activity-failure" role="status">

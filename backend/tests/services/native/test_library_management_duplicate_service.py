@@ -518,7 +518,7 @@ async def test_normalized_collision_requires_the_exact_matching_sibling(
     )
     item = (await store.list_library_management_plan_items(handle.job_id))[0]
 
-    assert item.eligibility == "eligible"
+    assert (item.eligibility, item.reason_code) == ("eligible", None)
     evidence = json.loads(item.collision_json)[0]
     assert evidence["existing_relative_path"] == existing_relative
     assert evidence["exact_content"] is True
@@ -648,7 +648,7 @@ async def test_same_release_position_collision_requires_matching_track_identity(
     )
     item = (await store.list_library_management_plan_items(handle.job_id))[0]
 
-    assert item.eligibility == "eligible"
+    assert (item.eligibility, item.reason_code) == ("eligible", None)
     assert json.loads(item.collision_json)[0]["exact_content"] is False
 
 

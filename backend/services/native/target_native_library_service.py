@@ -10,6 +10,7 @@ from api.v1.schemas.library_target import (
     TargetNativeAlbumDetail,
     TargetNativeAlbumStatusResponse,
     TargetNativeArtist,
+    TargetNativeArtistAppearance,
     TargetNativeProviderIdsResponse,
     TargetNativeStatsResponse,
     TargetNativeTrack,
@@ -55,6 +56,7 @@ class TargetNativeLibraryService:
         search: str | None,
         sort_by: str = "name",
         sort_order: str,
+        scope: str = "album",
     ) -> tuple[list[TargetNativeArtist], int]:
         rows, total = await self._store.list_target_artists(
             limit=limit,
@@ -62,15 +64,19 @@ class TargetNativeLibraryService:
             search=search,
             sort_by=sort_by,
             sort_order=sort_order,
+            scope=scope,
         )
         return [self._artist(row) for row in rows], total
+
+    async def artist_scope_counts(self) -> tuple[int, int]:
+        return await self._store.target_artist_scope_counts()
 
     async def artist(self, artist_id: str) -> TargetNativeArtist | None:
         canonical = await self.canonical_id("artist", artist_id)
         if canonical is None:
             return None
         rows, _ = await self._store.list_target_artists(
-            limit=1, offset=0, artist_ids=[canonical]
+            limit=1, offset=0, artist_ids=[canonical], scope="all"
         )
         return self._artist(rows[0]) if rows else None
 
@@ -82,6 +88,27 @@ class TargetNativeLibraryService:
             limit=10_000, offset=0, sort="name", artist_id=canonical
         )
         return [self._album(row) for row in rows]
+
+    async def artist_appearances(
+        self, artist_id: str, *, limit: int, offset: int
+    ) -> tuple[list[TargetNativeArtistAppearance], int, int]:
+        canonical = await self.canonical_id("artist", artist_id)
+        if canonical is None:
+            return [], 0, 0
+        rows, total, total_tracks = await self._store.list_target_artist_appearances(
+            canonical, limit=limit, offset=offset
+        )
+        return (
+            [
+                TargetNativeArtistAppearance(
+                    album=self._album(row["album"]),
+                    tracks=[self._track(track) for track in row["tracks"]],
+                )
+                for row in rows
+            ],
+            total,
+            total_tracks,
+        )
 
     async def tracks(
         self,
@@ -342,6 +369,9 @@ class TargetNativeLibraryService:
             ),
             album_count=int(row.get("album_count") or 0),
             track_count=int(row.get("track_count") or 0),
+            appearance_release_count=int(row.get("appearance_release_count") or 0),
+            appearance_track_count=int(row.get("appearance_track_count") or 0),
+            library_relationship=str(row.get("library_relationship") or "album_artist"),
             date_added=row.get("date_added"),
             row_revision=int(row.get("row_revision") or 1),
         )

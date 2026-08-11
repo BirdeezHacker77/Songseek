@@ -31,6 +31,10 @@ const h = vi.hoisted(() => ({
 						{
 							id: 'finding-1',
 							local_album_id: 'album-1',
+							album_title: 'Juturna',
+							album_artist_name: 'Circa Survive',
+							album_year: 2005,
+							cover_available: false,
 							evidence_id: 'evidence-1',
 							review_id: null,
 							finding_code: 'mapping_ready',
@@ -157,7 +161,13 @@ describe('LibraryManagementIdentityReadiness', () => {
 		};
 		render(LibraryManagementIdentityReadiness, { roots });
 
-		await expect.element(page.getByText('Exact track map verified')).toBeVisible();
+		await expect.element(page.getByText('Juturna')).toBeVisible();
+		await expect.element(page.getByText('Circa Survive')).toBeVisible();
+		await expect.element(page.getByText('2005')).toBeVisible();
+		await expect.element(page.getByText(/Exact track map verified/)).toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Open release' }))
+			.toHaveAttribute('href', '/album/album-1');
 		await page.getByRole('button', { name: 'Accept mappings...' }).click();
 		await expect
 			.element(page.getByRole('heading', { name: 'Accept exact-release mappings?' }))

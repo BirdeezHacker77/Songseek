@@ -446,6 +446,82 @@ CREATE TABLE IF NOT EXISTS local_artist_merge_candidates (
     UNIQUE(left_artist_id, right_artist_id, reason_code)
 );
 
+CREATE TABLE IF NOT EXISTS library_artist_credit_proofs (
+    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('album','track')),
+    subject_id TEXT NOT NULL,
+    local_album_id TEXT NOT NULL REFERENCES local_albums(id) ON DELETE RESTRICT,
+    local_track_id TEXT REFERENCES local_tracks(id) ON DELETE RESTRICT,
+    credit_position INTEGER NOT NULL CHECK(credit_position >= 0),
+    source_local_artist_id TEXT REFERENCES local_artists(id) ON DELETE RESTRICT,
+    local_artist_id TEXT NOT NULL REFERENCES local_artists(id) ON DELETE RESTRICT,
+    artist_mbid TEXT NOT NULL CHECK(length(trim(artist_mbid)) > 0),
+    canonical_name TEXT NOT NULL,
+    credited_name TEXT NOT NULL,
+    sort_name TEXT NOT NULL DEFAULT '',
+    join_phrase TEXT NOT NULL DEFAULT '',
+    release_mbid TEXT NOT NULL,
+    release_track_mbid TEXT,
+    album_identity_revision INTEGER NOT NULL
+        CHECK(album_identity_revision BETWEEN 1 AND 9223372036854775807),
+    track_identity_revision INTEGER
+        CHECK(track_identity_revision IS NULL OR track_identity_revision
+              BETWEEN 1 AND 9223372036854775807),
+    evidence_hash TEXT NOT NULL CHECK(
+        length(evidence_hash) = 64 AND evidence_hash = lower(evidence_hash)
+        AND evidence_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(row_revision BETWEEN 1 AND 9223372036854775807),
+    PRIMARY KEY(subject_kind, subject_id, credit_position),
+    CHECK(
+        (subject_kind = 'album' AND subject_id = local_album_id AND local_track_id IS NULL
+         AND release_track_mbid IS NULL AND track_identity_revision IS NULL)
+        OR
+        (subject_kind = 'track' AND subject_id = local_track_id AND local_track_id IS NOT NULL
+         AND release_track_mbid IS NOT NULL AND track_identity_revision IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS library_artist_reconciliation_state (
+    local_album_id TEXT PRIMARY KEY REFERENCES local_albums(id) ON DELETE RESTRICT,
+    input_revision TEXT NOT NULL,
+    evidence_hash TEXT,
+    state TEXT NOT NULL CHECK(state IN (
+        'waiting_for_identity','provider_conflict','ambiguous_credit_structure',
+        'projected','resolved_automatically','provider_deferred'
+    )),
+    projected_album_credit_count INTEGER NOT NULL DEFAULT 0
+        CHECK(projected_album_credit_count >= 0),
+    projected_track_credit_count INTEGER NOT NULL DEFAULT 0
+        CHECK(projected_track_credit_count >= 0),
+    retired_artist_count INTEGER NOT NULL DEFAULT 0
+        CHECK(retired_artist_count >= 0),
+    operation_job_id TEXT REFERENCES library_operation_jobs(id) ON DELETE RESTRICT,
+    reason_code TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(row_revision BETWEEN 1 AND 9223372036854775807)
+);
+
+CREATE TABLE IF NOT EXISTS library_artist_reconciliation_dismissals (
+    left_artist_id TEXT NOT NULL REFERENCES local_artists(id) ON DELETE RESTRICT,
+    right_artist_id TEXT NOT NULL REFERENCES local_artists(id) ON DELETE RESTRICT,
+    left_artist_revision INTEGER NOT NULL
+        CHECK(left_artist_revision BETWEEN 1 AND 9223372036854775807),
+    right_artist_revision INTEGER NOT NULL
+        CHECK(right_artist_revision BETWEEN 1 AND 9223372036854775807),
+    dismissed_by_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE RESTRICT,
+    reason_code TEXT NOT NULL DEFAULT 'MARKED_DISTINCT',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1
+        CHECK(row_revision BETWEEN 1 AND 9223372036854775807),
+    PRIMARY KEY(left_artist_id, right_artist_id),
+    CHECK(left_artist_id < right_artist_id)
+);
+
 CREATE TABLE IF NOT EXISTS local_album_artwork (
     local_album_id TEXT PRIMARY KEY REFERENCES local_albums(id) ON DELETE RESTRICT,
     cover_url TEXT,
@@ -657,6 +733,8 @@ CREATE TABLE IF NOT EXISTS library_management_baselines (
         'available','restoring','restored','stale','purged'
     )),
     last_verified_at REAL,
+    catalog_document_json TEXT,
+    catalog_document_hash TEXT,
     row_revision INTEGER NOT NULL DEFAULT 1
         CHECK(row_revision BETWEEN 1 AND 9223372036854775807)
 );
@@ -899,6 +977,8 @@ CREATE TABLE IF NOT EXISTS library_management_plan_items (
         CHECK(length(desired_document_hash) = 64
               AND desired_document_hash = lower(desired_document_hash)
               AND desired_document_hash NOT GLOB '*[^0-9a-f]*'),
+    catalog_document_json TEXT,
+    catalog_document_hash TEXT,
     artwork_choices_json TEXT NOT NULL DEFAULT '[]',
     diff_json TEXT NOT NULL DEFAULT '{}',
     capability_json TEXT NOT NULL DEFAULT '{}',
@@ -1564,6 +1644,16 @@ CREATE INDEX IF NOT EXISTS idx_management_external_refresh_lease
 ON library_management_external_refresh_deliveries(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_album_alias_target ON local_album_aliases(local_album_id);
 CREATE INDEX IF NOT EXISTS idx_artist_alias_target ON local_artist_aliases(local_artist_id);
+CREATE INDEX IF NOT EXISTS idx_artist_credit_proof_source
+ON library_artist_credit_proofs(source_local_artist_id, artist_mbid);
+CREATE INDEX IF NOT EXISTS idx_artist_credit_proof_resolved
+ON library_artist_credit_proofs(local_artist_id, artist_mbid);
+CREATE INDEX IF NOT EXISTS idx_artist_credit_proof_album
+ON library_artist_credit_proofs(local_album_id, subject_kind, subject_id);
+CREATE INDEX IF NOT EXISTS idx_artist_reconciliation_state_status
+ON library_artist_reconciliation_state(state, updated_at DESC, local_album_id);
+CREATE INDEX IF NOT EXISTS idx_artist_reconciliation_dismissal_user
+ON library_artist_reconciliation_dismissals(dismissed_by_user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_identification_attempt_subject_album ON library_identification_attempts(local_album_id, completed_at);
 CREATE INDEX IF NOT EXISTS idx_identification_attempt_subject_track ON library_identification_attempts(local_track_id, completed_at);
 CREATE INDEX IF NOT EXISTS idx_identification_evidence_attempt ON library_identification_evidence(attempt_id);

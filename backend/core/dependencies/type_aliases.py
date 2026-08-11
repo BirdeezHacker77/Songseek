@@ -72,6 +72,9 @@ from services.native.library_review_service import LibraryReviewService
 from services.native.library_operation_service import LibraryOperationService
 from services.native.catalog_correction_service import CatalogCorrectionService
 from services.native.identity_repair_service import IdentityRepairService
+from services.native.artist_identity_reconciliation_service import (
+    ArtistIdentityReconciliationService,
+)
 from services.native.library_diagnostics_service import LibraryDiagnosticsService
 from services.native.explicit_reidentification_worker import (
     ExplicitReidentificationWorker,
@@ -162,6 +165,7 @@ from .service_providers import (
     get_target_library_operation_service,
     get_target_catalog_correction_service,
     get_target_identity_repair_service,
+    get_artist_identity_reconciliation_service,
     get_target_library_diagnostics_service,
     get_target_explicit_reidentification_worker,
     get_target_native_library_service,
@@ -296,6 +300,10 @@ CatalogCorrectionServiceDep = Annotated[
 ]
 IdentityRepairServiceDep = Annotated[
     IdentityRepairService, Depends(get_target_identity_repair_service)
+]
+ArtistIdentityReconciliationServiceDep = Annotated[
+    ArtistIdentityReconciliationService,
+    Depends(get_artist_identity_reconciliation_service),
 ]
 LibraryDiagnosticsServiceDep = Annotated[
     LibraryDiagnosticsService, Depends(get_target_library_diagnostics_service)

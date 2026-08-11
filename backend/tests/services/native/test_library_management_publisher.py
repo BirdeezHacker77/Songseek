@@ -37,7 +37,10 @@ from services.native.library_filesystem_coordinator import LibraryFilesystemCoor
 from services.native.library_management_baseline_service import (
     LibraryManagementBaselineService,
 )
-from services.native.library_management_publisher import LibraryManagementPublisher
+from services.native.library_management_publisher import (
+    LibraryManagementPublisher,
+    _catalog_tag_projection,
+)
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.target_import_library_service import TargetImportLibraryService
@@ -69,6 +72,101 @@ def _update_profile(preferences, update: Callable) -> None:
     preferences.save_library_management_settings_if_current(
         settings, expected_settings_revision=current.settings_revision
     )
+
+
+def test_restoration_catalog_projection_uses_pinned_values_for_empty_tags() -> None:
+    projected = _catalog_tag_projection(
+        AudioTag(title="", artist="", album="", track_number=0),
+        DesiredAudioDocument(
+            fields=(
+                DesiredAudioField(name="title", action="set", value="Feel It Inside"),
+                DesiredAudioField(name="artist", action="set", value=("Trapeze",)),
+                DesiredAudioField(name="album", action="set", value="Hot Wire"),
+                DesiredAudioField(
+                    name="album_artist", action="set", value=("Trapeze",)
+                ),
+                DesiredAudioField(name="track_number", action="set", value=8),
+                DesiredAudioField(name="disc_number", action="set", value=1),
+                DesiredAudioField(name="date", action="set", value="1974"),
+                DesiredAudioField(name="original_date", action="set", value="1974"),
+                DesiredAudioField(name="artist_sort", action="set", value=("Trapeze",)),
+                DesiredAudioField(
+                    name="album_artist_sort", action="set", value=("Trapeze",)
+                ),
+                DesiredAudioField(
+                    name="musicbrainz_artist_id",
+                    action="set",
+                    value=("artist-mbid",),
+                ),
+            ),
+            artist_display="Trapeze",
+            album_artist_display="Trapeze",
+        ),
+        "Trapeze/Trapeze - Hot Wire/08 Feel It Inside.mp3",
+        native_fields=frozenset(),
+    )
+
+    assert projected.title == "Feel It Inside"
+    assert projected.artist == projected.album_artist == "Trapeze"
+    assert projected.album == "Hot Wire"
+    assert projected.track_number == 8
+    assert projected.disc_number == 1
+    assert projected.year == 1974
+    assert projected.original_release_date == "1974"
+    assert projected.artist_sort == projected.album_artist_sort == "Trapeze"
+    assert projected.musicbrainz_artist_id == "artist-mbid"
+    assert projected.artists[0].musicbrainz_artist_id == "artist-mbid"
+
+
+def test_restoration_catalog_projection_falls_back_to_path() -> None:
+    projected = _catalog_tag_projection(
+        AudioTag(title="", artist="", album="", track_number=0),
+        DesiredAudioDocument(fields=()),
+        "Artist/Album/08 Feel It Inside.mp3",
+        native_fields=frozenset(),
+    )
+
+    assert (
+        projected.title,
+        projected.artist,
+        projected.album,
+        projected.album_artist,
+    ) == (
+        "08 Feel It Inside",
+        "Unknown Artist",
+        "08 Feel It Inside",
+        "Unknown Artist",
+    )
+
+
+def test_restoration_catalog_projection_prefers_explicit_native_defaults() -> None:
+    projected = _catalog_tag_projection(
+        AudioTag(
+            title="Track",
+            artist="Track Artist",
+            album="Album",
+            track_number=1,
+            disc_number=2,
+            compilation=False,
+        ),
+        DesiredAudioDocument(
+            fields=(
+                DesiredAudioField(
+                    name="album_artist", action="set", value=("Album Artist",)
+                ),
+                DesiredAudioField(name="disc_number", action="set", value=1),
+                DesiredAudioField(name="compilation", action="set", value=True),
+            ),
+            artist_display="Track Artist",
+            album_artist_display="Album Artist",
+        ),
+        "Album/02 Track.flac",
+        native_fields=frozenset({"disc_number", "compilation"}),
+    )
+
+    assert projected.album_artist == "Album Artist"
+    assert projected.disc_number == 2
+    assert projected.compilation is False
 
 
 def _import_file(
@@ -110,6 +208,17 @@ def _same_path_configuration(_root, preferences, _store) -> None:
         profile.organization.rename_enabled = False
         profile.organization.move_enabled = False
         profile.organization.move_sidecars = False
+
+    _update_profile(preferences, update)
+
+
+def _tags_only_configuration(_root, preferences, _store) -> None:
+    def update(_settings, profile) -> None:
+        profile.organization.rename_enabled = False
+        profile.organization.move_enabled = False
+        profile.organization.move_sidecars = False
+        profile.artwork.embedded_enabled = False
+        profile.artwork.external_enabled = False
 
     _update_profile(preferences, update)
 
@@ -1269,7 +1378,7 @@ async def test_import_bundle_resumes_publish_after_process_stops_before_journal_
     publish_file = publisher._publish_import_file
     rollback = publisher._rollback_import_bundle
 
-    async def stop_after_replace(value):
+    async def stop_after_replace(value, _roots):
         await asyncio.to_thread(os.replace, value.temporary, value.destination)
         raise SimulatedProcessStop
 
@@ -1553,6 +1662,80 @@ async def test_publisher_prepares_and_commits_multi_file_album_as_one_bundle(
 
 
 @pytest.mark.asyncio
+async def test_publisher_rejects_tampered_catalog_projection(
+    tmp_path: Path,
+) -> None:
+    _root, source, store, _audio, publisher, job_id = await _ready_apply_operation(
+        tmp_path
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE library_management_plan_items SET catalog_document_hash=? "
+            "WHERE job_id=?",
+            ("0" * 64, job_id),
+        )
+
+    with pytest.raises(ConflictError, match="Pinned catalog metadata changed"):
+        await publisher.publish_bundle(job_id, 0, "apply-worker")
+
+    assert source.is_file()
+
+
+@pytest.mark.asyncio
+async def test_tags_only_selected_siblings_publish_as_one_album_bundle(
+    tmp_path: Path,
+) -> None:
+    _root, _source, store, audio, publisher, job_id = await _ready_apply_operation(
+        tmp_path,
+        configure=_tags_only_configuration,
+        prepare_store=_add_second_album_track,
+        customize_planner=_add_second_canonical_track,
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1", "track-2")),
+    )
+    items = await store.list_library_management_plan_items(job_id)
+    assert [item.bundle_ordinal for item in items] == [0, 0]
+
+    await publisher.publish_bundle(job_id, 0, "apply-worker")
+
+    first = await store.get_target_track("track-1")
+    second = await store.get_target_track("track-2")
+    assert first is not None and second is not None
+    assert (
+        audio.read(Path(str(first["file_path"]))).metadata.value_for("title") == "Aria"
+    )
+    assert (
+        audio.read(Path(str(second["file_path"]))).metadata.value_for("title")
+        == "Variation 1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_partial_tags_only_selection_rejects_duplicate_sibling_mapping(
+    tmp_path: Path,
+) -> None:
+    def prepare(root, preferences, store) -> None:
+        _add_second_album_track(root, preferences, store)
+        with sqlite3.connect(store.db_path) as connection:
+            connection.execute(
+                "UPDATE local_track_external_identities SET release_track_mbid="
+                "'22222222-2222-4222-8222-222222222222' WHERE local_track_id='track-2'"
+            )
+
+    _root, _source, store, _audio, _publisher, job_id = await _ready_apply_operation(
+        tmp_path,
+        configure=_tags_only_configuration,
+        prepare_store=prepare,
+        customize_planner=_add_second_canonical_track,
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+    )
+
+    items = await store.list_library_management_plan_items(job_id)
+    assert len(items) == 1
+    assert items[0].eligibility == "blocked"
+    assert items[0].reason_code == "TRACK_NOT_MAPPED"
+
+
+@pytest.mark.asyncio
 async def test_publisher_rolls_back_published_move_when_catalog_cas_fails(
     tmp_path: Path,
 ) -> None:
@@ -1694,7 +1877,7 @@ async def test_publisher_marks_cleanup_pending_without_rolling_back_catalog(
         tmp_path
     )
 
-    def fail_cleanup(_value) -> None:
+    def fail_cleanup(_value, _roots) -> None:
         raise OSError("injected cleanup failure")
 
     monkeypatch.setattr(publisher, "_cleanup_committed_filesystem", fail_cleanup)
@@ -1720,8 +1903,8 @@ async def test_publisher_defers_repeated_cancellation_until_publish_is_durable(
     release = asyncio.Event()
     original_publish = publisher._publish_one
 
-    async def pause_after_publish(value) -> None:
-        await original_publish(value)
+    async def pause_after_publish(value, roots) -> None:
+        await original_publish(value, roots)
         published.set()
         await release.wait()
 

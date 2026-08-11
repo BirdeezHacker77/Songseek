@@ -127,6 +127,7 @@ export type ArtistInfoBasic = {
 	aliases: string[];
 	external_links: ExternalLink[];
 	in_library: boolean;
+	appears_in_library: boolean;
 	// per-user follow state; artist page reads it from the dedicated /follow query
 	followed?: boolean;
 	auto_download?: boolean;
@@ -1841,7 +1842,9 @@ export interface NativeAlbumsResponse {
 	total: number;
 }
 
-export type ArtistSort = 'name' | 'album_count' | 'date_added';
+export type ArtistSort = 'name' | 'album_count' | 'appearance_count' | 'date_added';
+export type LibraryArtistScope = 'album' | 'contributors';
+export type LibraryArtistRelationship = 'album_artist' | 'contributor' | 'both';
 
 export interface LibraryArtistSummary {
 	id: string;
@@ -1850,6 +1853,9 @@ export interface LibraryArtistSummary {
 	artist_identity_state: ArtistIdentityState;
 	album_count: number;
 	track_count: number;
+	appearance_release_count: number;
+	appearance_track_count: number;
+	library_relationship: LibraryArtistRelationship;
 	date_added: number | null;
 	row_revision: number;
 }
@@ -1857,6 +1863,21 @@ export interface LibraryArtistSummary {
 export interface NativeArtistsResponse {
 	items: LibraryArtistSummary[];
 	total: number;
+	album_artist_total: number;
+	contributor_total: number;
+}
+
+export interface LibraryArtistAppearance {
+	album: LibraryAlbumSummary;
+	tracks: NativeTrackListItem[];
+}
+
+export interface LibraryArtistAppearancesResponse {
+	items: LibraryArtistAppearance[];
+	total: number;
+	total_tracks: number;
+	offset: number;
+	limit: number;
 }
 
 export interface LibraryTrack {

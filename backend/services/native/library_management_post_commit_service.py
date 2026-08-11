@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import msgspec
 
@@ -38,6 +38,7 @@ class LibraryManagementPostCommitService:
         disk_cache: DiskMetadataCache,
         discovery_snapshots: DiscoverySnapshotStore,
         jellyfin_getter: Callable[[], JellyfinRepositoryProtocol],
+        reconcile_album: Callable[[str], Awaitable[object]] | None = None,
     ) -> None:
         self._store = store
         self._preferences = preferences
@@ -45,13 +46,19 @@ class LibraryManagementPostCommitService:
         self._disk_cache = disk_cache
         self._discovery_snapshots = discovery_snapshots
         self._jellyfin_getter = jellyfin_getter
+        self._reconcile_album = reconcile_album
 
     async def after_commit(
         self, local_track_ids: set[str], local_album_ids: set[str]
     ) -> None:
         tracks = await self._store.get_target_tracks_by_ids(sorted(local_track_ids))
         await self._invalidate_native_caches(tracks)
-
+        affected_album_ids = set(local_album_ids)
+        affected_album_ids.update(
+            str(track["local_album_id"])
+            for track in tracks.values()
+            if track.get("local_album_id")
+        )
         states = await asyncio.gather(
             *(
                 self._store.get_track_management_state(track_id)
@@ -65,6 +72,14 @@ class LibraryManagementPostCommitService:
         }
         for operation_id in sorted(operation_ids):
             await self._enqueue_external_refreshes(operation_id)
+        if self._reconcile_album is not None:
+            for album_id in sorted(affected_album_ids):
+                try:
+                    await self._reconcile_album(album_id)
+                except Exception:  # noqa: BLE001 - post-commit repair remains retryable
+                    logger.warning(
+                        "Artist identity reconciliation enqueue failed", exc_info=True
+                    )
 
     async def _invalidate_native_caches(self, tracks: dict[str, dict]) -> None:
         from services.search_service import SearchService

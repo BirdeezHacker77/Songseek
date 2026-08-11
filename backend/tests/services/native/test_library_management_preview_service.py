@@ -26,13 +26,14 @@ from api.v1.schemas.library_management_preview import (
 from core.config import Settings
 from core.exceptions import ResourceNotFoundError, StaleRevisionError, ValidationError
 from infrastructure.persistence.native_library_store import NativeLibraryStore
+from models.audio_metadata import AudioMetadataDocument, AudioSemanticField
 from models.library_management import (
+    LibraryManagementBlob,
     LibraryManagementExternalRefreshDelivery,
     LibraryManagementJobSnapshot,
     LibraryManagementOverride,
     LibraryManagementPlanItem,
 )
-from models.audio_metadata import AudioMetadataDocument, AudioSemanticField
 from models.library_management_canonical import (
     AcceptedAlbumManagementIdentity,
     AcceptedTrackManagementIdentity,
@@ -575,6 +576,53 @@ async def test_artwork_preview_serves_only_a_blob_referenced_by_the_item(
     with pytest.raises(ResourceNotFoundError):
         await service.artwork_preview("job-1", 2, sha256)
     blobs.read_bytes.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_artwork_preview_uses_blob_metadata_for_legacy_recovery_choice(
+    tmp_path: Path,
+) -> None:
+    service, store, _preferences, _snapshot = _service_fixture(tmp_path)
+    content = b"legacy-recovery-artwork"
+    sha256 = hashlib.sha256(content).hexdigest()
+    store.get_library_management_plan_item.return_value = LibraryManagementPlanItem(
+        job_id="job-1",
+        ordinal=2,
+        bundle_ordinal=0,
+        expected_catalog_revision=0,
+        expected_policy_revision="policy",
+        expected_profile_revision="profile",
+        expected_root_id="root-1",
+        expected_relative_path="Album/track.flac",
+        expected_stat_revision="1:2",
+        expected_tag_revision="tag",
+        expected_file_fingerprint="fingerprint",
+        source_path_identity="source-identity",
+        desired_document_json='{"fields":[]}',
+        desired_document_hash=hashlib.sha256(b"{}").hexdigest(),
+        eligibility="eligible",
+        created_at=1.0,
+        artwork_choices_json=json.dumps([{"blob_sha256": sha256}]),
+    )
+    store.get_management_blob.return_value = LibraryManagementBlob(
+        sha256=sha256,
+        kind="image",
+        byte_length=len(content),
+        relative_path=f"objects/{sha256[:2]}/{sha256[2:4]}/{sha256}.blob",
+        media_metadata_json=json.dumps(
+            {"mime_type": "image/png", "width": 1425, "height": 1425}
+        ),
+    )
+    blobs = AsyncMock()
+    blobs.read_bytes.return_value = content
+    service._blobs = blobs
+
+    actual_content, mime_type = await service.artwork_preview("job-1", 2, sha256)
+
+    assert actual_content == content
+    assert mime_type == "image/png"
+    store.get_management_blob.assert_awaited_once_with(sha256)
+    blobs.read_bytes.assert_awaited_once_with(sha256)
 
 
 @pytest.mark.asyncio

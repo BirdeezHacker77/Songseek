@@ -14,6 +14,7 @@
 	import TopAlbumsList from '$lib/components/TopAlbumsList.svelte';
 	import LastFmEnrichment from '$lib/components/LastFmEnrichment.svelte';
 	import LibraryAlbumsCarousel from '$lib/components/LibraryAlbumsCarousel.svelte';
+	import ArtistAppearancesSection from '$lib/components/library/ArtistAppearancesSection.svelte';
 	import PageSectionToc from '$lib/components/PageSectionToc.svelte';
 	import { requestAlbum } from '$lib/utils/albumRequest';
 	import { libraryStore } from '$lib/stores/library';
@@ -239,6 +240,9 @@
 		}
 		return [
 			{ id: 'section-overview', label: 'Overview' },
+			...(artist.appears_in_library
+				? [{ id: 'section-library-appearances', label: 'Local appearances' }]
+				: []),
 			{ id: 'section-about', label: 'About' },
 			{ id: 'section-similar', label: 'Similar Artists' },
 			...(releases.albums.length > 0 ? [{ id: 'section-albums', label: 'Albums' }] : []),
@@ -312,6 +316,10 @@
 
 					<ArtistWhereToBuy artistMbid={data.artistId} artistName={artist.name} />
 				</section>
+
+				{#if artist.appears_in_library}
+					<ArtistAppearancesSection artistId={data.artistId} />
+				{/if}
 
 				<section id="section-about" class="space-y-4 scroll-mt-24">
 					{#if !lastfmEnrichment?.bio}

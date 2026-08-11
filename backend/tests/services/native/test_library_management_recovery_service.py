@@ -81,7 +81,7 @@ async def test_startup_recovery_rolls_back_import_interrupted_after_publish(
     class SimulatedProcessStop(BaseException):
         pass
 
-    async def stop_after_replace(value):
+    async def stop_after_replace(value, _roots):
         await asyncio.to_thread(os.replace, value.temporary, value.destination)
         raise SimulatedProcessStop
 
@@ -174,13 +174,98 @@ async def test_recovery_never_republishes_an_interrupted_delete(
                 backup=backup,
                 destination=source,
             )
-        ]
+        ],
+        {"root-1": tmp_path},
     )
 
     assert recovered[0].journal.state == "published"
     assert source.exists() is False
     assert temporary.read_bytes() == content
     assert backup.read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    ("backup_exists", "temporary_exists"),
+    [(True, True), (False, True), (False, False)],
+)
+@pytest.mark.asyncio
+async def test_committed_delete_cleanup_resumes_from_monotonic_substates(
+    tmp_path: Path, backup_exists: bool, temporary_exists: bool
+) -> None:
+    (
+        root,
+        _source,
+        _real_store,
+        _audio,
+        publisher,
+        job_id,
+    ) = await _ready_apply_operation(tmp_path)
+    snapshot = await _real_store.get_library_management_job_snapshot(job_id)
+    assert snapshot is not None
+    pinned, roots = publisher.recovery_configuration(snapshot)
+    content = b"generated artwork"
+    fingerprint = hashlib.sha256(content).hexdigest()
+    destination = root / "cover.jpg"
+    temporary = root / ".delete-temp.jpg"
+    backup = root / ".delete-backup.jpg"
+    if temporary_exists:
+        temporary.write_bytes(content)
+    if backup_exists:
+        backup.write_bytes(content)
+    journal = LibraryFileMutationJournal(
+        id="committed-delete-journal",
+        job_id=job_id,
+        plan_item_ordinal=0,
+        subject_kind="external_art",
+        subject_key="delete:cover.jpg",
+        source_root_id="root-1",
+        source_relative_path="cover.jpg",
+        temporary_root_id="root-1",
+        temporary_relative_path=temporary.name,
+        backup_root_id="root-1",
+        backup_relative_path=backup.name,
+        destination_root_id="root-1",
+        destination_relative_path="cover.jpg",
+        source_fingerprint=fingerprint,
+        staged_fingerprint=fingerprint,
+        recovery_evidence_json='{"mutation":"delete"}',
+        state="cleanup_pending",
+        created_at=1,
+        updated_at=1,
+    )
+    store = AsyncMock()
+    service = LibraryManagementRecoveryService(
+        store,
+        publisher,
+        LibraryFilesystemCoordinator(),
+        clock=lambda: 2,
+    )
+
+    await service._cleanup_committed_locked(
+        snapshot,
+        [
+            _JournalPaths(
+                journal=journal,
+                source=destination,
+                temporary=temporary,
+                backup=backup,
+                destination=destination,
+            )
+        ],
+        pinned,
+        roots,
+    )
+
+    assert not backup.exists()
+    assert not temporary.exists()
+    store.transition_file_mutation_journal.assert_awaited_once_with(
+        journal.id,
+        expected_state="cleanup_pending",
+        new_state="completed",
+        expected_row_revision=journal.row_revision,
+        updated_at=2,
+        increment_attempts=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -337,7 +422,10 @@ async def test_recovery_finishes_partially_published_album_bundle(
         selection=LibraryManagementSelection(kind="albums", ids=("album-1",)),
     )
     prepared = await _prepare_bundle(publisher, store, job_id)
-    await publisher._publish_one(prepared[0])
+    snapshot = await store.get_library_management_job_snapshot(job_id)
+    assert snapshot is not None
+    _pinned, roots = publisher.recovery_configuration(snapshot)
+    await publisher._publish_one(prepared[0], roots)
 
     result = await _recovery(publisher, store).recover_startup()
 
@@ -368,7 +456,10 @@ async def test_recovery_finishes_partial_audio_artwork_and_sidecar_bundle(
     )
     prepared = await _prepare_bundle(publisher, store, job_id)
     audio = next(value for value in prepared if value.journal.subject_kind == "audio")
-    await publisher._publish_one(audio)
+    snapshot = await store.get_library_management_job_snapshot(job_id)
+    assert snapshot is not None
+    _pinned, roots = publisher.recovery_configuration(snapshot)
+    await publisher._publish_one(audio, roots)
 
     result = await _recovery(publisher, store).recover_startup()
 
@@ -392,7 +483,10 @@ async def test_recovery_marks_changed_published_destination_attention_without_de
         tmp_path
     )
     prepared = await _prepare_bundle(publisher, store, job_id)
-    await publisher._publish_one(prepared[0])
+    snapshot = await store.get_library_management_job_snapshot(job_id)
+    assert snapshot is not None
+    _pinned, roots = publisher.recovery_configuration(snapshot)
+    await publisher._publish_one(prepared[0], roots)
     destination = prepared[0].destination
     destination.write_bytes(b"third-party replacement")
 
@@ -501,7 +595,7 @@ async def test_recovery_marks_missing_committed_destination_and_catalog_missing(
         tmp_path
     )
 
-    def fail_cleanup(_value) -> None:
+    def fail_cleanup(_value, _roots) -> None:
         raise OSError("injected cleanup failure")
 
     monkeypatch.setattr(publisher, "_cleanup_committed_filesystem", fail_cleanup)
@@ -528,7 +622,7 @@ async def test_recovery_retries_committed_cleanup_after_settings_change(
         tmp_path
     )
 
-    def fail_cleanup(_value) -> None:
+    def fail_cleanup(_value, _roots) -> None:
         raise OSError("injected cleanup failure")
 
     monkeypatch.setattr(publisher, "_cleanup_committed_filesystem", fail_cleanup)
@@ -584,7 +678,7 @@ async def test_recovery_catalog_destination_mismatch_preserves_all_files(
         tmp_path
     )
 
-    def fail_cleanup(_value) -> None:
+    def fail_cleanup(_value, _roots) -> None:
         raise OSError("injected cleanup failure")
 
     monkeypatch.setattr(publisher, "_cleanup_committed_filesystem", fail_cleanup)

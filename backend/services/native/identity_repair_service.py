@@ -694,6 +694,10 @@ class IdentityRepairService:
                 RepairFindingResponse(
                     id=str(row["id"]),
                     local_album_id=str(row["local_album_id"]),
+                    album_title=str(row["album_title"]),
+                    album_artist_name=row["album_artist_name"],
+                    album_year=row["album_year"],
+                    cover_available=bool(row["cover_available"]),
                     evidence_id=row["evidence_id"],
                     review_id=row["review_id"],
                     finding_code=str(row["finding_code"]),

@@ -137,7 +137,7 @@ class MbManagementLabel(msgspec.Struct):
 
 
 class MbManagementLabelInfo(msgspec.Struct):
-    catalog_number: str = msgspec.field(name="catalog-number", default="")
+    catalog_number: str | None = msgspec.field(name="catalog-number", default=None)
     label: MbManagementLabel | None = None
 
 
@@ -202,7 +202,7 @@ class MbManagementRelease(msgspec.Struct):
     barcode: str | None = None
     asin: str | None = None
     packaging: str | None = None
-    packaging_id: str = msgspec.field(name="packaging-id", default="")
+    packaging_id: str | None = msgspec.field(name="packaging-id", default=None)
     disambiguation: str = ""
     text_representation: MbManagementTextRepresentation = msgspec.field(
         name="text-representation", default_factory=MbManagementTextRepresentation

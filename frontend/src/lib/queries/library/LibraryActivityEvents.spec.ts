@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-	invalidate: vi.fn().mockResolvedValue(undefined)
+	invalidate: vi.fn().mockResolvedValue(undefined),
+	invalidateCatalog: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock('$lib/queries/QueryClient', () => ({
 	invalidateQueriesWithPersister: h.invalidate
+}));
+vi.mock('./LibraryCatalogInvalidation', () => ({
+	invalidateLibraryCatalog: h.invalidateCatalog
 }));
 
 import { LibraryQueryKeyFactory } from './LibraryQueryKeyFactory';
@@ -14,7 +18,7 @@ import { createLibraryActivityEvents } from './LibraryActivityEvents';
 class FakeEventSource {
 	static instances: FakeEventSource[] = [];
 	readonly url: string;
-	readonly listeners = new Map<string, Set<() => void>>();
+	readonly listeners = new Map<string, Set<(event: Event) => void>>();
 	closed = false;
 
 	constructor(url: string | URL) {
@@ -23,8 +27,8 @@ class FakeEventSource {
 	}
 
 	addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
-		const callback = listener as () => void;
-		const listeners = this.listeners.get(type) ?? new Set<() => void>();
+		const callback = listener as (event: Event) => void;
+		const listeners = this.listeners.get(type) ?? new Set<(event: Event) => void>();
 		listeners.add(callback);
 		this.listeners.set(type, listeners);
 	}
@@ -33,8 +37,8 @@ class FakeEventSource {
 		this.closed = true;
 	}
 
-	emit(type: string): void {
-		for (const listener of this.listeners.get(type) ?? []) listener();
+	emit(type: string, event: Event = new Event(type)): void {
+		for (const listener of this.listeners.get(type) ?? []) listener(event);
 	}
 }
 
@@ -82,5 +86,24 @@ describe('createLibraryActivityEvents', () => {
 		expect(FakeEventSource.instances).toHaveLength(3);
 		events.stop();
 		expect(FakeEventSource.instances[2].closed).toBe(true);
+	});
+
+	it('sweeps catalog projections once when the durable catalog revision advances', () => {
+		const events = createLibraryActivityEvents();
+		events.start(true);
+		const changed = new MessageEvent('activity.changed', {
+			data: JSON.stringify({ revisions: { operation: 4, catalog: 9 } })
+		});
+		FakeEventSource.instances[0].emit('activity.changed', changed);
+		FakeEventSource.instances[1].emit('activity.changed', changed);
+		expect(h.invalidateCatalog).toHaveBeenCalledOnce();
+
+		FakeEventSource.instances[0].emit(
+			'activity.changed',
+			new MessageEvent('activity.changed', {
+				data: JSON.stringify({ revisions: { operation: 5, catalog: 10 } })
+			})
+		);
+		expect(h.invalidateCatalog).toHaveBeenCalledTimes(2);
 	});
 });

@@ -158,6 +158,9 @@ describe('LibraryManagementOperationPage', () => {
 		await expect
 			.element(page.getByText(/9 files have an available first-management baseline/))
 			.toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Open baseline restore...' }))
+			.toHaveAttribute('href', '/library/management?runner=baseline_restore#management-controls');
 		await page.getByRole('button', { name: 'Preview Undo...' }).click();
 		await expect
 			.element(page.getByRole('heading', { name: 'Generate an Undo preview?' }))
@@ -254,6 +257,150 @@ describe('LibraryManagementOperationPage', () => {
 		await expect
 			.element(page.getByText(/Recovery never silently removes an uncertain file/))
 			.not.toBeInTheDocument();
+	});
+
+	it('shows the completed destination when an operation changed a file path', async () => {
+		h.operation = {
+			data: operation({
+				state: 'succeeded',
+				phase: 'complete',
+				mode: 'undo',
+				terminal_code: 'COMPLETED',
+				expected_work_count: 1,
+				completed_count: 1,
+				succeeded_count: 1
+			}),
+			isLoading: false,
+			isError: false
+		};
+		h.results = {
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								plan: {
+									ordinal: 0,
+									bundle_ordinal: 0,
+									source_root_id: 'root-1',
+									source_relative_path:
+										'Anthony Green/Avalon (2008)/0114 The Fisherman Will Be Bewildered.flac',
+									destination_root_id: 'root-1',
+									destination_relative_path:
+										'Anthony Green/Avalon (2008)/0114 The Fisherman Will Be Bewildered (H&D EP Version).flac',
+									capability: { audio_format: 'flac' }
+								},
+								work_state: 'succeeded',
+								failure_code: null,
+								result: {},
+								journal_states: ['completed']
+							}
+						]
+					}
+				]
+			},
+			isLoading: false,
+			isError: false,
+			hasNextPage: false,
+			isFetchingNextPage: false,
+			fetchNextPage: vi.fn()
+		};
+		render(LibraryManagementOperationPage, { jobId: 'job-1' });
+
+		await expect
+			.element(
+				page
+					.getByText('0114 The Fisherman Will Be Bewildered (H&D EP Version).flac', {
+						exact: true
+					})
+					.first()
+			)
+			.toBeVisible();
+		await expect
+			.element(
+				page.getByLabelText(
+					'File path changed from Anthony Green/Avalon (2008)/0114 The Fisherman Will Be Bewildered.flac to Anthony Green/Avalon (2008)/0114 The Fisherman Will Be Bewildered (H&D EP Version).flac'
+				)
+			)
+			.toBeVisible();
+	});
+
+	it('uses the same release dossier and inspector pattern for durable operation results', async () => {
+		h.operation = {
+			data: operation({
+				state: 'succeeded',
+				phase: 'complete',
+				terminal_code: 'COMPLETED',
+				expected_work_count: 2,
+				completed_count: 2,
+				succeeded_count: 2
+			}),
+			isLoading: false,
+			isError: false
+		};
+		const result = (ordinal: number, title: string) => ({
+			plan: {
+				ordinal,
+				bundle_ordinal: 0,
+				local_album_id: 'album-1',
+				local_track_id: `track-${ordinal + 1}`,
+				source_root_id: 'root-1',
+				source_relative_path: `Anthony Green/Avalon (2008)/${String(ordinal + 1).padStart(2, '0')} ${title}.flac`,
+				destination_root_id: 'root-1',
+				destination_relative_path: `Anthony Green/Avalon (2008)/${String(ordinal + 1).padStart(2, '0')} ${title}.flac`,
+				eligibility: 'eligible',
+				reason_code: null,
+				estimated_temporary_bytes: 0,
+				desired_document: {
+					fields: [
+						{ name: 'title', value: title },
+						{ name: 'artist', value: ['Anthony Green'] },
+						{ name: 'album_artist', value: ['Anthony Green'] },
+						{ name: 'album', value: 'Avalon' },
+						{ name: 'track_number', value: ordinal + 1 }
+					]
+				},
+				artwork_choices: [],
+				diff: {},
+				capability: { audio_format: 'flac', album_artwork_version: 7 },
+				collisions: []
+			},
+			work_state: 'succeeded',
+			failure_code: null,
+			result: { checksum_verified: true },
+			journal_states: ['planned', 'validated', 'completed']
+		});
+		h.results = {
+			data: {
+				pages: [
+					{
+						items: [result(0, 'She Loves Me So'), result(1, 'Dear Child')],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			},
+			isLoading: false,
+			isError: false,
+			hasNextPage: false,
+			isFetchingNextPage: false,
+			fetchNextPage: vi.fn()
+		};
+		render(LibraryManagementOperationPage, { jobId: 'job-1' });
+
+		await expect.element(page.getByRole('heading', { name: 'Avalon' })).toBeVisible();
+		await expect.element(page.getByText('2 files')).toBeVisible();
+		await expect
+			.element(page.getByTestId('management-dossier-artwork'))
+			.toHaveAttribute('data-src', '/api/v1/library/albums/album-1/artwork/cached?v=7');
+		await page.getByRole('button', { name: 'Inspect result evidence for Dear Child' }).click();
+		await expect.element(page.getByRole('heading', { name: 'Dear Child' })).toBeVisible();
+		await expect.element(page.getByText('Planned', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('Validated', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('Checksum Verified: true')).toBeVisible();
+
+		await page.getByRole('checkbox', { name: 'Only exceptions' }).click();
+		await expect.element(page.getByText('No exceptions in the loaded files.')).toBeVisible();
 	});
 
 	it('keeps a failed terminal code visibly actionable', async () => {

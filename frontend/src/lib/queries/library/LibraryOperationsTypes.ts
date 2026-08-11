@@ -366,6 +366,7 @@ export interface OperationResponse {
 		evidence: CandidateEvidence;
 		automatic_safe: boolean;
 	}>;
+	selected_reidentification_candidate_key: string | null;
 }
 
 export interface OperationListResponse {
@@ -393,6 +394,10 @@ export interface MembershipPreviewResponse {
 export interface RepairFindingResponse {
 	id: string;
 	local_album_id: string;
+	album_title: string;
+	album_artist_name: string | null;
+	album_year: number | null;
+	cover_available: boolean;
 	evidence_id: string | null;
 	review_id: string | null;
 	finding_code: string;

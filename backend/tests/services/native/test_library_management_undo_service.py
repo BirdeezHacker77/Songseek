@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 
 import msgspec
@@ -221,6 +222,175 @@ async def test_undo_restores_real_audio_path_tags_and_management_state(
     )
     assert journals and all(value.state == "completed" for value in journals)
     assert not list(root.rglob(".droppedneedle-management-*"))
+
+
+@pytest.mark.asyncio
+async def test_undo_preview_counts_embedded_artwork_restoration(tmp_path) -> None:
+    artwork = _ArtworkRepository()
+
+    def configure(_root, preferences, _store) -> None:
+        def enable_embedded(_settings, profile) -> None:
+            profile.artwork.embedded_enabled = True
+            profile.artwork.external_enabled = False
+            profile.artwork.providers = ["cover_art_archive_release"]
+
+        _update_profile(preferences, enable_embedded)
+
+    (
+        root,
+        source,
+        store,
+        audio,
+        publisher,
+        source_job_id,
+    ) = await _ready_apply_operation(
+        tmp_path,
+        configure=configure,
+        artwork_repository=artwork,
+    )
+    original_artwork = audio.read(source).artwork
+    await publisher.publish_bundle(source_job_id, 0, "apply-worker")
+    managed = await store.get_target_track("track-1")
+    assert managed is not None
+    assert audio.read(root / str(managed["relative_path"])).artwork != original_artwork
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO local_album_artwork "
+            "(local_album_id,cover_url,source,source_locator,version,updated_at,row_revision) "
+            "VALUES ('album-1',NULL,'provider','release-group-1',7,115,1)"
+        )
+        connection.execute(
+            "UPDATE library_operation_jobs SET state='succeeded',terminal_at=115,"
+            "lease_owner=NULL,lease_expires_at=NULL,heartbeat_at=NULL,updated_at=115,"
+            "row_revision=row_revision+1,event_revision=event_revision+1 WHERE id=?",
+            (source_job_id,),
+        )
+    source_job = await store.get_operation_job(source_job_id)
+    assert source_job is not None
+    filesystem = LibraryFilesystemCoordinator()
+    undo = LibraryManagementUndoService(
+        store,
+        publisher._preferences,
+        audio,
+        LibraryManagementBlobStore(tmp_path / "blobs", store),
+        filesystem,
+        clock=lambda: 120.0,
+    )
+    preview = await undo.create_preview(
+        source_job_id,
+        LibraryManagementUndoPreviewRequest(
+            expected_operation_row_revision=int(source_job["row_revision"]),
+            idempotency_key="undo-embedded-artwork-preview",
+        ),
+        "admin",
+    )
+    claimed = await store.claim_operation_job(
+        "undo-embedded-artwork-worker",
+        now=121.0,
+        lease_seconds=60.0,
+        kind="library_management",
+    )
+    assert claimed is not None
+    await undo.run_claimed_preview(claimed, "undo-embedded-artwork-worker")
+
+    items = await store.list_library_management_plan_items(preview.job_id)
+    snapshot = await store.get_library_management_job_snapshot(preview.job_id)
+    assert len(items) == 1
+    diff = json.loads(items[0].diff_json)
+    capability = json.loads(items[0].capability_json)
+    assert (
+        items[0].desired_document_hash
+        == hashlib.sha256(items[0].desired_document_json.encode()).hexdigest()
+    )
+    assert capability["album_artwork_version"] == 7
+    assert diff["artwork_changed"] is True
+    assert diff["field_mutations"]
+    assert diff["restoration"]["scope"] == "operation_before_state"
+    assert diff["restoration"]["artwork"]["changed"] is True
+    assert (
+        diff["restoration"]["artwork"]["current"][0]["sha256"]
+        != diff["restoration"]["artwork"]["restored"][0]["sha256"]
+    )
+    assert "content" not in diff["restoration"]["artwork"]["restored"][0]
+    assert (
+        diff["restoration"]["native_tags"]["current_fingerprint"]
+        != diff["restoration"]["native_tags"]["restored_fingerprint"]
+    )
+    assert snapshot is not None
+    assert json.loads(snapshot.summary_json)["artwork_change_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_undo_external_artwork_choice_retains_blob_metadata(tmp_path) -> None:
+    (
+        root,
+        source,
+        store,
+        audio,
+        publisher,
+        _source_job_id,
+    ) = await _ready_apply_operation(tmp_path)
+    blobs = LibraryManagementBlobStore(tmp_path / "restoration-blobs", store)
+    content = b"pinned-restoration-artwork"
+    blob = await blobs.add_bytes(
+        content,
+        kind="image",
+        created_at=120.0,
+        media_metadata_json=json.dumps(
+            {
+                "mime_type": "image/png",
+                "image_type": "front",
+                "width": 1425,
+                "height": 1425,
+            }
+        ),
+    )
+    undo = LibraryManagementUndoService(
+        store,
+        publisher._preferences,
+        audio,
+        blobs,
+        LibraryFilesystemCoordinator(),
+        clock=lambda: 120.0,
+    )
+
+    values = await undo.plan_ancillary_restore(
+        json.dumps(
+            [
+                {
+                    "kind": "external_art",
+                    "after_root_id": "root-1",
+                    "after_relative_path": "missing-cover.png",
+                    "after_exists": False,
+                    "before_root_id": "root-1",
+                    "before_relative_path": "cover.png",
+                    "before_exists": True,
+                    "blob_sha256": blob.sha256,
+                }
+            ]
+        ),
+        {"root-1": root},
+        source,
+        source,
+    )
+
+    assert values == [
+        {
+            "kind": "external_art",
+            "artwork_choice": {
+                "output_kind": "external",
+                "blob_sha256": blob.sha256,
+                "destination_relative_path": "cover.png",
+                "source": "operation_snapshot",
+                "byte_size": len(content),
+                "mime_type": "image/png",
+                "image_type": "front",
+                "width": 1425,
+                "height": 1425,
+                "format": "png",
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

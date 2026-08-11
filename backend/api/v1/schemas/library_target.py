@@ -10,6 +10,11 @@ class TargetNativeArtist(AppStruct):
     artist_identity_state: Literal["local_only", "musicbrainz_linked"] = "local_only"
     album_count: int = 0
     track_count: int = 0
+    appearance_release_count: int = 0
+    appearance_track_count: int = 0
+    library_relationship: Literal["album_artist", "contributor", "both"] = (
+        "album_artist"
+    )
     date_added: float | None = None
     row_revision: int = 1
 
@@ -91,6 +96,21 @@ class TargetNativeAlbumsResponse(AppStruct):
 class TargetNativeArtistsResponse(AppStruct):
     items: list[TargetNativeArtist] = []
     total: int = 0
+    album_artist_total: int = 0
+    contributor_total: int = 0
+
+
+class TargetNativeArtistAppearance(AppStruct):
+    album: TargetNativeAlbum
+    tracks: list[TargetNativeTrack] = []
+
+
+class TargetNativeArtistAppearancesResponse(AppStruct):
+    items: list[TargetNativeArtistAppearance] = []
+    total: int = 0
+    total_tracks: int = 0
+    offset: int = 0
+    limit: int = 0
 
 
 class TargetNativeTracksResponse(AppStruct):

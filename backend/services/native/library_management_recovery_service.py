@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import stat
 import time
 from dataclasses import dataclass
@@ -24,6 +23,9 @@ from models.library_management import (
 from models.library_management_planning import PinnedLibraryManagementProfile
 from services.native.library_filesystem_coordinator import (
     LibraryFilesystemCoordinator,
+    copy_rooted,
+    replace_rooted,
+    unlink_rooted,
 )
 from services.native.library_management_publisher import LibraryManagementPublisher
 
@@ -389,7 +391,7 @@ class LibraryManagementRecoveryService:
         async def critical() -> RecoveryDisposition:
             try:
                 async with self._filesystem.write_many(self._affected_roots(journals)):
-                    current = await self._publish_remaining(paths)
+                    current = await self._publish_remaining(paths, roots)
                     item_by_ordinal = {item.ordinal: item for item in items}
                     mutations = []
                     for journal_path in current:
@@ -500,7 +502,7 @@ class LibraryManagementRecoveryService:
         return result
 
     async def _publish_remaining(
-        self, paths: list[_JournalPaths]
+        self, paths: list[_JournalPaths], roots: dict[str, Path]
     ) -> list[_JournalPaths]:
         await asyncio.to_thread(self._preflight_publish, paths)
         current: list[_JournalPaths] = []
@@ -514,7 +516,16 @@ class LibraryManagementRecoveryService:
                     source = await asyncio.to_thread(self._inspect, value.source)
                     backup = await asyncio.to_thread(self._inspect, value.backup)
                     if source.exact(journal.source_fingerprint):
-                        await asyncio.to_thread(os.replace, value.source, value.backup)
+                        assert journal.source_root_id and journal.source_relative_path
+                        assert journal.backup_root_id and journal.backup_relative_path
+                        await asyncio.to_thread(
+                            replace_rooted,
+                            roots,
+                            journal.source_root_id,
+                            journal.source_relative_path,
+                            journal.backup_root_id,
+                            journal.backup_relative_path,
+                        )
                     elif not (
                         source.kind == "missing"
                         and backup.exact(journal.source_fingerprint)
@@ -559,8 +570,17 @@ class LibraryManagementRecoveryService:
                         )
                 else:
                     assert value.temporary is not None
+                    assert journal.temporary_root_id
+                    assert journal.temporary_relative_path
+                    assert journal.destination_root_id
+                    assert journal.destination_relative_path
                     await asyncio.to_thread(
-                        os.replace, value.temporary, value.destination
+                        replace_rooted,
+                        roots,
+                        journal.temporary_root_id,
+                        journal.temporary_relative_path,
+                        journal.destination_root_id,
+                        journal.destination_relative_path,
                     )
                 journal = await self._store.transition_file_mutation_journal(
                     journal.id,
@@ -576,8 +596,17 @@ class LibraryManagementRecoveryService:
                     )
                     if destination.kind == "missing":
                         assert value.temporary is not None
+                        assert journal.temporary_root_id
+                        assert journal.temporary_relative_path
+                        assert journal.destination_root_id
+                        assert journal.destination_relative_path
                         await asyncio.to_thread(
-                            os.replace, value.temporary, value.destination
+                            replace_rooted,
+                            roots,
+                            journal.temporary_root_id,
+                            journal.temporary_relative_path,
+                            journal.destination_root_id,
+                            journal.destination_relative_path,
                         )
                 journal = await self._store.transition_file_mutation_journal(
                     journal.id,
@@ -757,11 +786,20 @@ class LibraryManagementRecoveryService:
                 self._inspect_paths, value
             )
             if self._is_delete_mutation(value.journal):
+                valid_cleanup_state = (
+                    backup.exact(value.journal.source_fingerprint)
+                    and temporary.exact(value.journal.staged_fingerprint)
+                ) or (
+                    backup.kind == "missing"
+                    and (
+                        temporary.exact(value.journal.staged_fingerprint)
+                        or temporary.kind == "missing"
+                    )
+                )
                 if (
                     source.kind != "missing"
                     or destination.kind != "missing"
-                    or not backup.exact(value.journal.source_fingerprint)
-                    or not temporary.exact(value.journal.staged_fingerprint)
+                    or not valid_cleanup_state
                 ):
                     raise _RecoveryUncertainError(
                         "RECOVERY_COMMITTED_DELETE_CHANGED",
@@ -808,6 +846,12 @@ class LibraryManagementRecoveryService:
                     candidates[0],
                     value.destination,
                     str(value.journal.staged_fingerprint),
+                    roots,
+                    self._journal_path_identity(value, candidates[0]),
+                    (
+                        str(value.journal.destination_root_id),
+                        str(value.journal.destination_relative_path),
+                    ),
                 )
                 destination = await asyncio.to_thread(self._inspect, value.destination)
             evidence_rows.append((value, source, temporary, backup, destination))
@@ -822,7 +866,13 @@ class LibraryManagementRecoveryService:
                         self._evidence(value, source, temporary, backup, _destination),
                     )
                 assert value.backup is not None
-                await asyncio.to_thread(value.backup.unlink)
+                assert journal.backup_root_id and journal.backup_relative_path
+                await asyncio.to_thread(
+                    unlink_rooted,
+                    roots,
+                    journal.backup_root_id,
+                    journal.backup_relative_path,
+                )
             if (
                 remove_source
                 and value.source is not None
@@ -834,7 +884,13 @@ class LibraryManagementRecoveryService:
                         "RECOVERY_CLEANUP_SOURCE_CHANGED",
                         self._evidence(value, source, temporary, backup, _destination),
                     )
-                await asyncio.to_thread(value.source.unlink)
+                assert journal.source_root_id and journal.source_relative_path
+                await asyncio.to_thread(
+                    unlink_rooted,
+                    roots,
+                    journal.source_root_id,
+                    journal.source_relative_path,
+                )
             if temporary.kind != "missing":
                 if temporary.kind != "regular":
                     raise _RecoveryUncertainError(
@@ -842,7 +898,13 @@ class LibraryManagementRecoveryService:
                         self._evidence(value, source, temporary, backup, _destination),
                     )
                 assert value.temporary is not None
-                await asyncio.to_thread(value.temporary.unlink)
+                assert journal.temporary_root_id and journal.temporary_relative_path
+                await asyncio.to_thread(
+                    unlink_rooted,
+                    roots,
+                    journal.temporary_root_id,
+                    journal.temporary_relative_path,
+                )
             if journal.state in {"catalog_committed", "cleanup_pending"}:
                 await self._store.transition_file_mutation_journal(
                     journal.id,
@@ -896,7 +958,7 @@ class LibraryManagementRecoveryService:
                 async with self._filesystem.write_many(self._affected_roots(journals)):
                     await asyncio.to_thread(self._preflight_compensation, paths)
                     current = await self._transition_rollback_pending(paths, reason)
-                    await asyncio.to_thread(self._restore_originals, current)
+                    await asyncio.to_thread(self._restore_originals, current, roots)
                     for value in current:
                         journal = value.journal
                         if journal.state == "rollback_pending":
@@ -1036,7 +1098,9 @@ class LibraryManagementRecoveryService:
             )
         return current
 
-    def _restore_originals(self, paths: list[_JournalPaths]) -> None:
+    def _restore_originals(
+        self, paths: list[_JournalPaths], roots: dict[str, Path]
+    ) -> None:
         for value in reversed(paths):
             journal = value.journal
             if journal.state != "rollback_pending":
@@ -1048,19 +1112,59 @@ class LibraryManagementRecoveryService:
             same_path = value.source is not None and value.source == value.destination
             if self._is_recycle_mutation(journal):
                 if destination.exact(journal.staged_fingerprint):
-                    value.destination.unlink()
+                    assert journal.destination_root_id
+                    assert journal.destination_relative_path
+                    unlink_rooted(
+                        roots,
+                        journal.destination_root_id,
+                        journal.destination_relative_path,
+                    )
                 if backup.exact(journal.source_fingerprint):
                     assert value.source is not None and value.backup is not None
-                    os.replace(value.backup, value.source)
+                    assert journal.backup_root_id and journal.backup_relative_path
+                    assert journal.source_root_id and journal.source_relative_path
+                    replace_rooted(
+                        roots,
+                        journal.backup_root_id,
+                        journal.backup_relative_path,
+                        journal.source_root_id,
+                        journal.source_relative_path,
+                    )
             elif same_path:
                 if backup.exact(journal.source_fingerprint):
                     if destination.exact(journal.staged_fingerprint):
-                        value.destination.unlink()
-                    os.replace(value.backup, value.destination)
+                        assert journal.destination_root_id
+                        assert journal.destination_relative_path
+                        unlink_rooted(
+                            roots,
+                            journal.destination_root_id,
+                            journal.destination_relative_path,
+                        )
+                    assert journal.backup_root_id and journal.backup_relative_path
+                    assert journal.destination_root_id
+                    assert journal.destination_relative_path
+                    replace_rooted(
+                        roots,
+                        journal.backup_root_id,
+                        journal.backup_relative_path,
+                        journal.destination_root_id,
+                        journal.destination_relative_path,
+                    )
             elif destination.exact(journal.staged_fingerprint):
-                value.destination.unlink()
+                assert journal.destination_root_id
+                assert journal.destination_relative_path
+                unlink_rooted(
+                    roots,
+                    journal.destination_root_id,
+                    journal.destination_relative_path,
+                )
             if temporary.kind == "regular" and value.temporary is not None:
-                value.temporary.unlink()
+                assert journal.temporary_root_id and journal.temporary_relative_path
+                unlink_rooted(
+                    roots,
+                    journal.temporary_root_id,
+                    journal.temporary_relative_path,
+                )
 
     async def _attention_bundle(
         self,
@@ -1312,8 +1416,35 @@ class LibraryManagementRecoveryService:
         return evidence.get("mutation") == "recycle"
 
     @staticmethod
+    def _journal_path_identity(value: _JournalPaths, path: Path) -> tuple[str, str]:
+        journal = value.journal
+        candidates = (
+            (value.source, journal.source_root_id, journal.source_relative_path),
+            (
+                value.temporary,
+                journal.temporary_root_id,
+                journal.temporary_relative_path,
+            ),
+            (value.backup, journal.backup_root_id, journal.backup_relative_path),
+            (
+                value.destination,
+                journal.destination_root_id,
+                journal.destination_relative_path,
+            ),
+        )
+        for candidate, root_id, relative_path in candidates:
+            if candidate == path and root_id is not None and relative_path is not None:
+                return root_id, relative_path
+        raise ValidationError("A recovery path has no rooted journal identity.")
+
+    @staticmethod
     def _restore_committed_destination(
-        source: Path, destination: Path, expected_fingerprint: str
+        source: Path,
+        destination: Path,
+        expected_fingerprint: str,
+        roots: dict[str, Path],
+        source_identity: tuple[str, str],
+        destination_identity: tuple[str, str],
     ) -> None:
         if destination.exists() or destination.is_symlink():
             raise ConflictError("A committed destination became occupied.")
@@ -1321,17 +1452,31 @@ class LibraryManagementRecoveryService:
             f".droppedneedle-management-recovery-{expected_fingerprint[:16]}"
             f"{destination.suffix}"
         )
+        destination_relative = PurePosixPath(destination_identity[1])
+        temporary_relative = str(destination_relative.with_name(temporary.name))
         if temporary.exists() or temporary.is_symlink():
             evidence = LibraryManagementRecoveryService._inspect(temporary)
             if not evidence.exact(expected_fingerprint):
                 raise ConflictError("A recovery restore temporary is occupied.")
         else:
-            shutil.copy2(source, temporary)
+            copy_rooted(
+                roots,
+                source_identity[0],
+                source_identity[1],
+                destination_identity[0],
+                temporary_relative,
+            )
         if not LibraryManagementRecoveryService._inspect(temporary).exact(
             expected_fingerprint
         ):
             raise ConflictError("A restored management destination changed.")
-        os.replace(temporary, destination)
+        replace_rooted(
+            roots,
+            destination_identity[0],
+            temporary_relative,
+            destination_identity[0],
+            destination_identity[1],
+        )
 
     @staticmethod
     def _fsync_directories(paths: list[_JournalPaths]) -> None:

@@ -9,6 +9,7 @@ from api.v1.schemas.library_target import (
     TargetNativeAlbumsResponse,
     TargetNativeAlbumStatusResponse,
     TargetNativeArtist,
+    TargetNativeArtistAppearancesResponse,
     TargetNativeArtistsResponse,
     TargetNativeStatsResponse,
     TargetNativeTrack,
@@ -88,18 +89,29 @@ async def get_target_artists(
     sort_by: str = "name",
     sort_order: str = "asc",
     q: str | None = None,
+    scope: str = "album",
 ) -> TargetNativeArtistsResponse:
     normalized_sort = (
-        sort_by if sort_by in {"name", "album_count", "date_added"} else "name"
+        sort_by
+        if sort_by in {"name", "album_count", "appearance_count", "date_added"}
+        else "name"
     )
+    normalized_scope = scope if scope in {"album", "contributors"} else "album"
     items, total = await service.artists(
         limit=max(1, min(limit, 100)),
         offset=max(0, offset),
         search=(q or "").strip() or None,
         sort_by=normalized_sort,
         sort_order="desc" if sort_order == "desc" else "asc",
+        scope=normalized_scope,
     )
-    return TargetNativeArtistsResponse(items=items, total=total)
+    album_artist_total, contributor_total = await service.artist_scope_counts()
+    return TargetNativeArtistsResponse(
+        items=items,
+        total=total,
+        album_artist_total=album_artist_total,
+        contributor_total=contributor_total,
+    )
 
 
 @router.get("/albums", response_model=TargetNativeAlbumsResponse)
@@ -249,6 +261,40 @@ async def get_target_artist_albums(
         )
     items = await service.artist_albums(artist_id)
     return TargetNativeAlbumsResponse(items=items, total=len(items))
+
+
+@router.get(
+    "/artists/{artist_id}/appearances",
+    response_model=TargetNativeArtistAppearancesResponse,
+    name="target_artist_appearances",
+)
+async def get_target_artist_appearances(
+    request: Request,
+    artist_id: str,
+    _user: CurrentUserDep,
+    service: TargetNativeLibraryServiceDep,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> TargetNativeArtistAppearancesResponse | RedirectResponse:
+    canonical = await service.canonical_id("artist", artist_id)
+    if canonical is not None and canonical != artist_id:
+        target = request.url_for(
+            "target_artist_appearances", artist_id=canonical
+        ).include_query_params(limit=limit, offset=offset)
+        return RedirectResponse(
+            target,
+            status_code=308,
+        )
+    items, total, total_tracks = await service.artist_appearances(
+        artist_id, limit=limit, offset=offset
+    )
+    return TargetNativeArtistAppearancesResponse(
+        items=items,
+        total=total,
+        total_tracks=total_tracks,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get(

@@ -74,8 +74,8 @@ export const LibraryQueryKeyFactory = {
 		] as const,
 	albums: (page: number, sort: AlbumSort, q: string, format: string) =>
 		[...LibraryQueryKeyFactory.all, 'albums', { page, sort, q, format }] as const,
-	artists: (sortBy: ArtistSort, sortOrder: string, q: string) =>
-		[...LibraryQueryKeyFactory.all, 'artists', { sortBy, sortOrder, q }] as const,
+	artists: (scope: string, sortBy: ArtistSort, sortOrder: string, q: string) =>
+		[...LibraryQueryKeyFactory.all, 'artists', { scope, sortBy, sortOrder, q }] as const,
 	album: (mbid: string) => [...LibraryQueryKeyFactory.all, 'album', mbid] as const,
 	albumDetail: (albumId: string) =>
 		[...LibraryQueryKeyFactory.all, 'album-detail', albumId] as const,
@@ -85,6 +85,8 @@ export const LibraryQueryKeyFactory = {
 		[...LibraryQueryKeyFactory.all, 'artist-detail', artistId] as const,
 	artistAlbums: (artistId: string) =>
 		[...LibraryQueryKeyFactory.all, 'artist-albums', artistId] as const,
+	artistAppearances: (artistId: string) =>
+		[...LibraryQueryKeyFactory.all, 'artist-appearances', artistId] as const,
 	recentlyAdded: () => [...LibraryQueryKeyFactory.all, 'recently-added'] as const,
 	stats: () => [...LibraryQueryKeyFactory.all, 'stats'] as const,
 	scanSchedule: () => [...LibraryQueryKeyFactory.all, 'scan-schedule'] as const,

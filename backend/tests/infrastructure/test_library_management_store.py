@@ -1021,11 +1021,19 @@ async def test_management_selection_pages_are_stable_and_expand_track_albums(
             "(local_track_id, position, name, folded_name, source) "
             "VALUES ('track-2', 0, 'Ambient', 'ambient', 'local')"
         )
+        connection.execute(
+            "INSERT INTO local_album_artwork "
+            "(local_album_id, source, version, updated_at) "
+            "VALUES ('album-1', 'provider', 7, 2)"
+        )
 
     track_selection = NormalizedLibraryManagementSelection(
         kind="tracks", ids=("track-2",), requested_track_ids=("track-2",)
     )
     exact = await store.list_library_management_selection_page(track_selection)
+    selected_siblings = await store.list_library_management_selection_page(
+        msgspec.structs.replace(track_selection, ids=("track-1", "track-2"))
+    )
     expanded = await store.list_library_management_selection_page(
         msgspec.structs.replace(track_selection, expand_album_bundles=True), limit=1
     )
@@ -1059,6 +1067,14 @@ async def test_management_selection_pages_are_stable_and_expand_track_albums(
     )
 
     assert [value.local_track_id for value in exact.subjects] == ["track-2"]
+    assert exact.subjects[0].track_title == "Second Track"
+    assert exact.subjects[0].artist_name == "Artist"
+    assert exact.subjects[0].album_title == "Album"
+    assert exact.subjects[0].album_artist_name == "Artist"
+    assert exact.subjects[0].year == 2024
+    assert exact.subjects[0].album_artwork_version == 7
+    assert [value.bundle_ordinal for value in selected_siblings.subjects] == [0, 0]
+    assert [value.bundle_first for value in selected_siblings.subjects] == [True, False]
     assert [value.local_track_id for value in expanded.subjects] == ["track-1"]
     assert [value.local_track_id for value in expanded_second.subjects] == ["track-2"]
     assert expanded.subjects[0].bundle_ordinal == 0
@@ -1108,6 +1124,67 @@ async def test_management_selection_is_bounded_with_one_hundred_thousand_rows(
     assert first.next_cursor is not None
     assert first.next_cursor.next_ordinal == MANAGEMENT_PERSISTENCE_BATCH_SIZE
     assert first.subjects[-1].local_track_id < second.subjects[0].local_track_id
+
+
+@pytest.mark.asyncio
+async def test_preview_blocks_album_bundle_larger_than_publish_limit(
+    store: NativeLibraryStore,
+) -> None:
+    job_id = "oversized-management-bundle"
+    await store.create_library_management_job(
+        OperationJob(
+            id=job_id,
+            kind="library_management",
+            input_catalog_revision=0,
+            created_at=10,
+        ),
+        _job_snapshot(job_id),
+    )
+    first_page = [
+        msgspec.structs.replace(
+            _plan_item(job_id, ordinal),
+            bundle_ordinal=0,
+            capability_json=json.dumps({"audio_format": "flac"}),
+        )
+        for ordinal in range(MANAGEMENT_PERSISTENCE_BATCH_SIZE)
+    ]
+    revision = await store.append_library_management_plan_items(
+        job_id, first_page, expected_snapshot_revision=1
+    )
+    revision = await store.append_library_management_plan_items(
+        job_id,
+        [
+            msgspec.structs.replace(
+                _plan_item(job_id, MANAGEMENT_PERSISTENCE_BATCH_SIZE),
+                bundle_ordinal=0,
+                capability_json=json.dumps({"audio_format": "flac"}),
+            )
+        ],
+        expected_snapshot_revision=revision,
+    )
+    assert await store.claim_operation_job(
+        "worker-1", now=12, lease_seconds=60, kind="library_management"
+    )
+
+    snapshot = await store.finalize_library_management_preview(
+        job_id,
+        "worker-1",
+        expected_snapshot_revision=revision,
+        now=13,
+    )
+    summary = json.loads(snapshot.summary_json)
+    with sqlite3.connect(store.db_path) as connection:
+        rows = connection.execute(
+            "SELECT eligibility,reason_code,COUNT(*) FROM library_management_plan_items "
+            "WHERE job_id=? GROUP BY eligibility,reason_code",
+            (job_id,),
+        ).fetchall()
+
+    assert rows == [
+        ("blocked", "BUNDLE_TOO_LARGE", MANAGEMENT_PERSISTENCE_BATCH_SIZE + 1)
+    ]
+    assert summary["eligible_count"] == 0
+    assert summary["blocked_count"] == MANAGEMENT_PERSISTENCE_BATCH_SIZE + 1
 
 
 @pytest.mark.asyncio
@@ -1424,6 +1501,17 @@ async def _seed_published_management_bundle(
             genre="Rock",
             genres=["Rock", "Alternative"],
         ),
+        catalog_tag=AudioTag(
+            title="Managed Track",
+            artist="Managed Artist",
+            album="Managed Album",
+            album_artist="Managed Artist",
+            track_number=1,
+            disc_number=1,
+            year=2026,
+            genre="Rock",
+            genres=["Rock", "Alternative"],
+        ),
         info=AudioInfo(
             duration_seconds=180,
             bitrate=900,
@@ -1513,6 +1601,101 @@ async def test_management_bundle_catalog_commit_is_atomic_and_idempotent(
     assert journal["state"] == "catalog_committed"
     assert tuple(job) == (1, 1)
     assert actions == 1
+
+
+@pytest.mark.asyncio
+async def test_management_restore_keeps_empty_native_tags_searchable(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    mutation = await _seed_published_management_bundle(
+        store, db_path, job_id="management-empty-tag-restore"
+    )
+    mutation = msgspec.structs.replace(
+        mutation,
+        destination_relative_path="Trapeze/Hot Wire/08 Feel It Inside.mp3",
+        tag=AudioTag(title="", artist="", album="", track_number=0),
+        catalog_tag=AudioTag(
+            title="Feel It Inside",
+            artist="Trapeze",
+            album="Hot Wire",
+            album_artist="Trapeze",
+            track_number=8,
+            disc_number=1,
+            year=1974,
+            artist_sort="Trapeze",
+            album_artist_sort="Trapeze",
+        ),
+        restored_management_state_json="{}",
+    )
+
+    await store.commit_library_management_bundle(
+        "management-empty-tag-restore", 0, "worker-1", [mutation], now=30
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        track = connection.execute(
+            "SELECT title,artist_name,album_title,track_number,disc_number,year,"
+            "artist_sort,album_artist_sort,tag_album_title,tag_album_artist_name,"
+            "embedded_release_mbid FROM local_tracks WHERE id='track-1'"
+        ).fetchone()
+        album = connection.execute(
+            "SELECT title,album_artist_name,year,album_artist_sort_name,"
+            "tag_album_title,tag_album_artist_name "
+            "FROM local_albums WHERE id='album-1'"
+        ).fetchone()
+        identities = connection.execute(
+            "SELECT COUNT(*) FROM local_track_external_identities "
+            "WHERE local_track_id='track-1'"
+        ).fetchone()[0]
+
+    albums, album_total = await store.list_target_albums(search="Hot Wire")
+    tracks, track_total = await store.list_target_tracks(search="Hot Wire")
+
+    assert tuple(track) == (
+        "Feel It Inside",
+        "Trapeze",
+        "Hot Wire",
+        8,
+        1,
+        1974,
+        "Trapeze",
+        "Trapeze",
+        "",
+        "",
+        None,
+    )
+    assert tuple(album) == ("Hot Wire", "Trapeze", 1974, "Trapeze", "", "")
+    assert identities == 1
+    assert album_total == track_total == 1
+    assert albums[0]["album_title"] == "Hot Wire"
+    assert albums[0]["year"] == 1974
+    assert tracks[0]["track_title"] == "Feel It Inside"
+    assert tracks[0]["track_number"] == 8
+
+
+@pytest.mark.asyncio
+async def test_successful_remanagement_reactivates_restored_baseline(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    mutation = await _seed_published_management_bundle(
+        store, db_path, job_id="management-reactivates-baseline"
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE library_management_baselines SET restore_status='restored' "
+            "WHERE id=?",
+            (mutation.baseline_id,),
+        )
+
+    await store.commit_library_management_bundle(
+        "management-reactivates-baseline", 0, "worker-1", [mutation], now=30
+    )
+
+    baseline = await store.get_management_baseline("track-1")
+    assert baseline is not None
+    assert baseline.restore_status == "available"
+    assert baseline.last_verified_at == 30
 
 
 @pytest.mark.asyncio

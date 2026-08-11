@@ -216,6 +216,7 @@ BASELINE_UNAVAILABLE = "BASELINE_UNAVAILABLE"
 UNDO_EXPIRED = "UNDO_EXPIRED"
 RECOVERY_NEEDS_ATTENTION = "RECOVERY_NEEDS_ATTENTION"
 BUNDLE_BLOCKED = "BUNDLE_BLOCKED"
+BUNDLE_TOO_LARGE = "BUNDLE_TOO_LARGE"
 RECYCLE_UNAVAILABLE = "RECYCLE_UNAVAILABLE"
 DUPLICATE_CHANGED = "DUPLICATE_CHANGED"
 EXTERNAL_REFRESH_PROTOCOL_UNAVAILABLE = "EXTERNAL_REFRESH_PROTOCOL_UNAVAILABLE"
@@ -271,6 +272,8 @@ class LibraryManagementBaseline(AppStruct):
     )
     last_verified_at: float | None = None
     row_revision: int = 1
+    catalog_document_json: str | None = None
+    catalog_document_hash: str | None = None
 
 
 class LibraryTrackManagementState(AppStruct):
@@ -424,6 +427,8 @@ class LibraryManagementPlanItem(AppStruct):
     collision_json: str = "[]"
     reason_code: str | None = None
     estimated_temporary_bytes: int = 0
+    catalog_document_json: str | None = None
+    catalog_document_hash: str | None = None
 
 
 class LibraryManagementOperationSnapshot(AppStruct):
@@ -516,6 +521,7 @@ class LibraryManagementCatalogMutation(AppStruct):
     tag_revision: str
     file_fingerprint: str
     tag: AudioTag
+    catalog_tag: AudioTag
     info: AudioInfo
     baseline_id: str
     operation_snapshot_id: str

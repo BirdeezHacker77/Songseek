@@ -32,7 +32,12 @@ from infrastructure.persistence.native_library_store import (
     MANAGEMENT_PERSISTENCE_BATCH_SIZE,
     NativeLibraryStore,
 )
-from models.audio_metadata import SemanticTagSnapshot
+from models.audio_metadata import (
+    NativeMetadataSnapshot,
+    NativeTagValue,
+    ReadAudioDocument,
+    SemanticTagSnapshot,
+)
 from models.library_management import (
     FILE_CHANGED,
     IDENTITY_NOT_ACCEPTED,
@@ -64,6 +69,152 @@ def _json(value: object) -> str:
 def _token(job_id: str, idempotency_key: str) -> str:
     digest = hashlib.sha256(f"{job_id}\x00{idempotency_key}".encode()).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _native_value_manifest(value: NativeTagValue) -> dict[str, object]:
+    return {
+        "kind": value.kind,
+        "text": value.text,
+        "integer": value.integer,
+        "float_value": value.float_value,
+        "boolean": value.boolean,
+        "binary_size": len(value.binary) if value.binary is not None else 0,
+        "binary_sha256": (
+            hashlib.sha256(value.binary).hexdigest()
+            if value.binary is not None
+            else None
+        ),
+        "integer_pair": value.integer_pair,
+        "type_code": value.type_code,
+        "language": value.language,
+        "stream": value.stream,
+    }
+
+
+def _native_manifest(value: NativeMetadataSnapshot) -> dict[str, object]:
+    def encoded_manifest(content: bytes | None) -> dict[str, object] | None:
+        if content is None:
+            return None
+        return {
+            "byte_size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+
+    def entries_manifest(entries) -> list[dict[str, object]]:
+        return [
+            {
+                "key": entry.key,
+                "container": entry.container,
+                "values": [_native_value_manifest(item) for item in entry.values],
+            }
+            for entry in entries
+        ]
+
+    return {
+        "storage_kind": value.storage_kind,
+        "entries": entries_manifest(value.entries),
+        "encoded_id3": encoded_manifest(value.encoded_id3),
+        "auxiliary_storage_kind": value.auxiliary_storage_kind,
+        "auxiliary_entries": entries_manifest(value.auxiliary_entries),
+        "auxiliary_encoded_id3": encoded_manifest(value.auxiliary_encoded_id3),
+    }
+
+
+def _artwork_manifest(images) -> list[dict[str, object]]:
+    return [
+        {
+            "image_type": image.image_type,
+            "mime_type": image.mime_type,
+            "description": image.description,
+            "width": image.width,
+            "height": image.height,
+            "byte_size": image.byte_size,
+            "sha256": image.sha256,
+        }
+        for image in images
+    ]
+
+
+def _restoration_audio_diff(
+    current: ReadAudioDocument | None,
+    restore: SemanticTagSnapshot | None,
+    *,
+    scope: str,
+) -> tuple[bool, bool, list[dict[str, object]], dict[str, object]]:
+    if current is None or restore is None:
+        return False, False, [], {}
+
+    current_fields = {field.name: field.value for field in current.metadata.fields}
+    restored_fields = {field.name: field.value for field in restore.metadata.fields}
+    field_names = dict.fromkeys((*current_fields, *restored_fields))
+    field_mutations = []
+    for name in field_names:
+        before = current_fields.get(name)
+        after = restored_fields.get(name)
+        if before == after:
+            continue
+        field_mutations.append(
+            {
+                "name": name,
+                "operation": "clear" if after in {None, "", ()} else "set",
+                "before": before,
+                "after": after,
+                "representation_loss": None,
+            }
+        )
+
+    tags_changed = bool(
+        current.metadata != restore.metadata
+        or current.native_tags != restore.native_tags
+    )
+    artwork_changed = current.artwork != restore.artwork
+    current_native = _native_manifest(current.native_tags)
+    restored_native = _native_manifest(restore.native_tags)
+    changed_raw_keys = sorted(
+        {
+            *(value.key for value in current.raw_tags if value not in restore.raw_tags),
+            *(value.key for value in restore.raw_tags if value not in current.raw_tags),
+        },
+        key=str.casefold,
+    )
+    details = {
+        "scope": scope,
+        "native_tags": {
+            "changed": current.native_tags != restore.native_tags,
+            "current_primary_entries": len(current.native_tags.entries),
+            "restored_primary_entries": len(restore.native_tags.entries),
+            "current_auxiliary_entries": len(current.native_tags.auxiliary_entries),
+            "restored_auxiliary_entries": len(restore.native_tags.auxiliary_entries),
+            "current_encoded_primary": current.native_tags.encoded_id3 is not None,
+            "restored_encoded_primary": restore.native_tags.encoded_id3 is not None,
+            "current_fingerprint": hashlib.sha256(
+                _json(current_native).encode()
+            ).hexdigest(),
+            "restored_fingerprint": hashlib.sha256(
+                _json(restored_native).encode()
+            ).hexdigest(),
+            "changed_raw_keys": changed_raw_keys,
+        },
+        "artwork": {
+            "changed": artwork_changed,
+            "current": _artwork_manifest(current.artwork),
+            "restored": _artwork_manifest(restore.artwork),
+        },
+        "file_attributes": {
+            "changed": (
+                current.file_attributes.mtime_ns != restore.file_attributes.mtime_ns
+                or current.file_attributes.permission_bits
+                != restore.file_attributes.permission_bits
+            ),
+            "current_atime_ns": str(current.file_attributes.atime_ns),
+            "restored_atime_ns": str(restore.file_attributes.atime_ns),
+            "current_mtime_ns": str(current.file_attributes.mtime_ns),
+            "restored_mtime_ns": str(restore.file_attributes.mtime_ns),
+            "current_permission_bits": current.file_attributes.permission_bits,
+            "restored_permission_bits": restore.file_attributes.permission_bits,
+        },
+    }
+    return tags_changed, artwork_changed, field_mutations, details
 
 
 class LibraryManagementUndoService:
@@ -285,11 +436,14 @@ class LibraryManagementUndoService:
         reason: str | None = None
         collision: list[dict] = []
         ancillary: list[dict] = []
+        current = None
+        restore_snapshot = None
         try:
             async with self._filesystem.read_many(
                 {source_root_id, destination_root_id}
             ):
                 fingerprint = await asyncio.to_thread(self._hash_file, source)
+                current = await asyncio.to_thread(self._audio.read, source)
                 if (
                     before.expires_at <= now
                     or journal.staged_fingerprint is None
@@ -357,10 +511,21 @@ class LibraryManagementUndoService:
         ):
             reason = reason or FILE_CHANGED
 
+        tags_changed, embedded_artwork_changed, field_mutations, restoration = (
+            _restoration_audio_diff(
+                current,
+                restore_snapshot,
+                scope="operation_before_state",
+            )
+        )
+        artwork_changed = (
+            any(value.get("kind") == "external_art" for value in ancillary)
+            or embedded_artwork_changed
+        )
         diff = {
             "requires_write": True,
-            "tags_changed": True,
-            "artwork_changed": bool(ancillary),
+            "tags_changed": tags_changed,
+            "artwork_changed": artwork_changed,
             "path_changed": (
                 source_root_id != destination_root_id
                 or str(track["relative_path"]) != before.before_relative_path
@@ -369,6 +534,8 @@ class LibraryManagementUndoService:
                 value.get("kind") == "sidecar" for value in ancillary
             ),
             "restore_snapshot_blob_sha256": before.semantic_snapshot_blob_sha256,
+            "field_mutations": field_mutations,
+            "restoration": restoration,
             "restore_management_state": json.loads(before.before_management_state_json),
             "undo_source_job_id": source_job_id,
             "sidecars": [
@@ -418,11 +585,19 @@ class LibraryManagementUndoService:
             destination_relative_path=before.before_relative_path,
             destination_collision_key=self._collision_key(before.before_relative_path),
             desired_document_json=original.desired_document_json,
-            desired_document_hash=hashlib.sha256(_json(diff).encode()).hexdigest(),
+            desired_document_hash=hashlib.sha256(
+                original.desired_document_json.encode()
+            ).hexdigest(),
+            catalog_document_json=original.catalog_document_json,
+            catalog_document_hash=original.catalog_document_hash,
             artwork_choices_json=_json(artwork_choices),
             diff_json=_json(diff),
             capability_json=_json(
-                {"audio_format": str(track["file_format"]), "restoration": True}
+                {
+                    "audio_format": str(track["file_format"]),
+                    "restoration": True,
+                    "album_artwork_version": track.get("album_artwork_version"),
+                }
             ),
             collision_json=_json(collision),
             eligibility="stale" if reason else "eligible",
@@ -461,15 +636,12 @@ class LibraryManagementUndoService:
                     raise ValidationError("An undo artwork root is unavailable.")
                 target_relative = str(entry.get("before_relative_path"))
                 blob_sha256 = str(entry.get("blob_sha256"))
-                await self._blobs.read_bytes(blob_sha256)
                 values.append(
                     {
                         "kind": "external_art",
-                        "artwork_choice": {
-                            "output_kind": "external",
-                            "blob_sha256": blob_sha256,
-                            "destination_relative_path": target_relative,
-                        },
+                        "artwork_choice": await self._restoration_artwork_choice(
+                            blob_sha256, target_relative
+                        ),
                     }
                 )
                 continue
@@ -521,15 +693,12 @@ class LibraryManagementUndoService:
                 if target != current and target.exists():
                     raise ConflictError("An undo artwork destination is occupied.")
                 blob_sha256 = str(entry.get("blob_sha256"))
-                await self._blobs.read_bytes(blob_sha256)
                 values.append(
                     {
                         "kind": "external_art",
-                        "artwork_choice": {
-                            "output_kind": "external",
-                            "blob_sha256": blob_sha256,
-                            "destination_relative_path": target_relative,
-                        },
+                        "artwork_choice": await self._restoration_artwork_choice(
+                            blob_sha256, target_relative
+                        ),
                         "collision": (
                             {
                                 "classification": "configured_external_artwork_replacement",
@@ -562,6 +731,44 @@ class LibraryManagementUndoService:
                     }
                 )
         return values
+
+    async def _restoration_artwork_choice(
+        self, blob_sha256: str, destination_relative_path: str
+    ) -> dict[str, object]:
+        await self._blobs.read_bytes(blob_sha256)
+        blob = await self._store.get_management_blob(blob_sha256)
+        choice: dict[str, object] = {
+            "output_kind": "external",
+            "blob_sha256": blob_sha256,
+            "destination_relative_path": destination_relative_path,
+            "source": "operation_snapshot",
+        }
+        if blob is None or blob.kind != "image":
+            return choice
+        choice["byte_size"] = blob.byte_length
+        try:
+            metadata = json.loads(blob.media_metadata_json)
+        except json.JSONDecodeError:
+            return choice
+        if not isinstance(metadata, dict):
+            return choice
+        for key in ("mime_type", "image_type"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                choice[key] = value
+        for key in ("width", "height"):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                choice[key] = value
+        image_format = {
+            "image/gif": "gif",
+            "image/jpeg": "jpeg",
+            "image/png": "png",
+            "image/webp": "webp",
+        }.get(choice.get("mime_type"))
+        if image_format:
+            choice["format"] = image_format
+        return choice
 
     @staticmethod
     def _stale_item(

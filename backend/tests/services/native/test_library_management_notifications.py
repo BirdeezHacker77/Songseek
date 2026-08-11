@@ -201,3 +201,81 @@ async def test_post_commit_skips_external_delivery_when_profile_opted_out() -> N
     await service.after_commit({"track-1"}, {"album-1"})
 
     store.ensure_library_management_external_refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_commit_derives_import_album_for_artist_reconciliation() -> None:
+    store = AsyncMock()
+    store.get_target_tracks_by_ids.return_value = {
+        "track-1": {"local_album_id": "album-from-import"}
+    }
+    store.get_track_management_state.return_value = None
+    reconcile_album = AsyncMock()
+    service = LibraryManagementPostCommitService(
+        store,
+        MagicMock(),
+        AsyncMock(),
+        AsyncMock(),
+        AsyncMock(),
+        lambda: MagicMock(),
+        reconcile_album,
+    )
+
+    await service.after_commit({"track-1"}, set())
+
+    reconcile_album.assert_awaited_once_with("album-from-import")
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_failure_does_not_skip_durable_external_refresh(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pinned = PinnedLibraryManagementProfile(
+        profile=LibraryManagementProfile(
+            id="profile-1",
+            name="Profile",
+            notification=ProfileNotificationSettings(refresh_external_servers=True),
+        ),
+        naming_script=NamingScriptSettings(
+            id="naming-1", name="Naming", source="$title"
+        ),
+    )
+    store = AsyncMock()
+    store.get_target_tracks_by_ids.return_value = {
+        "track-1": {"local_album_id": "album-1"}
+    }
+    store.get_track_management_state.return_value = SimpleNamespace(
+        last_operation_job_id="operation-1"
+    )
+    store.get_library_management_job_snapshot.return_value = SimpleNamespace(
+        profile_snapshot_json=msgspec.json.encode(pinned).decode()
+    )
+    preferences = MagicMock()
+    preferences.get_library_management_settings_raw.return_value = SimpleNamespace(
+        external_refresh=SimpleNamespace(
+            enabled=True,
+            jellyfin_enabled=True,
+            plex_enabled=False,
+            navidrome_enabled=False,
+            retry_attempts=3,
+            retry_delay_seconds=30,
+        )
+    )
+    jellyfin = MagicMock()
+    jellyfin.is_configured.return_value = True
+    reconcile_album = AsyncMock(side_effect=RuntimeError("queue unavailable"))
+    service = LibraryManagementPostCommitService(
+        store,
+        preferences,
+        AsyncMock(),
+        AsyncMock(),
+        AsyncMock(),
+        lambda: jellyfin,
+        reconcile_album,
+    )
+
+    await service.after_commit({"track-1"}, {"album-1"})
+
+    store.ensure_library_management_external_refresh.assert_awaited_once()
+    reconcile_album.assert_awaited_once_with("album-1")
+    assert "Artist identity reconciliation enqueue failed" in caplog.text

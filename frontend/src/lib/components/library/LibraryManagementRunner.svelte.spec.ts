@@ -23,7 +23,8 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 								id: 'album-1',
 								title: 'Juturna',
 								artist_name: 'Circa Survive',
-								track_count: 11
+								track_count: 11,
+								cover_available: true
 							}
 						]
 					: search.includes('descensus')
@@ -32,7 +33,8 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 									id: 'album-2',
 									title: 'Descensus',
 									artist_name: 'Circa Survive',
-									track_count: 11
+									track_count: 11,
+									cover_available: true
 								}
 							]
 						: [],
@@ -42,7 +44,9 @@ vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 								id: 'track-1',
 								title: 'The Track',
 								artist_name: 'The Artist',
-								album_title: 'The Album'
+								album_id: 'album-3',
+								album_title: 'The Album',
+								cover_available: true
 							}
 						]
 					: []
@@ -105,7 +109,7 @@ beforeEach(() => {
 });
 
 describe('LibraryManagementRunner', () => {
-	it('keeps selected albums visible across searches and removable from the scope tray', async () => {
+	it('keeps selected releases visible across searches and removable from the scope tray', async () => {
 		render(LibraryManagementRunner, {
 			roots,
 			settings,
@@ -113,12 +117,14 @@ describe('LibraryManagementRunner', () => {
 			onclose: vi.fn()
 		});
 
-		await page.getByRole('tab', { name: 'Albums' }).click();
+		await page.getByRole('button', { name: 'Releases' }).click();
 		const scope = page.getByRole('region', { name: 'Selected management scope' });
-		const search = page.getByRole('textbox', { name: 'Search library albums' });
+		const search = page.getByRole('textbox', { name: 'Search library releases' });
 		await search.fill('Juturna');
+		await expect.element(page.getByTestId('search-scope-artwork-album-1')).toBeVisible();
 		await page.getByRole('checkbox', { name: /Juturna/ }).click();
 		await expect.element(scope.getByText('Juturna')).toBeVisible();
+		await expect.element(scope.getByTestId('selected-scope-artwork-album-1')).toBeVisible();
 
 		await search.fill('Descensus');
 		await expect.element(page.getByRole('checkbox', { name: /Juturna/ })).not.toBeInTheDocument();
@@ -131,6 +137,10 @@ describe('LibraryManagementRunner', () => {
 		await scope.getByRole('button', { name: 'Remove Juturna from scope' }).click();
 		await expect.element(scope.getByText('Juturna')).not.toBeInTheDocument();
 		await expect.element(scope.getByText('1 item in scope')).toBeVisible();
+		await page.getByRole('button', { name: /Continue/ }).click();
+		await page.getByRole('button', { name: /Continue/ }).click();
+		await page.getByRole('button', { name: /Continue/ }).click();
+		await expect.element(page.getByText('1 selected release')).toBeVisible();
 	});
 
 	it('makes whole-library defaults explicit and gives long profile lists a bounded region', async () => {
@@ -170,7 +180,7 @@ describe('LibraryManagementRunner', () => {
 		await expect
 			.element(page.getByRole('heading', { name: 'Preview Library Management' }))
 			.toHaveFocus();
-		await page.getByRole('tab', { name: 'Tracks' }).click();
+		await page.getByRole('button', { name: 'Tracks' }).click();
 		await page.getByRole('textbox', { name: 'Search library tracks' }).fill('track');
 		await page.getByRole('checkbox', { name: /The Track/ }).click();
 		await expect.element(page.getByRole('button', { name: /Continue/ })).toBeEnabled();
@@ -182,7 +192,7 @@ describe('LibraryManagementRunner', () => {
 		await page.getByRole('checkbox', { name: /Embedded artwork/ }).click();
 		await page.getByRole('button', { name: /Continue/ }).click();
 
-		await expect.element(page.getByText(/expands to complete albums/)).toBeVisible();
+		await expect.element(page.getByText(/expands to complete releases/)).toBeVisible();
 		expect(h.createPreview).not.toHaveBeenCalled();
 		await page.getByRole('button', { name: 'Generate preview' }).click();
 

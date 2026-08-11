@@ -24,6 +24,15 @@ const h = vi.hoisted(() => ({
 		isLoading: false
 	} as Record<string, unknown>,
 	reviews: { data: { pages: [{ filtered_total: 12 }] } } as Record<string, unknown>,
+	artistReconciliation: {
+		data: {
+			automatically_resolved_count: 14,
+			waiting_for_identity_count: 49,
+			genuine_review_count: 3
+		},
+		isLoading: false,
+		isError: false
+	} as Record<string, unknown>,
 	history: {
 		data: { pages: [{ items: [], next_cursor: null }] },
 		isLoading: false,
@@ -109,6 +118,9 @@ vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
 }));
 vi.mock('$lib/queries/library/LibraryReviewQueries.svelte', () => ({
 	getLibraryReviewsQuery: () => h.reviews
+}));
+vi.mock('$lib/queries/artist-reconciliation/ArtistReconciliationQueries.svelte', () => ({
+	getArtistReconciliationProgressQuery: () => h.artistReconciliation
 }));
 vi.mock('$lib/queries/library/LibraryReviewMutations.svelte', () => ({
 	previewBulkLibraryReview: () => ({

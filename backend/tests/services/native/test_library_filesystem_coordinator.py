@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from services.native.library_filesystem_coordinator import (
     LibraryFilesystemCoordinator,
+    copy_rooted,
+    replace_rooted,
+    unlink_rooted,
 )
 
 
@@ -215,3 +219,76 @@ async def test_repeated_cancellation_releases_partially_acquired_roots() -> None
     async with asyncio.timeout(1):
         async with coordinator.write_many(["root-a", "root-b"]):
             pass
+
+
+def test_rooted_mutations_copy_replace_and_unlink_regular_files(tmp_path: Path) -> None:
+    root = tmp_path / "music"
+    source_parent = root / "source"
+    destination_parent = root / "destination"
+    source_parent.mkdir(parents=True)
+    destination_parent.mkdir()
+    (source_parent / "track.flac").write_bytes(b"source")
+    roots = {"music": root}
+
+    copy_rooted(
+        roots,
+        "music",
+        "source/track.flac",
+        "music",
+        "destination/copied.flac",
+    )
+    replace_rooted(
+        roots,
+        "music",
+        "destination/copied.flac",
+        "music",
+        "destination/published.flac",
+    )
+    unlink_rooted(roots, "music", "destination/published.flac")
+    unlink_rooted(
+        roots,
+        "music",
+        "destination/published.flac",
+        missing_ok=True,
+    )
+
+    assert (source_parent / "track.flac").read_bytes() == b"source"
+    assert not (destination_parent / "published.flac").exists()
+
+
+@pytest.mark.parametrize("mutation", ["copy", "replace", "unlink"])
+def test_rooted_mutations_reject_swapped_parent_symlink(
+    tmp_path: Path, mutation: str
+) -> None:
+    root = tmp_path / "music"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "source.flac").write_bytes(b"source")
+    (outside / "victim.flac").write_bytes(b"outside")
+    (root / "swapped").symlink_to(outside, target_is_directory=True)
+    roots = {"music": root}
+
+    with pytest.raises(OSError):
+        if mutation == "copy":
+            copy_rooted(
+                roots,
+                "music",
+                "source.flac",
+                "music",
+                "swapped/copied.flac",
+            )
+        elif mutation == "replace":
+            replace_rooted(
+                roots,
+                "music",
+                "source.flac",
+                "music",
+                "swapped/victim.flac",
+            )
+        else:
+            unlink_rooted(roots, "music", "swapped/victim.flac")
+
+    assert (outside / "victim.flac").read_bytes() == b"outside"
+    assert not (outside / "copied.flac").exists()
+    assert (root / "source.flac").read_bytes() == b"source"

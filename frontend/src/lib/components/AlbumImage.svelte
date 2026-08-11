@@ -18,6 +18,7 @@
 		testId?: string;
 		source?: 'provider' | 'local';
 		available?: boolean;
+		retryOnError?: boolean;
 	}
 
 	let {
@@ -35,7 +36,8 @@
 		onload = undefined,
 		testId = undefined,
 		source = 'provider',
-		available = true
+		available = true,
+		retryOnError = undefined
 	}: Props = $props();
 
 	let cachedLocalUrl = $derived(
@@ -59,7 +61,7 @@
 	{testId}
 	source={cachedLocalUrl ? 'local' : source}
 	{available}
-	retryOnError={!cachedLocalUrl}
+	retryOnError={retryOnError ?? !cachedLocalUrl}
 	transparentFallback={Boolean(cachedLocalUrl)}
 	imageType="album"
 />
