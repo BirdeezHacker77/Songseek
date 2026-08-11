@@ -17,6 +17,7 @@
 		X
 	} from 'lucide-svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
+	import MusicBrainzEditionFinder from './MusicBrainzEditionFinder.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import type { LibraryAlbumDetail } from '$lib/types';
 	import type { OperationResponse } from '$lib/queries/library/LibraryOperationsTypes';
@@ -30,9 +31,18 @@
 	interface Props {
 		album: LibraryAlbumDetail;
 		className?: string;
+		autoOpen?: boolean;
+		showTrigger?: boolean;
+		onclose?: () => void;
 	}
 	type Candidate = OperationResponse['reidentification_candidates'][number];
-	let { album, className = 'btn btn-outline btn-sm gap-2' }: Props = $props();
+	let {
+		album,
+		className = 'btn btn-outline btn-sm gap-2',
+		autoOpen = false,
+		showTrigger = true,
+		onclose
+	}: Props = $props();
 	let dialog: HTMLDialogElement;
 	let confirmationDialog: HTMLDialogElement;
 	let dialogHeading: HTMLHeadingElement;
@@ -42,6 +52,7 @@
 	let confirmationCandidate = $state<Candidate | null>(null);
 	let selectedCandidateKey = $state<string | null>(null);
 	let jobId = $state<string | null>(null);
+	let openedAutomatically = $state(false);
 	const storageKey = $derived(
 		`droppedneedle:album-identification:${authStore.user?.id ?? 'anonymous'}:${album.id}`
 	);
@@ -69,10 +80,22 @@
 		jobId = sessionStorage.getItem(storageKey);
 	});
 
+	$effect(() => {
+		if (!autoOpen || openedAutomatically || !dialog) return;
+		openedAutomatically = true;
+		dialog.showModal();
+		dialogHeading.focus();
+	});
+
 	function open(event: MouseEvent & { currentTarget: HTMLButtonElement }): void {
 		opener = event.currentTarget;
 		dialog.showModal();
 		dialogHeading.focus();
+	}
+
+	function handleClose(): void {
+		opener?.focus();
+		onclose?.();
 	}
 
 	function forgetJob(): void {
@@ -84,14 +107,15 @@
 		}
 	}
 
-	async function begin(): Promise<void> {
+	async function begin(releaseMbid: string | null = null): Promise<void> {
 		let job: OperationResponse;
 		try {
 			job = await start.mutateAsync({
 				albumId: album.id,
 				expectedAlbumRevision: album.row_revision,
 				expectedInputRevision: album.input_revision,
-				oneOffLocalMetadata: album.identification_status === 'local_metadata'
+				oneOffLocalMetadata: album.identification_status === 'local_metadata',
+				releaseMbid
 			});
 		} catch {
 			return;
@@ -107,6 +131,10 @@
 	async function checkAgain(): Promise<void> {
 		forgetJob();
 		await begin();
+	}
+
+	async function checkFoundEdition(releaseMbid: string): Promise<void> {
+		await begin(releaseMbid);
 	}
 
 	function evidenceLabel(classification: string): string {
@@ -151,6 +179,7 @@
 	function reasonLabel(reasonCode: string): string {
 		const labels: Record<string, string> = {
 			CONTRADICTORY: 'The local evidence conflicts with this release',
+			MANUAL_EXACT_RELEASE_REQUEST: 'This exact edition was supplied by an administrator',
 			MULTIPLE_LIKELY_RELEASES: 'More than one release is equally likely',
 			UNKNOWN_EXTRAS: 'Some local tracks cannot be matched safely',
 			INCOMPLETE_SUPPORT: 'The available evidence does not support the whole album'
@@ -222,15 +251,17 @@
 	}
 </script>
 
-<button class={className} onclick={open}>
-	<RefreshCw class="h-4 w-4" /> Re-identify…
-</button>
+{#if showTrigger}
+	<button class={className} onclick={open}>
+		<RefreshCw class="h-4 w-4" /> Re-identify…
+	</button>
+{/if}
 
 <dialog
 	bind:this={dialog}
 	class="modal identification-dialog"
 	aria-labelledby="identification-panel-title"
-	onclose={() => opener?.focus()}
+	onclose={handleClose}
 >
 	<div class="modal-box identification-workspace" data-testid="identification-workspace">
 		<header class="identification-modal-header">
@@ -294,15 +325,24 @@
 							server if you close this dialog.
 						</p>
 					</div>
-					<button
-						class="btn btn-primary gap-2"
-						disabled={start.isPending}
-						onclick={() => void begin()}
-					>
-						{#if start.isPending}<span class="loading loading-spinner loading-sm"
-							></span>{:else}<Fingerprint class="h-4 w-4" />{/if}
-						Start identification
-					</button>
+					<div class="identification-start-actions">
+						<button
+							class="btn btn-primary gap-2"
+							disabled={start.isPending}
+							onclick={() => void begin()}
+						>
+							{#if start.isPending}<span class="loading loading-spinner loading-sm"
+								></span>{:else}<Fingerprint class="h-4 w-4" />{/if}
+							Start identification
+						</button>
+					</div>
+					<MusicBrainzEditionFinder
+						albumId={album.id}
+						artistName={album.artist_name}
+						albumTitle={album.title}
+						oncheck={checkFoundEdition}
+						checking={start.isPending}
+					/>
 					{#if start.isError}
 						<p class="text-sm text-error">Could not start identification. Try again.</p>
 					{/if}
@@ -333,6 +373,16 @@
 								onclick={() => void checkAgain()}
 							>
 								<RefreshCw class="h-4 w-4 {start.isPending ? 'animate-spin' : ''}" /> Check again
+							</button>
+							<button
+								class="btn btn-ghost btn-sm gap-1 text-error"
+								onclick={() =>
+									void stop
+										.mutateAsync({ jobId: job.id, expectedRevision: job.row_revision })
+										.catch(() => undefined)}
+								aria-label="Discard identification evidence"
+							>
+								<OctagonX class="h-4 w-4" /> Discard
 							</button>
 						{/if}
 						{#if job.state === 'running'}
@@ -375,7 +425,7 @@
 					{/if}
 				</section>
 
-				{#if job.state === 'succeeded'}
+				{#if job.state === 'succeeded' && job.terminal_code === 'IDENTIFIED'}
 					<section class="identification-success-receipt" aria-labelledby="identity-saved-title">
 						<div class="identification-success-mark" aria-hidden="true">
 							<BadgeCheck class="h-9 w-9" />
@@ -651,15 +701,38 @@
 							</footer>
 						</article>
 					</section>
-				{:else if job.state === 'ready'}
+					<details class="identification-find-another">
+						<summary>Find another edition</summary>
+						<MusicBrainzEditionFinder
+							albumId={album.id}
+							artistName={album.artist_name}
+							albumTitle={album.title}
+							oncheck={checkFoundEdition}
+							checking={start.isPending}
+						/>
+					</details>
+				{:else if job.state === 'ready' || job.state === 'succeeded'}
 					<div class="identification-empty-state">
 						<CircleAlert class="h-9 w-9 text-warning" />
 						<div>
-							<h3 class="font-semibold">No release candidates were found</h3>
+							<h3 class="font-semibold">
+								{job.terminal_code === 'NO_EXTERNAL_RESULT'
+									? 'No release candidates were found'
+									: 'Identity evidence needs review'}
+							</h3>
 							<p class="mt-1 text-sm text-base-content/60">
-								Check the local album metadata, then run another identification check.
+								{job.terminal_code === 'NO_EXTERNAL_RESULT'
+									? 'Check the local album metadata, or verify a known exact edition below.'
+									: 'The stored identity evidence is incomplete or conflicting. Verify the exact edition below.'}
 							</p>
 						</div>
+						<MusicBrainzEditionFinder
+							albumId={album.id}
+							artistName={album.artist_name}
+							albumTitle={album.title}
+							oncheck={checkFoundEdition}
+							checking={start.isPending}
+						/>
 					</div>
 				{/if}
 

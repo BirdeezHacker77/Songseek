@@ -315,6 +315,51 @@ def test_route_errors_use_typed_envelopes(
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_reidentification_forwards_a_normalized_exact_release(
+    app: FastAPI, services: dict[str, AsyncMock]
+) -> None:
+    override_admin_auth(app)
+    response = build_test_client(app).post(
+        "/library/albums/album-1/reidentify",
+        json={
+            "expected_album_revision": 4,
+            "expected_input_revision": "input-1",
+            "idempotency_key": "request-1",
+            "release_mbid": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        },
+    )
+
+    assert response.status_code == 200
+    services["reidentification"].create_or_coalesce.assert_awaited_once_with(
+        "album-1",
+        "test-admin-id",
+        expected_album_revision=4,
+        expected_input_revision="input-1",
+        one_off_local_metadata=False,
+        release_mbid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        idempotency_key="request-1",
+    )
+
+
+def test_reidentification_rejects_a_malformed_exact_release(
+    app: FastAPI, services: dict[str, AsyncMock]
+) -> None:
+    override_admin_auth(app)
+    response = build_test_client(app).post(
+        "/library/albums/album-1/reidentify",
+        json={
+            "expected_album_revision": 4,
+            "expected_input_revision": "input-1",
+            "idempotency_key": "request-1",
+            "release_mbid": "not-a-release-id",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "MusicBrainz UUID" in response.text
+    services["reidentification"].create_or_coalesce.assert_not_awaited()
+
+
 def test_diagnostic_route_uses_fixed_5xx_copy(
     app: FastAPI, services: dict[str, AsyncMock]
 ) -> None:

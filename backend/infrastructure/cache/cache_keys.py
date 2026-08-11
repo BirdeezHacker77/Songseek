@@ -21,6 +21,7 @@ MB_RG_BY_TAG_PREFIX = "mb_rg_by_tag:"
 MB_URL_RESOLUTION_PREFIX = "mb:url:resolution:"
 MB_RELEASE_VERIFY_PREFIX = "mb:release:verify:"
 MB_DUPLICATE_SEARCH_PREFIX = "mb:release:duplicate-search:"
+MB_RELEASE_EDITION_SEARCH_PREFIX = "mb:release:edition-search:"
 MB_MANAGEMENT_RELEASE_PREFIX = "mb:management:release:"
 CAA_MANAGEMENT_PREFIX = "caa:management:"
 
@@ -154,8 +155,19 @@ def musicbrainz_prefixes() -> list[str]:
         MB_URL_RESOLUTION_PREFIX,
         MB_RELEASE_VERIFY_PREFIX,
         MB_DUPLICATE_SEARCH_PREFIX,
+        MB_RELEASE_EDITION_SEARCH_PREFIX,
         MB_MANAGEMENT_RELEASE_PREFIX,
     ]
+
+
+def mb_release_edition_search_key(query: str, limit: int, offset: int) -> str:
+    normalized = " ".join(query.casefold().split())
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"{MB_RELEASE_EDITION_SEARCH_PREFIX}{digest}:{limit}:{offset}"
+
+
+def mb_recording_canonical_id_key(recording_mbid: str) -> str:
+    return f"{MB_RECORDING_PREFIX}{recording_mbid.casefold()}:canonical-id"
 
 
 def listenbrainz_prefixes() -> list[str]:

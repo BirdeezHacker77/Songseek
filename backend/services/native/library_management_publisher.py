@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import stat
+import tempfile
 import time
 import unicodedata
 import uuid
@@ -3028,7 +3029,7 @@ class LibraryManagementPublisher:
                             == wanted
                         ):
                             sibling = value.destination.parent / entry.name
-                            if sibling in recycled_sources:
+                            if sibling == value.source or sibling in recycled_sources:
                                 continue
                             raise LibraryManagementDestinationConflictError(
                                 "A normalized destination was created after preview."
@@ -3041,7 +3042,9 @@ class LibraryManagementPublisher:
             if value.destination == value.source or not (
                 value.destination.exists()
                 or value.destination.is_symlink()
-                or self._has_normalized_destination_sibling(value.destination)
+                or self._has_normalized_destination_sibling(
+                    value.destination, value.source
+                )
             ):
                 continue
             collisions.append(
@@ -3074,7 +3077,9 @@ class LibraryManagementPublisher:
             await self._store.add_management_collision_evidence(collisions)
 
     @staticmethod
-    def _has_normalized_destination_sibling(destination: Path) -> bool:
+    def _has_normalized_destination_sibling(
+        destination: Path, source: Path | None = None
+    ) -> bool:
         if not destination.parent.is_dir():
             return False
         wanted = unicodedata.normalize("NFC", destination.name).casefold()
@@ -3082,6 +3087,7 @@ class LibraryManagementPublisher:
             return any(
                 entry.name != destination.name
                 and unicodedata.normalize("NFC", entry.name).casefold() == wanted
+                and destination.parent / entry.name != source
                 for entry in entries
             )
 
@@ -3404,6 +3410,15 @@ class LibraryManagementPublisher:
         return parent.joinpath(*pure.parts)
 
     def _stage_audio(self, source: Path, temporary: Path, plan) -> None:
+        if plan.audio_format == "m4a":
+            with tempfile.TemporaryDirectory(
+                prefix="droppedneedle-management-mp4-"
+            ) as directory:
+                local = Path(directory) / temporary.name
+                self._copy_temp(source, local)
+                self._audio.apply(local, plan)
+                self._copy_temp(local, temporary)
+            return
         self._copy_temp(source, temporary)
         self._audio.apply(temporary, plan)
 

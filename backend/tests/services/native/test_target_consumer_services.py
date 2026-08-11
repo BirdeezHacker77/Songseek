@@ -819,6 +819,7 @@ async def test_target_cover_forwards_provider_only_cover_operations(
     )
     provider.get_release_cover_etag.return_value = "release-etag"
     provider.debug_artist_image.return_value = {"artist_found": True}
+    provider.is_release_cover_warming = lambda identifier: identifier == "release-id"
     service = TargetCoverArtService(
         store,
         provider,
@@ -836,6 +837,8 @@ async def test_target_cover_forwards_provider_only_cover_operations(
 
     assert cover == (b"release-cover", "image/jpeg", "coverartarchive")
     assert etag == "release-etag"
+    assert service.is_release_cover_warming("release-id") is True
+    assert service.is_release_cover_warming("other-release") is False
     assert debug == {"artist_found": True}
     provider.get_release_cover.assert_awaited_once_with("release-id", "250", defer=True)
     provider.get_release_cover_etag.assert_awaited_once_with("release-id", "250")

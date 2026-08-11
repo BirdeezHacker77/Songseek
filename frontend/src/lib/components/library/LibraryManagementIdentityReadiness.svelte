@@ -11,6 +11,7 @@
 		Trash2
 	} from 'lucide-svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
+	import IdentityFindingEditionButton from './IdentityFindingEditionButton.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { controlLibraryOperation } from '$lib/queries/library/LibraryOperationMutations.svelte';
 	import {
@@ -188,6 +189,7 @@
 
 <section
 	id="identity-readiness"
+	tabindex="-1"
 	class="rounded-box border border-primary/20 bg-primary/[0.035]"
 	aria-labelledby="identity-readiness-title"
 >
@@ -375,13 +377,15 @@
 									{finding.state === 'stale' ? 'Changed after this report' : finding.confidence}
 								</p>
 							</div>
-							<a
-								class="btn btn-ghost btn-xs"
-								href={`/album/${encodeURIComponent(finding.local_album_id)}`}
-								>{activeTab === 'exact_release_required'
-									? 'Choose edition'
-									: 'Open release'}<ArrowRight class="h-3.5 w-3.5" /></a
-							>
+							{#if activeTab === 'exact_release_required'}
+								<IdentityFindingEditionButton albumId={finding.local_album_id} />
+							{:else}
+								<a
+									class="btn btn-ghost btn-xs"
+									href={`/album/${encodeURIComponent(finding.local_album_id)}`}
+									>Open release <ArrowRight class="h-3.5 w-3.5" /></a
+								>
+							{/if}
 						</div>
 					{/each}
 				</div>

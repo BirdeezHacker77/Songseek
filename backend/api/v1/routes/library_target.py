@@ -8,6 +8,8 @@ from api.v1.schemas.library_target import (
     TargetNativeAlbumDetail,
     TargetNativeAlbumsResponse,
     TargetNativeAlbumStatusResponse,
+    ReleaseEditionResult,
+    ReleaseEditionSearchResponse,
     TargetNativeArtist,
     TargetNativeArtistAppearancesResponse,
     TargetNativeArtistsResponse,
@@ -33,6 +35,7 @@ from core.dependencies.type_aliases import (
     TargetLibraryScanCoordinatorDep,
     TargetLibraryOwnershipServiceDep,
     TargetNativeLibraryServiceDep,
+    TargetAlbumEditionFinderServiceDep,
     CachedLocalArtworkServiceDep,
     WantedWatcherServiceDep,
 )
@@ -318,6 +321,40 @@ async def get_target_album(
     if album is None:
         raise ResourceNotFoundError("Library album not found.")
     return album
+
+
+@router.get(
+    "/albums/{album_id}/reidentification/releases",
+    response_model=ReleaseEditionSearchResponse,
+)
+async def search_reidentification_releases(
+    album_id: str,
+    _admin: CurrentAdminDep,
+    service: TargetAlbumEditionFinderServiceDep,
+    q: str | None = Query(default=None, max_length=250),
+    limit: int = Query(default=12, ge=1, le=12),
+    offset: int = Query(default=0, ge=0),
+) -> ReleaseEditionSearchResponse:
+    query, current_release_group_mbid, page = await service.search(
+        album_id, query=q, limit=limit, offset=offset
+    )
+    return ReleaseEditionSearchResponse(
+        query=query,
+        items=[
+            ReleaseEditionResult(
+                **{field: getattr(item, field) for field in item.__struct_fields__},
+                belongs_to_current_release_group=(
+                    current_release_group_mbid is not None
+                    and item.release_group_mbid.casefold()
+                    == current_release_group_mbid.casefold()
+                ),
+            )
+            for item in page.items
+        ],
+        total=page.total,
+        offset=page.offset,
+        limit=page.limit,
+    )
 
 
 @router.get(

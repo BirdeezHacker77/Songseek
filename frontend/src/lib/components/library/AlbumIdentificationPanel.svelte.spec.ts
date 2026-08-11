@@ -118,6 +118,15 @@ vi.mock('$lib/queries/library/LibraryOperationQueries.svelte', () => ({
 		};
 	}
 }));
+vi.mock('$lib/queries/library/LibraryEditionQueries.svelte', () => ({
+	getReleaseEditionSearchQuery: () => ({
+		data: { query: 'Signal Artist Local Signals', items: [], total: 0, offset: 0, limit: 12 },
+		isLoading: false,
+		isFetching: false,
+		isError: false,
+		refetch: vi.fn()
+	})
+}));
 vi.mock('$lib/queries/library/LibraryCatalogMutations.svelte', () => ({
 	reidentifyLibraryAlbum: () => ({ mutateAsync: h.start, isPending: false, isError: false }),
 	selectReidentificationCandidate: () => ({
@@ -170,13 +179,53 @@ describe('AlbumIdentificationPanel', () => {
 			albumId: 'album-1',
 			expectedAlbumRevision: 5,
 			expectedInputRevision: 'input-5',
-			oneOffLocalMetadata: true
+			oneOffLocalMetadata: true,
+			releaseMbid: null
 		});
 		expect(sessionStorage.getItem('droppedneedle:album-identification:admin-1:album-1')).toBe(
 			'job-1'
 		);
 		await page.getByRole('button', { name: 'Close', exact: true }).click();
 		await expect.element(opener).toHaveFocus();
+	});
+
+	it('checks only the exact MusicBrainz edition supplied by an administrator', async () => {
+		const releaseMbid = '428b6417-8a4d-4a5b-b1a3-8762002167a8';
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByText(/Already know the release/).click();
+		await page.getByRole('textbox', { name: 'MusicBrainz release UUID or URL' }).fill(releaseMbid);
+		await page.getByRole('button', { name: 'Check exact release' }).click();
+
+		expect(h.start).toHaveBeenCalledWith({
+			albumId: 'album-1',
+			expectedAlbumRevision: 5,
+			expectedInputRevision: 'input-5',
+			oneOffLocalMetadata: true,
+			releaseMbid
+		});
+		expect(h.select).not.toHaveBeenCalled();
+	});
+
+	it('keeps malformed exact release IDs on the client', async () => {
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByText(/Already know the release/).click();
+		await page
+			.getByRole('textbox', { name: 'MusicBrainz release UUID or URL' })
+			.fill('not-a-release');
+		await page.getByRole('button', { name: 'Check exact release' }).click();
+
+		await expect
+			.element(page.getByRole('alert'))
+			.toHaveTextContent(/release UUID or canonical release URL/);
+		expect(h.start).not.toHaveBeenCalled();
 	});
 
 	it('recovers a saved job, projects candidates, and sends the current revision', async () => {
@@ -218,6 +267,30 @@ describe('AlbumIdentificationPanel', () => {
 			.element(page.getByRole('button', { name: 'Use this identity' }))
 			.not.toBeInTheDocument();
 		await expect.element(page.getByText(/administrator must confirm/)).not.toBeInTheDocument();
+	});
+
+	it('offers exact-edition search when identification finds no candidates', async () => {
+		const noCandidates = job({
+			state: 'succeeded',
+			completed_count: 1,
+			terminal_code: 'NO_EXTERNAL_RESULT'
+		});
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': noCandidates };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await expect
+			.element(page.getByRole('heading', { name: 'No release candidates were found' }))
+			.toBeVisible();
+		await expect
+			.element(page.getByRole('heading', { name: 'Search exact releases' }))
+			.toBeVisible();
+		await expect
+			.element(page.getByRole('heading', { name: 'Identity attached' }))
+			.not.toBeInTheDocument();
 	});
 
 	it('uses the candidate rail to inspect one release dossier at a time', async () => {
@@ -300,11 +373,25 @@ describe('AlbumIdentificationPanel', () => {
 			albumId: 'album-1',
 			expectedAlbumRevision: 5,
 			expectedInputRevision: 'input-5',
-			oneOffLocalMetadata: true
+			oneOffLocalMetadata: true,
+			releaseMbid: null
 		});
 		expect(sessionStorage.getItem('droppedneedle:album-identification:admin-1:album-1')).toBe(
 			'job-2'
 		);
+	});
+
+	it('can discard a ready evidence check', async () => {
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': candidateJob };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByRole('button', { name: 'Discard identification evidence' }).click();
+
+		expect(h.stop).toHaveBeenCalledWith({ jobId: 'job-1', expectedRevision: 8 });
 	});
 
 	it('controls the persisted job without a fixed-delay refresh', async () => {

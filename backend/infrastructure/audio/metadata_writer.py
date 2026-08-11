@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from io import BytesIO
 import hashlib
 import os
@@ -549,6 +550,23 @@ def _picture_number(image_type: str) -> int:
     return {"front": 3, "back": 4, "booklet": 5, "medium": 6}.get(image_type, 0)
 
 
+def _id3_artwork_descriptions(
+    images: tuple[EmbeddedArtworkDescriptor, ...],
+) -> Iterator[tuple[EmbeddedArtworkDescriptor, str]]:
+    used: set[str] = set()
+    for image in images:
+        description = image.description
+        if description in used:
+            stem = description or f"DroppedNeedle {image.image_type}"
+            description = stem
+            suffix = 2
+            while description in used:
+                description = f"{stem} {suffix}"
+                suffix += 1
+        used.add(description)
+        yield image, description
+
+
 def _set_id3_text(
     tags: object, key: str, frame_type, values: tuple[str, ...], encoding: int
 ) -> None:
@@ -681,26 +699,23 @@ def _write_id3(tags: object, plan: AudioWritePlan, values: dict[str, object]) ->
         value = _scalar(values.get("musicbrainz_recording_id"))
         if value:
             tags.add(UFID(owner=_MB_UFID_OWNER, data=value.encode("utf-8")))
-    if "performer" in changed:
+    if changed & {"performer", "arranger", "producer"}:
         tags.delall("TMCL")
+        tags.delall("TIPL")
+        tags.delall("IPLS")
+        tags.delall("TXXX:ARRANGER")
+        tags.delall("TXXX:PRODUCER")
         performers = _values(values.get("performer"))
         if performers:
             people: list[list[str]] = []
             for value in performers:
-                person, separator, suffix = value.rpartition(" (")
+                person, separator, suffix = value.partition(" (")
                 people.append(
                     [suffix[:-1], person]
                     if separator and suffix.endswith(")")
                     else ["", value]
                 )
             tags.add(TMCL(encoding=encoding, people=people))
-    if changed & {"arranger", "producer"}:
-        tags.delall("TIPL")
-        tags.delall("IPLS")
-        if "arranger" in changed:
-            tags.delall("TXXX:ARRANGER")
-        if "producer" in changed:
-            tags.delall("TXXX:PRODUCER")
         people = [
             [role, value]
             for role in ("arranger", "producer")
@@ -710,13 +725,13 @@ def _write_id3(tags: object, plan: AudioWritePlan, values: dict[str, object]) ->
             tags.add(TIPL(encoding=encoding, people=people))
     if plan.desired_artwork != plan.snapshot.artwork:
         tags.delall("APIC")
-        for image in plan.desired_artwork:
+        for image, description in _id3_artwork_descriptions(plan.desired_artwork):
             tags.add(
                 APIC(
                     encoding=encoding,
                     mime=image.mime_type or "application/octet-stream",
                     type=_picture_number(image.image_type),
-                    desc=image.description,
+                    desc=description,
                     data=image.content,
                 )
             )
@@ -1141,13 +1156,15 @@ def apply_plan(engine, path: Path, plan: AudioWritePlan) -> AudioWriteResult:
             elif riff_mode and tags is not None:
                 if plan.desired_artwork != plan.snapshot.artwork:
                     tags.delall("APIC")
-                    for image in plan.desired_artwork:
+                    for image, description in _id3_artwork_descriptions(
+                        plan.desired_artwork
+                    ):
                         tags.add(
                             APIC(
                                 encoding=3,
                                 mime=image.mime_type or "application/octet-stream",
                                 type=_picture_number(image.image_type),
-                                desc=image.description,
+                                desc=description,
                                 data=image.content,
                             )
                         )

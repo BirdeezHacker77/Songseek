@@ -169,6 +169,7 @@ export interface TrackEvidence {
 	candidate_track_position: number | null;
 	recording_mbid: string | null;
 	release_track_mbid: string | null;
+	recording_mbid_redirects?: string[];
 }
 
 export interface CandidateEvidence {

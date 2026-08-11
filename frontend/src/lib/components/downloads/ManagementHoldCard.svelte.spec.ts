@@ -107,6 +107,24 @@ describe('ManagementHoldCard.svelte', () => {
 			.toHaveTextContent('Rechecking the secured album…');
 	});
 
+	it('explains a rejected tagging or naming script without calling it a config race', async () => {
+		const item = {
+			...held(1),
+			reason: 'management:SCRIPT_VALIDATION_FAILED'
+		};
+		render(ManagementHoldCard, { props: { items: [item] } } as Parameters<
+			typeof render<typeof ManagementHoldCard>
+		>[1]);
+
+		await expect
+			.element(
+				page.getByText(
+					"The active profile's tagging or naming rules could not process this file safely."
+				)
+			)
+			.toBeVisible();
+	});
+
 	it('shows the durable automatic retry without disabling manual retry', async () => {
 		const item = {
 			...held(1),

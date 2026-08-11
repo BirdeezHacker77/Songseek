@@ -6,7 +6,7 @@ import shutil
 
 from PIL import Image
 from mutagen.apev2 import APEv2, error as APEError
-from mutagen.id3 import ID3, TXXX
+from mutagen.id3 import ID3, TIPL, TMCL, TXXX
 from mutagen.wave import WAVE
 import pytest
 
@@ -117,6 +117,8 @@ def _artwork(
     image_type: str,
     image_format: str,
     size: tuple[int, int],
+    *,
+    description: str | None = None,
 ) -> EmbeddedArtworkDescriptor:
     output = BytesIO()
     Image.new("RGB", size, (32, 96, 160)).save(output, format=image_format)
@@ -125,7 +127,7 @@ def _artwork(
     return EmbeddedArtworkDescriptor(
         image_type=image_type,
         mime_type=mime_type,
-        description=f"Writer {image_type}",
+        description=f"Writer {image_type}" if description is None else description,
         width=size[0],
         height=size[1],
         byte_size=len(content),
@@ -225,6 +227,65 @@ def test_id3v23_write_materializes_encoding_and_join_policy(tmp_path: Path) -> N
     assert tags.version == (2, 3, 0)
     assert tags["TPE1"].encoding == 1
     assert any("joined" in warning for warning in result.warnings)
+
+
+def test_id3_people_fields_are_rebuilt_together(tmp_path: Path) -> None:
+    _source, staged, _source_hash = _stage(tmp_path, "management_full.mp3")
+    tags = ID3(staged)
+    tags.delall("TMCL")
+    tags.delall("TIPL")
+    tags.add(
+        TIPL(
+            encoding=3,
+            people=[["engineer", "Existing Engineer"], ["producer", "Old Producer"]],
+        )
+    )
+    tags.save(staged, v2_version=4)
+    engine = AudioMetadataEngine()
+
+    producer_plan = engine.plan(
+        engine.read(staged),
+        DesiredAudioDocument(
+            fields=(
+                DesiredAudioField(
+                    name="producer", action="set", value=("New Producer",)
+                ),
+            )
+        ),
+        AudioWritePolicy(),
+    )
+    producer_result = engine.apply(staged, producer_plan)
+
+    assert producer_result.document.metadata.value_for("performer") == (
+        "Existing Engineer (engineer)",
+    )
+    assert producer_result.document.metadata.value_for("producer") == ("New Producer",)
+    assert ID3(staged).getall("TMCL")[0].people == [["engineer", "Existing Engineer"]]
+
+    performer_plan = engine.plan(
+        engine.read(staged),
+        DesiredAudioDocument(
+            fields=(
+                DesiredAudioField(
+                    name="performer",
+                    action="set",
+                    value=("Replacement Player (drums (drum set))",),
+                ),
+            )
+        ),
+        AudioWritePolicy(),
+    )
+    performer_result = engine.apply(staged, performer_plan)
+
+    assert performer_result.document.metadata.value_for("performer") == (
+        "Replacement Player (drums (drum set))",
+    )
+    assert performer_result.document.metadata.value_for("producer") == ("New Producer",)
+    final_tags = ID3(staged)
+    assert final_tags.getall("TMCL")[0].people == [
+        ["drums (drum set)", "Replacement Player"]
+    ]
+    assert final_tags.getall("TIPL")[0].people == [["producer", "New Producer"]]
 
 
 @pytest.mark.parametrize("audio_format", FORMATS)
@@ -353,6 +414,30 @@ def test_typed_artwork_mime_and_image_types_round_trip(
     restored = engine.restore(staged, snapshot)
     assert restored.document.artwork == snapshot.artwork
     assert restored.document.native_tags == snapshot.native_tags
+
+
+@pytest.mark.parametrize("audio_format", ("mp3", "wav"))
+def test_id3_artwork_with_matching_descriptions_keeps_every_image(
+    audio_format: str,
+    tmp_path: Path,
+) -> None:
+    _source, staged, _source_hash = _stage(tmp_path, f"management_full.{audio_format}")
+    engine = AudioMetadataEngine()
+    artwork = (
+        _artwork("front", "JPEG", (9, 7), description=""),
+        _artwork("other", "JPEG", (8, 6), description=""),
+    )
+
+    plan = engine.plan(
+        engine.read(staged),
+        DesiredAudioDocument(fields=(), artwork=artwork),
+        AudioWritePolicy(),
+    )
+    result = engine.apply(staged, plan)
+
+    assert sorted(
+        (image.image_type, image.sha256) for image in result.document.artwork
+    ) == sorted((image.image_type, image.sha256) for image in artwork)
 
 
 def test_format_cleanup_actions_apply_and_restore(tmp_path: Path) -> None:

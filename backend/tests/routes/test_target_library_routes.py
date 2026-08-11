@@ -15,6 +15,7 @@ from core.dependencies import (
     get_target_library_scan_coordinator,
     get_target_native_library_service,
     get_target_library_ownership_service,
+    get_target_album_edition_finder_service,
     get_wanted_watcher_service,
 )
 from middleware import _get_current_admin, _get_current_curator
@@ -39,6 +40,10 @@ def app() -> FastAPI:
     ownership.existing_provider_album_ids.return_value = set()
     application.dependency_overrides[get_target_library_ownership_service] = (
         lambda: ownership
+    )
+    edition_finder = AsyncMock()
+    application.dependency_overrides[get_target_album_edition_finder_service] = (
+        lambda: edition_finder
     )
     request_history = AsyncMock()
     request_history.async_get_requested_mbids.return_value = set()
@@ -80,6 +85,7 @@ def test_every_target_library_route_rejects_unauthenticated(app: FastAPI) -> Non
         ("GET", "/library/artists/a/albums", None),
         ("GET", "/library/artists/a/appearances", None),
         ("GET", "/library/albums/a", None),
+        ("GET", "/library/albums/a/reidentification/releases", None),
         ("GET", "/library/albums/a/copies", None),
         ("GET", "/library/albums/a/artwork/cached?v=1", None),
         ("POST", "/library/resolve-tracks", {"items": []}),
@@ -107,6 +113,45 @@ def test_target_catalog_mutations_reject_regular_users(app: FastAPI) -> None:
     assert client.delete("/library/tracks/t").status_code == 403
     assert client.get("/library/tracks/t/tags").status_code == 403
     assert client.post("/library/albums/a/rescan").status_code == 403
+    assert client.get("/library/albums/a/reidentification/releases").status_code == 403
+
+
+def test_admin_can_search_exact_releases_with_canonical_metadata(app: FastAPI) -> None:
+    from models.identification import ReleaseEdition, ReleaseEditionSearchPage
+
+    override_user_auth(app, role="admin")
+    app.dependency_overrides[_get_current_admin] = lambda: SimpleNamespace(id="admin-1")
+    service = app.dependency_overrides[get_target_album_edition_finder_service]()
+    service.search.return_value = (
+        "Artist Album",
+        "group-1",
+        ReleaseEditionSearchPage(
+            items=[
+                ReleaseEdition(
+                    release_mbid="release-1",
+                    release_group_mbid="group-1",
+                    artist_name="Artist",
+                    title="Album",
+                    musicbrainz_url="https://musicbrainz.org/release/release-1",
+                    score=100,
+                )
+            ],
+            total=1,
+            offset=0,
+            limit=12,
+        ),
+    )
+
+    response = build_test_client(app).get(
+        "/library/albums/album-1/reidentification/releases?q=Artist+Album&limit=12&offset=0"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["belongs_to_current_release_group"] is True
+    assert response.json()["items"][0]["release_mbid"] == "release-1"
+    service.search.assert_awaited_once_with(
+        "album-1", query="Artist Album", limit=12, offset=0
+    )
 
 
 def test_target_album_removal_stops_watch_by_default(app: FastAPI) -> None:
@@ -320,6 +365,7 @@ def test_target_library_route_inventory_is_complete() -> None:
         ("GET", "/library/artists/{artist_id}/albums"),
         ("GET", "/library/artists/{artist_id}/appearances"),
         ("GET", "/library/albums/{album_id}"),
+        ("GET", "/library/albums/{album_id}/reidentification/releases"),
         ("GET", "/library/albums/{album_id}/copies"),
         ("GET", "/library/albums/{album_id}/artwork/cached"),
         ("POST", "/library/resolve-tracks"),

@@ -4,7 +4,7 @@ import shutil
 
 import msgspec
 from mutagen.apev2 import APEv2
-from mutagen.id3 import ID3, TXXX
+from mutagen.id3 import ID3, PRIV, SYLT, TXXX, USLT
 from mutagen.wave import WAVE
 import pytest
 
@@ -203,6 +203,57 @@ def test_ordinary_writes_preserve_all_raw_tags_and_scrub_is_explicit() -> None:
     assert scrub_art.desired_artwork == ()
 
 
+def test_mp3_private_frames_are_preserved_as_binary_not_custom_text(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "private-frame.mp3"
+    shutil.copy2(FIXTURES / "management_full.mp3", path)
+    tags = ID3(path)
+    tags.add(PRIV(owner="WM/Mood", data="example\0".encode("utf-16-le")))
+    tags.save(path)
+
+    engine = AudioMetadataEngine()
+    current = engine.read(path)
+    private = next(value for value in current.raw_tags if value.key.startswith("PRIV:"))
+    custom = engine.custom_tags(current, AudioWritePolicy())
+    plan = engine.plan(current, _one_field("title"), AudioWritePolicy())
+
+    assert private.value_kind == "binary"
+    assert all(not value.name.startswith("PRIV:") for value in custom)
+    assert private.key in plan.preserved_raw_keys
+
+
+def test_mp3_qualified_lyrics_are_managed_not_custom_tags(tmp_path: Path) -> None:
+    path = tmp_path / "qualified-lyrics.mp3"
+    shutil.copy2(FIXTURES / "management_full.mp3", path)
+    tags = ID3(path)
+    tags.delall("USLT")
+    tags.delall("SYLT")
+    tags.add(USLT(encoding=3, lang="eng", desc="", text="plain lyrics"))
+    tags.add(
+        SYLT(
+            encoding=3,
+            lang="eng",
+            format=2,
+            type=1,
+            desc="",
+            text=[(f"line {index}", index * 1_000) for index in range(100)],
+        )
+    )
+    tags.save(path)
+
+    engine = AudioMetadataEngine()
+    current = engine.read(path)
+    custom = engine.custom_tags(current, AudioWritePolicy())
+    plan = engine.plan(current, DesiredAudioDocument(fields=()), AudioWritePolicy())
+
+    assert any(value.key.casefold().startswith("uslt:") for value in current.raw_tags)
+    assert any(value.key.casefold().startswith("sylt:") for value in current.raw_tags)
+    assert {value.name for value in custom} == {"CUSTOM_KEEP"}
+    assert "USLT::eng" in plan.preserved_raw_keys
+    assert "SYLT::eng" in plan.preserved_raw_keys
+
+
 def test_scrub_keeps_selected_managed_fields_that_already_match() -> None:
     engine = AudioMetadataEngine()
     current = engine.read(FIXTURES / "management_full.flac")
@@ -257,6 +308,23 @@ def test_id3v23_loss_is_blocked_by_default_or_explicitly_warned() -> None:
     assert any(
         "no Picard ID3v2.3 representation" in value for value in unsupported.blockers
     )
+
+
+def test_mp3_id3v23_compatibility_warning_is_not_shown_for_id3v24() -> None:
+    engine = AudioMetadataEngine()
+    current = engine.read(FIXTURES / "management_full.mp3")
+    desired = _one_field("title")
+
+    id3v23 = engine.plan(
+        current,
+        desired,
+        AudioWritePolicy(id3_version="2.3", id3_text_encoding="utf16"),
+    )
+    id3v24 = engine.plan(current, desired, AudioWritePolicy(id3_version="2.4"))
+
+    warning = "ID3v2.3 flattens configured multi-value fields when explicitly selected."
+    assert warning in id3v23.warnings
+    assert warning not in id3v24.warnings
 
 
 def test_independently_written_id3v23_fixture_is_probed_and_snapshotted() -> None:

@@ -22,9 +22,12 @@ from infrastructure.queue.priority_queue import RequestPriority
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.identification import (
     AlbumCandidate,
+    CandidateEvidence,
     CandidateTrack,
+    GroupingTrack,
     IdentificationAttempt,
     IdentificationEvidenceRecord,
+    TrackEvidence,
 )
 from models.library_work import OperationJob, RepairFinding
 from repositories.protocols.identification import IdentificationProviderProtocol
@@ -32,13 +35,21 @@ from repositories.protocols.musicbrainz_management import (
     CanonicalMusicBrainzRepositoryProtocol,
     MbManagementRelease,
 )
-from services.native.album_evidence_engine import MATCHER_VERSION, AlbumEvidenceEngine
+from services.native.album_evidence_engine import (
+    DURATION_GRACE_SECONDS,
+    MATCHER_VERSION,
+    AlbumEvidenceEngine,
+    _fold,
+)
 from services.native.album_identification_service import (
     _candidate_key,
     _to_grouping_track,
 )
 from services.native.conditional_fingerprint_service import FINGERPRINTER_VERSION
-from services.native.identification_revisions import album_input_revisions
+from services.native.identification_revisions import (
+    album_identity_revision,
+    album_input_revisions,
+)
 from services.native.library_operation_service import (
     LEASE_SECONDS,
     LibraryOperationService,
@@ -293,7 +304,7 @@ class IdentityRepairService:
                 None,
                 [],
             )
-        tracks = context["tracks"]
+        tracks = [row for row in context["tracks"] if row["availability"] == "indexed"]
         release_track_ids = [
             str(row["release_track_mbid"])
             for row in tracks
@@ -311,19 +322,6 @@ class IdentityRepairService:
             )
             and len(set(release_track_ids)) == len(tracks)
         )
-        if complete:
-            return (
-                self._finding(
-                    job_id,
-                    work,
-                    "ready",
-                    "EXACT_RELEASE_MAPPINGS_PRESENT",
-                    False,
-                    identity_revision=int(identity["row_revision"]),
-                ),
-                None,
-                [],
-            )
         if self._canonical_provider is None:
             return (
                 self._finding(
@@ -392,14 +390,44 @@ class IdentityRepairService:
             )
             local.release_mbid = str(identity["release_mbid"])
             local.release_group_mbid = str(identity["release_group_mbid"])
-        evaluated = self._evidence.evaluate_candidate(
-            local_tracks, self._management_candidate(release)
+        candidate = self._management_candidate(release)
+        try:
+            recording_redirects = await self._normalize_recording_redirects(
+                local_tracks,
+                tracks,
+                candidate,
+            )
+        except ExternalServiceError:
+            return (
+                self._finding(
+                    job_id,
+                    work,
+                    "unverifiable",
+                    "PROVIDER_DEFERRED",
+                    False,
+                    identity_revision=int(identity["row_revision"]),
+                ),
+                None,
+                [],
+            )
+        evaluated = self._evidence.evaluate_candidate(local_tracks, candidate)
+        self._disambiguate_duplicate_recordings(
+            local_tracks,
+            tracks,
+            candidate,
+            evaluated,
         )
+        for item in evaluated.track_evidence:
+            redirects = recording_redirects.get(item.local_track_id, [])
+            if redirects and item.classification == "supported":
+                item.recording_mbid_redirects = redirects
+                item.evidence_kinds.append("recording_mbid_redirect")
         proposed = [
             item
             for item in evaluated.track_evidence
             if item.classification == "supported"
         ]
+        by_id = {item.local_track_id: item for item in proposed}
         release_tracks = [item.release_track_mbid for item in proposed]
         safe = (
             bool(tracks)
@@ -421,13 +449,13 @@ class IdentityRepairService:
             and len(set(release_tracks)) == len(release_tracks)
         )
         if safe:
-            by_id = {item.local_track_id: item for item in proposed}
             for row in tracks:
                 item = by_id[str(row["id"])]
                 if any(
                     (
-                        row["recording_mbid"]
-                        and row["recording_mbid"] != item.recording_mbid,
+                        not self._recording_identity_matches(
+                            row["recording_mbid"], item
+                        ),
                         row["identity_release_mbid"]
                         and row["identity_release_mbid"] != release.id,
                         row["release_track_mbid"]
@@ -437,8 +465,9 @@ class IdentityRepairService:
                         != release.release_group.id,
                         row["embedded_release_mbid"]
                         and row["embedded_release_mbid"] != release.id,
-                        row["embedded_recording_mbid"]
-                        and row["embedded_recording_mbid"] != item.recording_mbid,
+                        not self._recording_identity_matches(
+                            row["embedded_recording_mbid"], item
+                        ),
                         row["embedded_release_track_mbid"]
                         and row["embedded_release_track_mbid"]
                         != item.release_track_mbid,
@@ -447,6 +476,26 @@ class IdentityRepairService:
                     safe = False
                     evaluated.reason_code = "CONFLICTING_TRACK_EVIDENCE"
                     break
+        verified_unchanged = bool(
+            safe
+            and complete
+            and all(
+                row["recording_mbid"] == by_id[str(row["id"])].recording_mbid
+                and row["identity_release_mbid"] == release.id
+                and row["release_track_mbid"]
+                == by_id[str(row["id"])].release_track_mbid
+                and int(row["medium_position"])
+                == by_id[str(row["id"])].candidate_disc_number
+                and int(row["release_track_position"])
+                == by_id[str(row["id"])].candidate_track_position
+                for row in tracks
+            )
+        )
+        result_reason = (
+            "EXACT_RELEASE_MAPPINGS_VERIFIED"
+            if verified_unchanged
+            else ("EXACT_RELEASE_MAPPING_SUPPORTED" if safe else evaluated.reason_code)
+        )
         revisions = album_input_revisions(tracks)
         attempt_id = str(uuid.uuid4())
         evidence_id = str(uuid.uuid4())
@@ -459,9 +508,7 @@ class IdentityRepairService:
             input_policy_revision=revisions[2],
             matcher_version=MANAGEMENT_MAPPING_VERSION,
             state="identified" if safe else "contradictory",
-            terminal_reason_code=(
-                "EXACT_RELEASE_MAPPING_SUPPORTED" if safe else evaluated.reason_code
-            ),
+            terminal_reason_code=result_reason,
             selected_candidate_key=_candidate_key(evaluated) if safe else None,
             candidate_count=1,
             started_at=timestamp,
@@ -478,15 +525,185 @@ class IdentityRepairService:
             self._finding(
                 job_id,
                 work,
-                "mapping_ready" if safe else "needs_review",
-                ("EXACT_RELEASE_MAPPING_SUPPORTED" if safe else evaluated.reason_code),
-                safe,
+                (
+                    "ready"
+                    if verified_unchanged
+                    else ("mapping_ready" if safe else "needs_review")
+                ),
+                result_reason,
+                safe and not verified_unchanged,
                 evidence_id=evidence_id,
                 identity_revision=int(identity["row_revision"]),
             ),
             attempt,
             [record],
         )
+
+    async def _normalize_recording_redirects(
+        self,
+        local_tracks: list[GroupingTrack],
+        rows: list[dict],
+        candidate: AlbumCandidate,
+    ) -> dict[str, list[str]]:
+        if self._canonical_provider is None:
+            return {}
+        candidate_ids = {
+            track.recording_mbid.casefold()
+            for track in candidate.tracks
+            if track.recording_mbid
+        }
+        resolved: dict[str, str | None] = {}
+        redirects_by_track: dict[str, list[str]] = {}
+        for local, row in zip(local_tracks, rows, strict=True):
+            recording_ids = {
+                str(value).casefold()
+                for value in (
+                    row["recording_mbid"],
+                    row["embedded_recording_mbid"],
+                )
+                if value
+            }
+            canonical_ids: set[str] = set()
+            redirects: list[str] = []
+            for recording_id in recording_ids:
+                canonical_id = recording_id
+                if recording_id not in candidate_ids:
+                    if recording_id not in resolved:
+                        resolved[
+                            recording_id
+                        ] = await self._canonical_provider.resolve_recording_mbid(
+                            recording_id,
+                            priority=RequestPriority.BACKGROUND_SYNC,
+                        )
+                    provider_id = resolved[recording_id]
+                    if (
+                        provider_id
+                        and provider_id.casefold() in candidate_ids
+                        and provider_id.casefold() != recording_id
+                    ):
+                        canonical_id = provider_id.casefold()
+                        redirects.append(recording_id)
+                canonical_ids.add(canonical_id)
+            if len(canonical_ids) == 1:
+                canonical_id = next(iter(canonical_ids))
+                if canonical_id in candidate_ids:
+                    local.recording_mbid = canonical_id
+                    if redirects:
+                        redirects_by_track[local.local_track_id] = sorted(
+                            set(redirects)
+                        )
+        return redirects_by_track
+
+    @staticmethod
+    def _disambiguate_duplicate_recordings(
+        local_tracks: list[GroupingTrack],
+        rows: list[dict],
+        candidate: AlbumCandidate,
+        evidence: CandidateEvidence,
+    ) -> None:
+        candidates_by_recording: dict[str, list[CandidateTrack]] = {}
+        for track in candidate.tracks:
+            if track.recording_mbid:
+                candidates_by_recording.setdefault(
+                    track.recording_mbid.casefold(), []
+                ).append(track)
+        local_by_id = {
+            local.local_track_id: (local, row)
+            for local, row in zip(local_tracks, rows, strict=True)
+        }
+        ambiguous = False
+        for item in evidence.track_evidence:
+            if item.classification != "supported" or not item.recording_mbid:
+                continue
+            duplicates = candidates_by_recording.get(item.recording_mbid.casefold(), [])
+            if len(duplicates) < 2:
+                continue
+            local, row = local_by_id[item.local_track_id]
+            selected = IdentityRepairService._select_duplicate_recording_track(
+                local, row, duplicates
+            )
+            if selected is None:
+                item.classification = "contradictory"
+                item.evidence_kinds.append("ambiguous_release_track_identity")
+                item.release_track_mbid = None
+                item.candidate_disc_number = None
+                item.candidate_track_position = None
+                ambiguous = True
+                continue
+            item.candidate_track_title = selected.title
+            item.candidate_disc_number = selected.disc_number
+            item.candidate_track_position = selected.position
+            item.recording_mbid = selected.recording_mbid
+            item.release_track_mbid = selected.release_track_mbid
+            item.evidence_kinds.append("duplicate_recording_disambiguated")
+        if ambiguous:
+            evidence.reason_code = "CONFLICTING_TRACK_EVIDENCE"
+
+    @staticmethod
+    def _select_duplicate_recording_track(
+        local: GroupingTrack,
+        row: dict,
+        candidates: list[CandidateTrack],
+    ) -> CandidateTrack | None:
+        explicit_ids = {
+            str(value).casefold()
+            for value in (
+                row["release_track_mbid"],
+                row["embedded_release_track_mbid"],
+            )
+            if value
+        }
+        if explicit_ids:
+            matching = [
+                track
+                for track in candidates
+                if track.release_track_mbid
+                and track.release_track_mbid.casefold() in explicit_ids
+            ]
+            return matching[0] if len(explicit_ids) == len(matching) == 1 else None
+
+        signals: list[set[int]] = []
+        if local.track_number > 0:
+            position_matches = {
+                index
+                for index, track in enumerate(candidates)
+                if local.disc_number == track.disc_number
+                and local.track_number in {track.position, track.absolute_position}
+            }
+            signals.append(position_matches)
+        if local.title.strip():
+            title_matches = {
+                index
+                for index, track in enumerate(candidates)
+                if _fold(local.title) == _fold(track.title)
+            }
+            signals.append(title_matches)
+        if local.duration_seconds is not None and any(
+            track.duration_seconds is not None for track in candidates
+        ):
+            duration_matches = {
+                index
+                for index, track in enumerate(candidates)
+                if track.duration_seconds is not None
+                and abs(local.duration_seconds - track.duration_seconds)
+                <= DURATION_GRACE_SECONDS
+            }
+            signals.append(duration_matches)
+        if not signals:
+            return None
+        matching_indexes = set.intersection(*signals)
+        if len(matching_indexes) != 1:
+            return None
+        return candidates[next(iter(matching_indexes))]
+
+    @staticmethod
+    def _recording_identity_matches(value: str | None, item: TrackEvidence) -> bool:
+        if not value:
+            return True
+        normalized = value.casefold()
+        return normalized == (item.recording_mbid or "").casefold() or normalized in {
+            alias.casefold() for alias in item.recording_mbid_redirects
+        }
 
     @staticmethod
     def _management_candidate(release: MbManagementRelease) -> AlbumCandidate:
@@ -606,8 +823,8 @@ class IdentityRepairService:
         now: float | None = None,
         checkpoint: Callable[[], Awaitable[None]] | None = None,
     ) -> OperationResponse:
-        timestamp = time.time() if now is None else now
         while True:
+            timestamp = time.time() if now is None else now
             controlled = await self._store.checkpoint_operation_control(
                 str(job["id"]), worker_id, now=timestamp
             )
@@ -625,6 +842,14 @@ class IdentityRepairService:
                     now=timestamp,
                 )
                 return self._operations._response(done)
+            renewed = await self._store.heartbeat_operation_job(
+                str(job["id"]),
+                worker_id,
+                now=timestamp,
+                lease_seconds=LEASE_SECONDS,
+            )
+            if not renewed:
+                raise ResourceNotFoundError("The identity check lease changed.")
             await self._store.apply_repair_work(
                 str(job["id"]),
                 int(work["ordinal"]),
@@ -730,6 +955,13 @@ class IdentityRepairService:
                 [],
             )
         identity = context["identity"]
+        tracks = [row for row in context["tracks"] if row["availability"] == "indexed"]
+        if not tracks:
+            return (
+                self._finding(job_id, work, "stale", "IDENTITY_CHANGED", False),
+                None,
+                [],
+            )
         if identity["decision_source"] == "manual":
             return (
                 self._finding(
@@ -743,43 +975,48 @@ class IdentityRepairService:
                 None,
                 [],
             )
-        stored = await self._store.get_selected_album_evidence(album_id)
-        if stored is None:
-            stored = await self._store.get_latest_album_candidate_evidence(
-                album_id,
-                f"{identity['release_group_mbid']}:{identity['release_mbid'] or ''}",
-            )
         attempt: IdentificationAttempt | None = None
         records: list[IdentificationEvidenceRecord] = []
         provider_deferred = False
-        if stored is None and self._provider is not None:
+        stored: IdentificationEvidenceRecord | None = None
+        candidate: AlbumCandidate | None = None
+        fingerprint_filled = False
+        if self._provider is not None and identity["release_mbid"]:
             try:
-                candidate = await self._provider.get_album_candidate(
-                    str(identity["release_group_mbid"]),
-                    len(context["tracks"]),
+                candidate = await self._provider.get_exact_release_candidate(
+                    str(identity["release_mbid"]),
                     RequestPriority.BACKGROUND_SYNC,
                 )
             except ExternalServiceError:
                 candidate = None
                 provider_deferred = True
             if candidate is not None:
-                tracks = [_to_grouping_track(row) for row in context["tracks"]]
-                for track, row in zip(tracks, context["tracks"], strict=True):
+                grouping_tracks = [_to_grouping_track(row) for row in tracks]
+                for track, row in zip(grouping_tracks, tracks, strict=True):
                     cached = await self._store.get_fingerprint_outcome(
                         track.local_track_id,
                         str(row["stat_revision"]),
                         FINGERPRINTER_VERSION,
                     )
                     if (
-                        cached is not None
+                        not track.recording_mbid
+                        and cached is not None
                         and cached.state == "matched"
                         and cached.recording_mbid
                     ):
                         track.recording_mbid = cached.recording_mbid
-                evaluated = self._evidence.evaluate_candidate(tracks, candidate)
+                        fingerprint_filled = True
+                evaluated = self._evidence.evaluate_candidate(
+                    grouping_tracks, candidate
+                )
+                if (
+                    candidate.release_mbid != identity["release_mbid"]
+                    or candidate.release_group_mbid != identity["release_group_mbid"]
+                ):
+                    evaluated.reason_code = "CONFLICTING_TRACK_EVIDENCE"
                 attempt_id = str(uuid.uuid4())
                 evidence_id = str(uuid.uuid4())
-                revisions = album_input_revisions(context["tracks"])
+                revisions = album_input_revisions(tracks)
                 attempt = IdentificationAttempt(
                     id=attempt_id,
                     local_album_id=album_id,
@@ -787,6 +1024,7 @@ class IdentityRepairService:
                     input_tag_revision=revisions[0],
                     input_file_revision=revisions[1],
                     input_policy_revision=revisions[2],
+                    input_identity_revision=album_identity_revision(identity, tracks),
                     matcher_version=MATCHER_VERSION,
                     state=(
                         "identified"
@@ -830,8 +1068,16 @@ class IdentityRepairService:
             item.classification == "contradictory"
             for item in stored.evidence.track_evidence
         )
-        complete = not stored.evidence.unmatched_expected_tracks
-        safe = complete and (supported == 0 or contradictory > 0)
+        complete = bool(
+            candidate is not None
+            and len(candidate.tracks) == len(tracks)
+            and len(stored.evidence.track_evidence) == len(tracks)
+        )
+        safe = (
+            complete
+            and not fingerprint_filled
+            and (supported == 0 or contradictory > 0)
+        )
         if safe:
             finding_code = "safe_detach"
             reason = "ZERO_SUPPORT" if supported == 0 else "HARD_CONTRADICTION"

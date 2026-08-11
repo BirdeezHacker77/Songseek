@@ -64,7 +64,8 @@ vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
 	})
 }));
 vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
-	getLibrarySearchQuery: () => ({ data: { artists: [], albums: [], tracks: [] } })
+	getLibrarySearchQuery: () => ({ data: { artists: [], albums: [], tracks: [] } }),
+	getLibraryAlbumDetailQuery: () => ({ data: undefined, isLoading: false, isError: false })
 }));
 vi.mock('$lib/queries/library-management/LibraryManagementEvents', () => ({
 	createLibraryManagementEvents: () => ({ start: vi.fn(), stop: vi.fn() })

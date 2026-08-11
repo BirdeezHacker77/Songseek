@@ -98,6 +98,7 @@ from core.dependencies import (
     get_user_section_prefs_store,
     get_wanted_watcher_service,
     get_target_catalog_correction_service,
+    get_target_album_edition_finder_service,
     get_target_explicit_reidentification_worker,
     get_target_identity_repair_service,
     get_target_library_diagnostics_service,
@@ -163,6 +164,7 @@ _SERVICE_PROVIDERS = (
     get_user_section_prefs_store,
     get_wanted_watcher_service,
     get_target_catalog_correction_service,
+    get_target_album_edition_finder_service,
     get_target_explicit_reidentification_worker,
     get_target_identity_repair_service,
     get_target_library_diagnostics_service,
@@ -499,6 +501,11 @@ _ADMIN_ENDPOINTS = [
             "expected_input_revision": "input-1",
             "idempotency_key": "reidentify-1",
         },
+    ),
+    (
+        "GET",
+        "/api/v1/library/albums/album-1/reidentification/releases?q=Artist+Album",
+        None,
     ),
     (
         "POST",

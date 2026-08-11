@@ -68,6 +68,7 @@ from services.native.identification_queue_service import IdentificationQueueServ
 from services.native.album_coverage_service import AlbumCoverageService
 from services.native.album_identification_service import AlbumIdentificationService
 from services.native.reidentification_service import ReidentificationService
+from services.native.album_edition_finder_service import AlbumEditionFinderService
 from services.native.library_review_service import LibraryReviewService
 from services.native.library_operation_service import LibraryOperationService
 from services.native.catalog_correction_service import CatalogCorrectionService
@@ -162,6 +163,7 @@ from .service_providers import (
     get_target_album_coverage_service,
     get_target_album_identification_service,
     get_target_reidentification_service,
+    get_target_album_edition_finder_service,
     get_target_library_review_service,
     get_target_library_operation_service,
     get_target_catalog_correction_service,
@@ -290,6 +292,9 @@ TargetAlbumCoverageServiceDep = Annotated[
 ]
 TargetReidentificationServiceDep = Annotated[
     ReidentificationService, Depends(get_target_reidentification_service)
+]
+TargetAlbumEditionFinderServiceDep = Annotated[
+    AlbumEditionFinderService, Depends(get_target_album_edition_finder_service)
 ]
 LibraryReviewServiceDep = Annotated[
     LibraryReviewService, Depends(get_target_library_review_service)

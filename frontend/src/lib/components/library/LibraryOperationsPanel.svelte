@@ -39,6 +39,7 @@
 	import LibraryRunHistory from './LibraryRunHistory.svelte';
 	import LibraryRepairPanel from './LibraryRepairPanel.svelte';
 	import LibraryManagementControlRoom from './LibraryManagementControlRoom.svelte';
+	import LibraryManagementActionDesk from './LibraryManagementActionDesk.svelte';
 
 	const activityQuery = getLibraryActivityQuery(() => authStore.user?.id);
 	const runsQuery = getCurrentLibraryRunsQuery(() => authStore.isAdmin);
@@ -199,11 +200,23 @@
 		</div>
 	</div>
 
-	<section
+	<LibraryManagementActionDesk />
+
+	<details
 		id="scanning-controls"
-		class="library-scanning-control-room scroll-mt-36"
+		tabindex="-1"
+		role="region"
+		open
+		class="library-detail-section library-scanning-control-room scroll-mt-36"
 		aria-labelledby="library-scanning-control-title"
 	>
+		<summary class="library-detail-summary">
+			<span
+				><strong>Scan details</strong><small
+					>Progress metrics, full rescan, retry identification, history, and repairs</small
+				></span
+			>
+		</summary>
 		<header class="library-scanning-control-header">
 			<div class="library-scanning-mark"><ScanSearch class="h-6 w-6" /></div>
 			<div class="min-w-0 flex-1">
@@ -597,11 +610,25 @@
 			<div id="recent-runs"><LibraryRunHistory /></div>
 			<LibraryRepairPanel />
 		</div>
-	</section>
+	</details>
 
-	<div id="management-controls" class="scroll-mt-36">
+	<details
+		id="management-controls"
+		tabindex="-1"
+		role="region"
+		open
+		class="library-detail-section scroll-mt-36"
+		aria-labelledby="library-management-controls-summary-title"
+	>
+		<summary class="library-detail-summary">
+			<span
+				><strong id="library-management-controls-summary-title">Management details</strong><small
+					>Readiness report, scoped previews, active operations, recovery, Undo, and restore</small
+				></span
+			>
+		</summary>
 		<LibraryManagementControlRoom />
-	</div>
+	</details>
 </section>
 
 <LibraryWorkDialog

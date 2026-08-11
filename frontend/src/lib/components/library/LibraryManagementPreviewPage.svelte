@@ -273,7 +273,9 @@
 			{
 				TRACK_NOT_MAPPED: 'Exact edition selected; track map missing',
 				RELEASE_NOT_SELECTED: 'Exact MusicBrainz edition not chosen',
-				FILE_UNREADABLE: 'File metadata could not be read'
+				FILE_UNREADABLE: 'File metadata could not be read',
+				PATH_TOO_LONG: 'Planned path exceeds the configured length limit',
+				SCRIPT_VALIDATION_FAILED: 'Profile script could not safely process this file'
 			}[value] ?? titleManagementValue(value)
 		);
 	}

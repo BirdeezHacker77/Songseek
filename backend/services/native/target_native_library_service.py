@@ -153,6 +153,9 @@ class TargetNativeLibraryService:
             return None
         identity = context["identity"]
         review = context["review"]
+        tracks = [
+            track for track in context["tracks"] if track["availability"] == "indexed"
+        ]
         contribution = await self._store.get_active_album_contribution(album.id)
         if (
             identity is not None
@@ -175,7 +178,7 @@ class TargetNativeLibraryService:
                 if field not in {"contribution_id", "contribution_state"}
             },
             row_revision=int(context["album"]["row_revision"]),
-            input_revision=":".join(album_input_revisions(context["tracks"])),
+            input_revision=":".join(album_input_revisions(tracks)),
             identification_status=status,
             review_id=str(review["id"]) if review is not None else None,
             review_revision=int(review["row_revision"]) if review is not None else None,

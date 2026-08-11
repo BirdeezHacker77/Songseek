@@ -39,6 +39,7 @@ from models.identification import (
     GroupingApplication,
     IdentificationAttempt,
     IdentificationEvidenceRecord,
+    TrackEvidence,
 )
 from models.library_migration import (
     LegacyCatalogImportBundle,
@@ -162,6 +163,34 @@ _IMPORT_JOURNAL_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
+
+
+def _complete_track_identity_mapping(
+    indexed_tracks: list[sqlite3.Row],
+    evidence: CandidateEvidence,
+) -> list[TrackEvidence] | None:
+    indexed_ids = [str(track["id"]) for track in indexed_tracks]
+    by_local_id: dict[str, TrackEvidence] = {}
+    release_track_ids: set[str] = set()
+    if not evidence.release_mbid:
+        return None
+    for track in evidence.track_evidence:
+        if track.local_track_id in by_local_id:
+            return None
+        if (
+            not track.recording_mbid
+            or not track.release_track_mbid
+            or not track.candidate_disc_number
+            or not track.candidate_track_position
+            or track.release_track_mbid in release_track_ids
+        ):
+            return None
+        by_local_id[track.local_track_id] = track
+        release_track_ids.add(track.release_track_mbid)
+    if set(by_local_id) != set(indexed_ids):
+        return None
+    return [by_local_id[track_id] for track_id in indexed_ids]
+
 
 _TARGET_TRACK_SELECT = """
 SELECT
@@ -381,6 +410,71 @@ def _album_input_revision(rows: list[sqlite3.Row]) -> str:
             ),
         )
     )
+
+
+def _album_identity_revision(
+    album_identity: sqlite3.Row | None,
+    tracks: list[sqlite3.Row],
+) -> str:
+    album_payload = (
+        None
+        if album_identity is None
+        else {
+            "row_revision": album_identity["row_revision"],
+            "release_group_mbid": album_identity["release_group_mbid"],
+            "release_mbid": album_identity["release_mbid"],
+            "decision_source": album_identity["decision_source"],
+        }
+    )
+    track_payload = [
+        {
+            "id": row["id"],
+            "identity_row_revision": row["identity_row_revision"],
+            "recording_mbid": row["recording_mbid"],
+            "release_mbid": row["identity_release_mbid"],
+            "release_track_mbid": row["release_track_mbid"],
+            "medium_position": row["medium_position"],
+            "release_track_position": row["release_track_position"],
+        }
+        for row in sorted(tracks, key=lambda row: str(row["id"]))
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            {"album": album_payload, "tracks": track_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
+def _identification_identity_rows(
+    connection: sqlite3.Connection, album_id: str
+) -> tuple[sqlite3.Row | None, list[sqlite3.Row]]:
+    album_identity = connection.execute(
+        "SELECT row_revision,release_group_mbid,release_mbid,decision_source "
+        "FROM local_album_external_identities WHERE local_album_id=? "
+        "AND provider='musicbrainz'",
+        (album_id,),
+    ).fetchone()
+    tracks = connection.execute(
+        "SELECT t.id,i.row_revision AS identity_row_revision,i.recording_mbid,"
+        "i.release_mbid AS identity_release_mbid,i.release_track_mbid,"
+        "i.medium_position,i.release_track_position FROM local_tracks t "
+        "LEFT JOIN local_track_external_identities i ON i.local_track_id=t.id "
+        "AND i.provider='musicbrainz' WHERE t.local_album_id=? "
+        "AND t.availability='indexed' ORDER BY t.id",
+        (album_id,),
+    ).fetchall()
+    return album_identity, list(tracks)
+
+
+def _recording_evidence_matches(value: str | None, item: TrackEvidence) -> bool:
+    if not value:
+        return True
+    normalized = value.casefold()
+    return normalized == (item.recording_mbid or "").casefold() or normalized in {
+        alias.casefold() for alias in item.recording_mbid_redirects
+    }
 
 
 def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -983,6 +1077,9 @@ class NativeLibraryStore(PersistenceBase):
                 "ALTER TABLE local_tracks ADD COLUMN embedded_release_track_mbid TEXT",
                 "ALTER TABLE local_tracks ADD COLUMN embedded_artist_mbid TEXT",
                 "ALTER TABLE local_tracks ADD COLUMN embedded_album_artist_mbid TEXT",
+                "ALTER TABLE library_identification_attempts ADD COLUMN input_identity_revision TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE library_reidentification_snapshots ADD COLUMN expected_identity_revision TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE library_reidentification_snapshots ADD COLUMN requested_release_mbid TEXT",
                 "ALTER TABLE audio_fingerprint_outcomes ADD COLUMN release_group_ids_json TEXT NOT NULL DEFAULT '[]'",
                 "ALTER TABLE local_artists ADD COLUMN normalized_name TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE local_tracks ADD COLUMN tag_album_title TEXT",
@@ -6214,10 +6311,11 @@ class NativeLibraryStore(PersistenceBase):
             connection.execute(
                 "INSERT INTO library_identification_attempts "
                 "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "input_tag_revision, input_policy_revision, input_file_revision, "
+                "input_identity_revision, matcher_version, "
                 "state, terminal_reason_code, selected_candidate_key, candidate_count, "
                 "degradation_flags_json, started_at, completed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     attempt.id,
                     attempt.local_album_id,
@@ -6227,6 +6325,7 @@ class NativeLibraryStore(PersistenceBase):
                     attempt.input_tag_revision,
                     attempt.input_policy_revision,
                     attempt.input_file_revision,
+                    attempt.input_identity_revision,
                     attempt.matcher_version,
                     attempt.state,
                     attempt.terminal_reason_code,
@@ -6600,10 +6699,11 @@ class NativeLibraryStore(PersistenceBase):
             connection.execute(
                 "INSERT INTO library_identification_attempts "
                 "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "input_tag_revision, input_policy_revision, input_file_revision, "
+                "input_identity_revision, matcher_version, "
                 "state, terminal_reason_code, selected_candidate_key, candidate_count, "
                 "degradation_flags_json, started_at, completed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     attempt.id,
                     attempt.local_album_id,
@@ -6613,6 +6713,7 @@ class NativeLibraryStore(PersistenceBase):
                     attempt.input_tag_revision,
                     attempt.input_policy_revision,
                     attempt.input_file_revision,
+                    attempt.input_identity_revision,
                     attempt.matcher_version,
                     attempt.state,
                     attempt.terminal_reason_code,
@@ -6809,6 +6910,7 @@ class NativeLibraryStore(PersistenceBase):
         worker_id: str,
         expected_job_revision: int,
         expected_album_revision: int,
+        expected_input_revision: str,
         attempt: IdentificationAttempt,
         evidence: list[IdentificationEvidenceRecord],
         outcome: str,
@@ -6843,13 +6945,36 @@ class NativeLibraryStore(PersistenceBase):
                 raise StaleRevisionError(
                     "The album changed before its identification result could be applied."
                 )
+            current_tracks = connection.execute(
+                "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
+                "applied_policy FROM local_tracks WHERE local_album_id=? "
+                "AND availability='indexed'",
+                (attempt.local_album_id,),
+            ).fetchall()
+            if _album_input_revision(list(current_tracks)) != expected_input_revision:
+                raise StaleRevisionError(
+                    "The album files changed before its identification result could be applied."
+                )
+            current_album_identity, current_identity_tracks = (
+                _identification_identity_rows(connection, str(attempt.local_album_id))
+            )
+            if (
+                _album_identity_revision(
+                    current_album_identity, current_identity_tracks
+                )
+                != attempt.input_identity_revision
+            ):
+                raise StaleRevisionError(
+                    "The album identity changed before its identification result could be applied."
+                )
             connection.execute(
                 "INSERT INTO library_identification_attempts "
                 "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "input_tag_revision, input_policy_revision, input_file_revision, "
+                "input_identity_revision, matcher_version, "
                 "state, terminal_reason_code, selected_candidate_key, candidate_count, "
                 "degradation_flags_json, started_at, completed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     attempt.id,
                     attempt.local_album_id,
@@ -6859,6 +6984,7 @@ class NativeLibraryStore(PersistenceBase):
                     attempt.input_tag_revision,
                     attempt.input_policy_revision,
                     attempt.input_file_revision,
+                    attempt.input_identity_revision,
                     attempt.matcher_version,
                     attempt.state,
                     attempt.terminal_reason_code,
@@ -6921,7 +7047,8 @@ class NativeLibraryStore(PersistenceBase):
                 )
                 connection.execute(
                     "DELETE FROM local_track_external_identities WHERE decision_source = 'automatic' "
-                    "AND local_track_id IN (SELECT id FROM local_tracks WHERE local_album_id = ?)",
+                    "AND local_track_id IN (SELECT id FROM local_tracks "
+                    "WHERE local_album_id = ? AND availability = 'indexed')",
                     (attempt.local_album_id,),
                 )
                 for track in selected.track_evidence:
@@ -7029,7 +7156,8 @@ class NativeLibraryStore(PersistenceBase):
                     connection.execute(
                         "DELETE FROM local_track_external_identities "
                         "WHERE decision_source = 'automatic' AND local_track_id IN "
-                        "(SELECT id FROM local_tracks WHERE local_album_id = ?)",
+                        "(SELECT id FROM local_tracks WHERE local_album_id = ? "
+                        "AND availability = 'indexed')",
                         (attempt.local_album_id,),
                     )
                     connection.execute(
@@ -15889,6 +16017,39 @@ class NativeLibraryStore(PersistenceBase):
             evidence = msgspec.json.decode(
                 bytes(evidence_row["evidence_json"]), type=CandidateEvidence
             )
+            attempt = connection.execute(
+                "SELECT input_tag_revision,input_file_revision,input_policy_revision,"
+                "input_identity_revision "
+                "FROM library_identification_attempts WHERE id = ?",
+                (review["attempt_id"],),
+            ).fetchone()
+            current_tracks = connection.execute(
+                "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
+                "applied_policy FROM local_tracks WHERE local_album_id=? "
+                "AND availability='indexed'",
+                (review["local_album_id"],),
+            ).fetchall()
+            if attempt is None or _album_input_revision(
+                list(current_tracks)
+            ) != ":".join(
+                (
+                    str(attempt["input_tag_revision"]),
+                    str(attempt["input_file_revision"]),
+                    str(attempt["input_policy_revision"]),
+                )
+            ):
+                raise StaleRevisionError(
+                    "The album files changed after candidate evaluation."
+                )
+            current_album_identity, current_identity_tracks = (
+                _identification_identity_rows(connection, str(review["local_album_id"]))
+            )
+            if not attempt["input_identity_revision"] or _album_identity_revision(
+                current_album_identity, current_identity_tracks
+            ) != str(attempt["input_identity_revision"]):
+                raise StaleRevisionError(
+                    "The album identity changed after candidate evaluation."
+                )
             if (
                 evidence.reason_code not in AUTOMATIC_SAFE_EVIDENCE_REASONS
                 and not manual_override
@@ -15918,7 +16079,8 @@ class NativeLibraryStore(PersistenceBase):
             )
             connection.execute(
                 "DELETE FROM local_track_external_identities WHERE local_track_id IN "
-                "(SELECT id FROM local_tracks WHERE local_album_id = ?)",
+                "(SELECT id FROM local_tracks WHERE local_album_id = ? "
+                "AND availability = 'indexed')",
                 (review["local_album_id"],),
             )
             for track in evidence.track_evidence:
@@ -22307,6 +22469,7 @@ class NativeLibraryStore(PersistenceBase):
         expected_album_revision: int,
         expected_input_revision: str,
         one_off_local_metadata: bool,
+        requested_release_mbid: str | None = None,
         review_id: str | None = None,
         expected_review_revision: int | None = None,
     ) -> dict[str, Any]:
@@ -22329,10 +22492,23 @@ class NativeLibraryStore(PersistenceBase):
                 raise StaleRevisionError(
                     "The album changed before re-identification started."
                 )
+            current_tracks = connection.execute(
+                "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
+                "applied_policy FROM local_tracks WHERE local_album_id=? "
+                "AND availability='indexed'",
+                (local_album_id,),
+            ).fetchall()
+            if not current_tracks:
+                raise ResourceNotFoundError("Local album has no indexed tracks.")
+            if _album_input_revision(list(current_tracks)) != expected_input_revision:
+                raise StaleRevisionError(
+                    "The album files changed before re-identification started."
+                )
             policies = {
                 str(row[0])
                 for row in connection.execute(
-                    "SELECT DISTINCT applied_policy FROM local_tracks WHERE local_album_id = ?",
+                    "SELECT DISTINCT applied_policy FROM local_tracks "
+                    "WHERE local_album_id = ? AND availability = 'indexed'",
                     (local_album_id,),
                 )
             }
@@ -22381,16 +22557,25 @@ class NativeLibraryStore(PersistenceBase):
                         review_id,
                     ),
                 )
+            album_identity, identity_tracks = _identification_identity_rows(
+                connection, local_album_id
+            )
+            expected_identity_revision = _album_identity_revision(
+                album_identity, identity_tracks
+            )
             connection.execute(
                 "INSERT INTO library_reidentification_snapshots "
                 "(job_id, local_album_id, expected_album_revision, expected_input_revision, "
-                "one_off_local_metadata, created_at) VALUES (?,?,?,?,?,?)",
+                "expected_identity_revision, one_off_local_metadata, requested_release_mbid, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     job.id,
                     local_album_id,
                     expected_album_revision,
                     expected_input_revision,
+                    expected_identity_revision,
                     int(one_off_local_metadata),
+                    requested_release_mbid,
                     job.created_at,
                 ),
             )
@@ -22442,6 +22627,33 @@ class NativeLibraryStore(PersistenceBase):
             ).fetchone()
             if album is None or int(album["row_revision"]) != expected_album_revision:
                 raise StaleRevisionError("The album changed during re-identification.")
+            current_tracks = connection.execute(
+                "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
+                "applied_policy FROM local_tracks WHERE local_album_id=? "
+                "AND availability='indexed'",
+                (snapshot["local_album_id"],),
+            ).fetchall()
+            if _album_input_revision(list(current_tracks)) != str(
+                snapshot["expected_input_revision"]
+            ):
+                raise StaleRevisionError(
+                    "The album files changed during re-identification."
+                )
+            current_album_identity, current_identity_tracks = (
+                _identification_identity_rows(
+                    connection, str(snapshot["local_album_id"])
+                )
+            )
+            current_identity_revision = _album_identity_revision(
+                current_album_identity, current_identity_tracks
+            )
+            if (
+                current_identity_revision != str(snapshot["expected_identity_revision"])
+                or current_identity_revision != attempt.input_identity_revision
+            ):
+                raise StaleRevisionError(
+                    "The album identity changed during re-identification."
+                )
             work = connection.execute(
                 "SELECT row_revision FROM library_operation_work WHERE job_id = ? AND ordinal = ? "
                 "AND state = 'running' AND row_revision = ?",
@@ -22452,9 +22664,11 @@ class NativeLibraryStore(PersistenceBase):
             connection.execute(
                 "INSERT INTO library_identification_attempts "
                 "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "input_tag_revision, input_policy_revision, input_file_revision, "
+                "input_identity_revision, matcher_version, "
                 "state, terminal_reason_code, selected_candidate_key, candidate_count, "
-                "degradation_flags_json, started_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "degradation_flags_json, started_at, completed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     attempt.id,
                     attempt.local_album_id,
@@ -22464,6 +22678,7 @@ class NativeLibraryStore(PersistenceBase):
                     attempt.input_tag_revision,
                     attempt.input_policy_revision,
                     attempt.input_file_revision,
+                    attempt.input_identity_revision,
                     attempt.matcher_version,
                     attempt.state,
                     attempt.terminal_reason_code,
@@ -22577,7 +22792,8 @@ class NativeLibraryStore(PersistenceBase):
                 )
             current_tracks = connection.execute(
                 "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
-                "applied_policy FROM local_tracks WHERE local_album_id=?",
+                "applied_policy FROM local_tracks WHERE local_album_id=? "
+                "AND availability='indexed'",
                 (snapshot["local_album_id"],),
             ).fetchall()
             if _album_input_revision(current_tracks) != str(
@@ -22585,6 +22801,17 @@ class NativeLibraryStore(PersistenceBase):
             ):
                 raise StaleRevisionError(
                     "The album files changed after candidates were evaluated."
+                )
+            current_album_identity, current_identity_tracks = (
+                _identification_identity_rows(
+                    connection, str(snapshot["local_album_id"])
+                )
+            )
+            if _album_identity_revision(
+                current_album_identity, current_identity_tracks
+            ) != str(snapshot["expected_identity_revision"]):
+                raise StaleRevisionError(
+                    "The album identity changed after candidates were evaluated."
                 )
             result = json.loads(str(snapshot["result_json"]))
             attempt_id = str(result["attempt_id"])
@@ -22602,10 +22829,24 @@ class NativeLibraryStore(PersistenceBase):
             )
             if (
                 evidence.reason_code not in AUTOMATIC_SAFE_EVIDENCE_REASONS
-                and not confirmation
-            ):
+                or snapshot["requested_release_mbid"] is not None
+            ) and not confirmation:
                 raise ValidationError(
                     "Confirm the conflicting candidate evidence before applying it."
+                )
+            requested_exact_release = snapshot["requested_release_mbid"] is not None
+            selected_tracks = (
+                _complete_track_identity_mapping(list(current_tracks), evidence)
+                if requested_exact_release
+                else [
+                    track
+                    for track in evidence.track_evidence
+                    if track.classification == "supported" and track.recording_mbid
+                ]
+            )
+            if requested_exact_release and selected_tracks is None:
+                raise ValidationError(
+                    "The exact release does not map every indexed track uniquely."
                 )
             connection.execute(
                 "INSERT INTO local_album_external_identities "
@@ -22627,13 +22868,14 @@ class NativeLibraryStore(PersistenceBase):
                     now,
                 ),
             )
-            connection.execute(
-                "DELETE FROM local_track_external_identities WHERE local_track_id IN "
-                "(SELECT id FROM local_tracks WHERE local_album_id = ?)",
-                (snapshot["local_album_id"],),
-            )
-            for track in evidence.track_evidence:
-                if track.classification == "supported" and track.recording_mbid:
+            if selected_tracks is not None:
+                connection.execute(
+                    "DELETE FROM local_track_external_identities WHERE local_track_id IN "
+                    "(SELECT id FROM local_tracks WHERE local_album_id = ? "
+                    "AND availability = 'indexed')",
+                    (snapshot["local_album_id"],),
+                )
+                for track in selected_tracks:
                     connection.execute(
                         "INSERT INTO local_track_external_identities "
                         "(local_track_id, provider, recording_mbid, release_mbid, "
@@ -22753,7 +22995,23 @@ class NativeLibraryStore(PersistenceBase):
                             (idempotency_key, job_id, control, now),
                         )
                     return dict(row)
-                if row["state"] == "failed":
+                restart_explicit = (
+                    row["kind"] == "explicit_reidentification"
+                    and row["state"] == "stopped"
+                )
+                if restart_explicit:
+                    connection.execute(
+                        "UPDATE library_operation_work SET state = 'pending', "
+                        "failure_code = NULL, result_json = NULL, updated_at = ?, "
+                        "row_revision = row_revision + 1 WHERE job_id = ?",
+                        (now, job_id),
+                    )
+                    connection.execute(
+                        "UPDATE library_reidentification_snapshots SET result_json = NULL, "
+                        "selected_candidate_key = NULL WHERE job_id = ?",
+                        (job_id,),
+                    )
+                elif row["state"] == "failed":
                     connection.execute(
                         "UPDATE library_operation_work SET state = 'pending', "
                         "failure_code = NULL, result_json = NULL, updated_at = ?, "
@@ -22761,12 +23019,19 @@ class NativeLibraryStore(PersistenceBase):
                         "AND state IN ('failed','running')",
                         (now, job_id),
                     )
-                assignments = (
-                    "state = 'queued', control_request = 'none', terminal_code = NULL, "
-                    "terminal_at = NULL, completed_count = CASE WHEN state = 'failed' "
-                    "THEN 0 ELSE completed_count END, failed_count = CASE WHEN state = 'failed' "
-                    "THEN 0 ELSE failed_count END"
-                )
+                if restart_explicit:
+                    assignments = (
+                        "state = 'queued', control_request = 'none', terminal_code = NULL, "
+                        "terminal_at = NULL, completed_count = 0, succeeded_count = 0, "
+                        "failed_count = 0, skipped_count = 0"
+                    )
+                else:
+                    assignments = (
+                        "state = 'queued', control_request = 'none', terminal_code = NULL, "
+                        "terminal_at = NULL, completed_count = CASE WHEN state = 'failed' "
+                        "THEN 0 ELSE completed_count END, failed_count = CASE WHEN state = 'failed' "
+                        "THEN 0 ELSE failed_count END"
+                    )
             elif control in {"pause", "stop"}:
                 if row["state"] in {"succeeded", "cancelled", "stopped"}:
                     if idempotency_key is not None:
@@ -22778,6 +23043,11 @@ class NativeLibraryStore(PersistenceBase):
                         )
                     return dict(row)
                 stale_planning_preview = False
+                explicit_ready = (
+                    control == "stop"
+                    and row["kind"] == "explicit_reidentification"
+                    and row["state"] == "ready"
+                )
                 if (
                     control == "stop"
                     and row["kind"] == "library_management"
@@ -22798,7 +23068,9 @@ class NativeLibraryStore(PersistenceBase):
                         and str(snapshot["phase"]) == "planning"
                     )
                 if control == "stop" and (
-                    row["state"] in {"queued", "paused"} or stale_planning_preview
+                    row["state"] in {"queued", "paused"}
+                    or stale_planning_preview
+                    or explicit_ready
                 ):
                     assignments = (
                         "state = 'stopped', control_request = 'none', "
@@ -23473,7 +23745,7 @@ class NativeLibraryStore(PersistenceBase):
                             str(row[0])
                             for row in connection.execute(
                                 "SELECT DISTINCT applied_policy FROM local_tracks "
-                                "WHERE local_album_id = ?",
+                                "WHERE local_album_id = ? AND availability = 'indexed'",
                                 (album_id,),
                             )
                         }
@@ -23489,11 +23761,12 @@ class NativeLibraryStore(PersistenceBase):
                             tracks = connection.execute(
                                 "SELECT id, tag_revision, stat_revision, "
                                 "applied_policy_revision, applied_policy FROM local_tracks "
-                                "WHERE local_album_id = ? ORDER BY id",
+                                "WHERE local_album_id = ? AND availability = 'indexed' "
+                                "ORDER BY id",
                                 (album_id,),
                             ).fetchall()
                             if album is None or not tracks:
-                                terminal_state = "failed"
+                                terminal_state = "skipped"
                                 failure_code = "SUBJECT_NOT_AVAILABLE"
                             else:
                                 retry_idempotency_key = (
@@ -23515,6 +23788,12 @@ class NativeLibraryStore(PersistenceBase):
                                     )
                                 )
                                 input_revision = _album_input_revision(tracks)
+                                album_identity, identity_tracks = (
+                                    _identification_identity_rows(connection, album_id)
+                                )
+                                identity_revision = _album_identity_revision(
+                                    album_identity, identity_tracks
+                                )
                                 if child is None:
                                     connection.execute(
                                         "INSERT INTO library_operation_jobs "
@@ -23532,13 +23811,14 @@ class NativeLibraryStore(PersistenceBase):
                                     connection.execute(
                                         "INSERT INTO library_reidentification_snapshots "
                                         "(job_id, local_album_id, expected_album_revision, "
-                                        "expected_input_revision, one_off_local_metadata, created_at) "
-                                        "VALUES (?,?,?,?,?,?)",
+                                        "expected_input_revision, expected_identity_revision, "
+                                        "one_off_local_metadata, created_at) VALUES (?,?,?,?,?,?,?)",
                                         (
                                             child_job_id,
                                             album_id,
                                             album["row_revision"],
                                             input_revision,
+                                            identity_revision,
                                             int("local_metadata" in policies),
                                             now,
                                         ),
@@ -23782,7 +24062,8 @@ class NativeLibraryStore(PersistenceBase):
                     "LEFT JOIN local_album_external_identities i ON i.local_album_id = a.id "
                     "AND i.provider = 'musicbrainz' "
                     "WHERE a.retired_into_album_id IS NULL "
-                    "AND EXISTS (SELECT 1 FROM local_tracks t WHERE t.local_album_id = a.id) "
+                    "AND EXISTS (SELECT 1 FROM local_tracks t WHERE t.local_album_id = a.id "
+                    "AND t.availability = 'indexed') "
                     f"{root_clause} ORDER BY a.id",
                     parameters,
                 ).fetchall()
@@ -23797,7 +24078,10 @@ class NativeLibraryStore(PersistenceBase):
                     "SELECT a.id, a.row_revision, i.row_revision identity_revision, "
                     "i.decision_source, i.attempt_id FROM local_albums a "
                     "JOIN local_album_external_identities i ON i.local_album_id = a.id "
-                    f"WHERE a.retired_into_album_id IS NULL {root_clause} "
+                    "WHERE a.retired_into_album_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM local_tracks t "
+                    "WHERE t.local_album_id = a.id AND t.availability = 'indexed') "
+                    f"{root_clause} "
                     f"{identity_clause} ORDER BY a.id",
                     parameters,
                 ).fetchall()
@@ -23892,6 +24176,7 @@ class NativeLibraryStore(PersistenceBase):
                 "AND ti.release_track_position IS NOT NULL "
                 "THEN ti.release_track_mbid END) mapped_release_track_count "
                 "FROM local_albums a JOIN local_tracks t ON t.local_album_id = a.id "
+                "AND t.availability = 'indexed' "
                 "LEFT JOIN local_album_external_identities i ON i.local_album_id = a.id "
                 "AND i.provider = 'musicbrainz' "
                 "LEFT JOIN local_track_external_identities ti ON ti.local_track_id = t.id "
@@ -23942,6 +24227,8 @@ class NativeLibraryStore(PersistenceBase):
                 "JOIN local_album_external_identities i ON i.local_album_id = a.id "
                 "WHERE a.retired_into_album_id IS NULL "
                 "AND i.decision_source = 'legacy_import' "
+                "AND EXISTS (SELECT 1 FROM local_tracks t "
+                "WHERE t.local_album_id = a.id AND t.availability = 'indexed') "
                 f"{root_clause}",
                 parameters,
             ).fetchone()[0]
@@ -23982,10 +24269,11 @@ class NativeLibraryStore(PersistenceBase):
                 connection.execute(
                     "INSERT INTO library_identification_attempts "
                     "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                    "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                    "input_tag_revision, input_policy_revision, input_file_revision, "
+                    "input_identity_revision, matcher_version, "
                     "state, terminal_reason_code, selected_candidate_key, candidate_count, "
                     "degradation_flags_json, started_at, completed_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         attempt.id,
                         attempt.local_album_id,
@@ -23995,6 +24283,7 @@ class NativeLibraryStore(PersistenceBase):
                         attempt.input_tag_revision,
                         attempt.input_policy_revision,
                         attempt.input_file_revision,
+                        attempt.input_identity_revision,
                         attempt.matcher_version,
                         attempt.state,
                         attempt.terminal_reason_code,
@@ -24072,10 +24361,18 @@ class NativeLibraryStore(PersistenceBase):
                 "WHERE f.job_id = ? GROUP BY a.root_id ORDER BY a.root_id",
                 (job_id,),
             ).fetchall()
+            scope = json.loads(str(snapshot["scope_json"]))
+            purpose = str(scope.get("purpose", "existing_matches"))
+            track_scope = (
+                "AND t.availability = 'indexed' "
+                if purpose in {"management_readiness", "existing_matches"}
+                else ""
+            )
             input_tracks = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM local_tracks t WHERE t.local_album_id IN "
-                    "(SELECT local_album_id FROM library_identity_repair_findings WHERE job_id = ?)",
+                    "(SELECT local_album_id FROM library_identity_repair_findings WHERE job_id = ?) "
+                    + track_scope,
                     (job_id,),
                 ).fetchone()[0]
             )
@@ -24089,8 +24386,6 @@ class NativeLibraryStore(PersistenceBase):
                     str(finding["reason_code"]), 0
                 ) + int(finding["count"])
             total = sum(counts_by_finding.values())
-            scope = json.loads(str(snapshot["scope_json"]))
-            purpose = str(scope.get("purpose", "existing_matches"))
             apply_finding = (
                 "mapping_ready" if purpose == "management_readiness" else "safe_detach"
             )
@@ -24310,7 +24605,8 @@ class NativeLibraryStore(PersistenceBase):
                     "ti.release_track_position FROM local_tracks t "
                     "LEFT JOIN local_track_external_identities ti "
                     "ON ti.local_track_id = t.id AND ti.provider = 'musicbrainz' "
-                    "WHERE t.local_album_id = ? ORDER BY t.id",
+                    "WHERE t.local_album_id = ? AND t.availability = 'indexed' "
+                    "ORDER BY t.id",
                     (work["local_album_id"],),
                 ).fetchall()
                 evidence = (
@@ -24358,9 +24654,8 @@ class NativeLibraryStore(PersistenceBase):
                             or item.candidate_disc_number is None
                             or item.candidate_track_position is None
                             or item.release_track_mbid in release_track_ids
-                            or (
-                                row["recording_mbid"]
-                                and row["recording_mbid"] != item.recording_mbid
+                            or not _recording_evidence_matches(
+                                row["recording_mbid"], item
                             )
                             or (
                                 row["identity_release_mbid"]
@@ -24381,10 +24676,8 @@ class NativeLibraryStore(PersistenceBase):
                                 and row["embedded_release_mbid"]
                                 != evidence.release_mbid
                             )
-                            or (
-                                row["embedded_recording_mbid"]
-                                and row["embedded_recording_mbid"]
-                                != item.recording_mbid
+                            or not _recording_evidence_matches(
+                                row["embedded_recording_mbid"], item
                             )
                             or (
                                 row["embedded_release_track_mbid"]
@@ -24499,57 +24792,107 @@ class NativeLibraryStore(PersistenceBase):
                         (now, finding["id"]),
                     )
             else:
-                connection.execute(
-                    "DELETE FROM local_track_external_identities WHERE local_track_id IN "
-                    "(SELECT id FROM local_tracks WHERE local_album_id = ?)",
+                evidence_attempt = (
+                    connection.execute(
+                        "SELECT a.input_tag_revision,a.input_file_revision,"
+                        "a.input_policy_revision,a.input_identity_revision "
+                        "FROM library_identification_evidence e "
+                        "JOIN library_identification_attempts a ON a.id=e.attempt_id "
+                        "WHERE e.id=?",
+                        (finding["evidence_id"],),
+                    ).fetchone()
+                    if finding is not None and finding["evidence_id"]
+                    else None
+                )
+                current_tracks = connection.execute(
+                    "SELECT id,tag_revision,stat_revision,applied_policy_revision,"
+                    "applied_policy FROM local_tracks WHERE local_album_id=? "
+                    "AND availability='indexed'",
                     (work["local_album_id"],),
+                ).fetchall()
+                current_album_identity, current_identity_tracks = (
+                    _identification_identity_rows(
+                        connection, str(work["local_album_id"])
+                    )
                 )
-                connection.execute(
-                    "DELETE FROM local_album_external_identities WHERE local_album_id = ?",
-                    (work["local_album_id"],),
-                )
-                review_id = str(uuid.uuid4())
-                input_revision = f"repair:{job_id}:{finding['id']}"
-                connection.execute(
-                    "INSERT INTO library_identification_reviews "
-                    "(id, local_album_id, state, reason_code, attempt_id, input_revision, "
-                    "created_at, updated_at) VALUES (?, ?, 'needs_review', "
-                    "'LEGACY_IDENTITY_FAILED_SAFETY_RULES', ?, ?, ?, ?)",
-                    (
-                        review_id,
-                        work["local_album_id"],
-                        identity["attempt_id"],
-                        input_revision,
-                        now,
-                        now,
-                    ),
-                )
-                action_id = str(uuid.uuid4())
-                connection.execute(
-                    "INSERT INTO library_catalog_actions "
-                    "(id, actor_user_id, action_kind, local_album_id, operation_job_id, "
-                    "before_json, after_json, reason_code, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (
-                        action_id,
-                        actor_user_id,
-                        "repair_detach",
-                        work["local_album_id"],
-                        job_id,
-                        json.dumps(
-                            {"release_group_mbid": identity["release_group_mbid"]}
+                if (
+                    evidence_attempt is None
+                    or not current_tracks
+                    or _album_input_revision(list(current_tracks))
+                    != ":".join(
+                        (
+                            str(evidence_attempt["input_tag_revision"]),
+                            str(evidence_attempt["input_file_revision"]),
+                            str(evidence_attempt["input_policy_revision"]),
+                        )
+                    )
+                    or not evidence_attempt["input_identity_revision"]
+                    or _album_identity_revision(
+                        current_album_identity, current_identity_tracks
+                    )
+                    != str(evidence_attempt["input_identity_revision"])
+                ):
+                    state = "skipped"
+                    failure_code = "STALE_SUBJECT"
+                    connection.execute(
+                        "UPDATE library_identity_repair_findings SET state='stale', "
+                        "apply_result='STALE_SUBJECT', updated_at=?, "
+                        "row_revision=row_revision+1 WHERE id=?",
+                        (now, finding["id"]),
+                    )
+                else:
+                    connection.execute(
+                        "DELETE FROM local_track_external_identities WHERE local_track_id IN "
+                        "(SELECT id FROM local_tracks WHERE local_album_id = ? "
+                        "AND availability = 'indexed')",
+                        (work["local_album_id"],),
+                    )
+                    connection.execute(
+                        "DELETE FROM local_album_external_identities WHERE local_album_id = ?",
+                        (work["local_album_id"],),
+                    )
+                    review_id = str(uuid.uuid4())
+                    input_revision = f"repair:{job_id}:{finding['id']}"
+                    connection.execute(
+                        "INSERT INTO library_identification_reviews "
+                        "(id, local_album_id, state, reason_code, attempt_id, input_revision, "
+                        "created_at, updated_at) VALUES (?, ?, 'needs_review', "
+                        "'LEGACY_IDENTITY_FAILED_SAFETY_RULES', ?, ?, ?, ?)",
+                        (
+                            review_id,
+                            work["local_album_id"],
+                            identity["attempt_id"],
+                            input_revision,
+                            now,
+                            now,
                         ),
-                        json.dumps({"review_id": review_id}),
-                        "LEGACY_IDENTITY_FAILED_SAFETY_RULES",
-                        now,
-                    ),
-                )
-                connection.execute(
-                    "UPDATE library_identity_repair_findings SET state = 'applied', "
-                    "apply_result = 'DETACHED', updated_at = ?, row_revision = row_revision + 1 "
-                    "WHERE id = ?",
-                    (now, finding["id"]),
-                )
-                self._bump_catalog(connection)
+                    )
+                    action_id = str(uuid.uuid4())
+                    connection.execute(
+                        "INSERT INTO library_catalog_actions "
+                        "(id, actor_user_id, action_kind, local_album_id, operation_job_id, "
+                        "before_json, after_json, reason_code, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (
+                            action_id,
+                            actor_user_id,
+                            "repair_detach",
+                            work["local_album_id"],
+                            job_id,
+                            json.dumps(
+                                {"release_group_mbid": identity["release_group_mbid"]}
+                            ),
+                            json.dumps({"review_id": review_id}),
+                            "LEGACY_IDENTITY_FAILED_SAFETY_RULES",
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        "UPDATE library_identity_repair_findings SET state = 'applied', "
+                        "apply_result = 'DETACHED', updated_at = ?, row_revision = row_revision + 1 "
+                        "WHERE id = ?",
+                        (now, finding["id"]),
+                    )
+                    self._bump_catalog(connection)
             connection.execute(
                 "UPDATE library_operation_work SET state = ?, failure_code = ?, updated_at = ?, "
                 "row_revision = row_revision + 1 WHERE job_id = ? AND ordinal = ?",
@@ -26568,10 +26911,11 @@ class NativeLibraryStore(PersistenceBase):
             connection.execute(
                 "INSERT INTO library_identification_attempts "
                 "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "input_tag_revision, input_policy_revision, input_file_revision, "
+                "input_identity_revision, matcher_version, "
                 "state, terminal_reason_code, selected_candidate_key, candidate_count, "
                 "degradation_flags_json, started_at, completed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     attempt.id,
                     attempt.local_album_id,
@@ -26581,6 +26925,7 @@ class NativeLibraryStore(PersistenceBase):
                     attempt.input_tag_revision,
                     attempt.input_policy_revision,
                     attempt.input_file_revision,
+                    attempt.input_identity_revision,
                     attempt.matcher_version,
                     attempt.state,
                     attempt.terminal_reason_code,
@@ -27339,10 +27684,11 @@ class NativeLibraryStore(PersistenceBase):
             connection.execute(
                 "INSERT INTO library_identification_attempts "
                 "(id, local_album_id, local_track_id, trigger, requested_by_user_id, "
-                "input_tag_revision, input_policy_revision, input_file_revision, matcher_version, "
+                "input_tag_revision, input_policy_revision, input_file_revision, "
+                "input_identity_revision, matcher_version, "
                 "state, terminal_reason_code, selected_candidate_key, candidate_count, "
                 "degradation_flags_json, started_at, completed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     attempt.id,
                     attempt.local_album_id,
@@ -27352,6 +27698,7 @@ class NativeLibraryStore(PersistenceBase):
                     attempt.input_tag_revision,
                     attempt.input_policy_revision,
                     attempt.input_file_revision,
+                    attempt.input_identity_revision,
                     attempt.matcher_version,
                     "identified" if final_outcome == "identified" else "needs_review",
                     final_failure or attempt.terminal_reason_code,

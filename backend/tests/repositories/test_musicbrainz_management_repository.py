@@ -11,12 +11,16 @@ from core.exceptions import ExternalServiceError
 from infrastructure.cache.cache_keys import (
     MB_MANAGEMENT_RELEASE_PREFIX,
     mb_management_release_key,
+    mb_recording_canonical_id_key,
     musicbrainz_prefixes,
 )
 from infrastructure.queue.priority_queue import RequestPriority
 from infrastructure.resilience.retry import CircuitOpenError
 from repositories.musicbrainz_album import MusicBrainzAlbumMixin
-from repositories.musicbrainz_management_models import MbManagementRelease
+from repositories.musicbrainz_management_models import (
+    MbManagementRecording,
+    MbManagementRelease,
+)
 from repositories.musicbrainz_repository import MusicBrainzRepository
 from repositories.protocols.musicbrainz_management import (
     CanonicalMusicBrainzRepositoryProtocol,
@@ -199,6 +203,68 @@ async def test_identical_requests_are_deduplicated(monkeypatch) -> None:
     assert api.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_recording_redirect_resolution_uses_canonical_provider_identity(
+    monkeypatch,
+) -> None:
+    import repositories.musicbrainz_album as module
+
+    api = AsyncMock(return_value=MbManagementRecording(id="canonical-recording"))
+    monkeypatch.setattr(module, "mb_api_get", api)
+    repo = _Repo()
+
+    resolved = await repo.resolve_recording_mbid(
+        "retired-recording", priority=RequestPriority.BACKGROUND_SYNC
+    )
+
+    assert resolved == "canonical-recording"
+    api.assert_awaited_once_with(
+        "/recording/retired-recording",
+        priority=RequestPriority.BACKGROUND_SYNC,
+        decode_type=MbManagementRecording,
+    )
+    repo._cache.set.assert_awaited_once_with(
+        mb_recording_canonical_id_key("retired-recording"),
+        "canonical-recording",
+        ttl_seconds=3600,
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_recording_identity_is_negative_cached(monkeypatch) -> None:
+    import repositories.musicbrainz_album as module
+
+    api = AsyncMock(return_value=MbManagementRecording())
+    monkeypatch.setattr(module, "mb_api_get", api)
+    repo = _Repo()
+
+    assert await repo.resolve_recording_mbid("missing-recording") is None
+    repo._cache.set.assert_awaited_once_with(
+        mb_recording_canonical_id_key("missing-recording"),
+        False,
+        ttl_seconds=600,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recording_identity_provider_failure_is_not_cached(
+    monkeypatch,
+) -> None:
+    import repositories.musicbrainz_album as module
+
+    monkeypatch.setattr(
+        module,
+        "mb_api_get",
+        AsyncMock(side_effect=ExternalServiceError("provider returned 503")),
+    )
+    repo = _Repo()
+
+    with pytest.raises(ExternalServiceError, match="temporarily unavailable"):
+        await repo.resolve_recording_mbid("recording-id")
+
+    repo._cache.set.assert_not_awaited()
+
+
 def test_cache_key_and_invalidation_contract() -> None:
     first = mb_management_release_key(
         "release", ("recordings", "aliases"), ("EN-gb", "ja"), "Canonical"
@@ -218,3 +284,6 @@ def test_management_method_conforms_to_narrow_protocol() -> None:
     assert inspect.signature(
         CanonicalMusicBrainzRepositoryProtocol.get_canonical_release
     ) == inspect.signature(MusicBrainzRepository.get_canonical_release)
+    assert inspect.signature(
+        CanonicalMusicBrainzRepositoryProtocol.resolve_recording_mbid
+    ) == inspect.signature(MusicBrainzRepository.resolve_recording_mbid)

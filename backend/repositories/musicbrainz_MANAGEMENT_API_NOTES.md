@@ -110,3 +110,37 @@ Gould. Reconciliation must therefore prefer a present release-track `artist-cred
 fall back to the recording credit only when the track credit is absent, and retain the
 release-track MBID separately from the recording MBID. Credit order, credited names,
 and join phrases are provider evidence and must not be reconstructed from display text.
+
+## Merged recording identifiers
+
+Re-verified against the live production JSON API on 2026-08-10. MusicBrainz returned
+HTTP 301 for retired recording MBIDs, and the configured HTTP client followed those
+redirects to a normal recording document whose `id` was the canonical replacement.
+Examples observed in the live library included:
+
+- `5224cfc7-b3bb-4008-a41b-21b168dc631f` to
+  `beaf82cd-24f9-4ce9-b1a9-022339a30f77`;
+- `5bc2a5d4-c573-4a91-9a90-dc5709245628` to
+  `04b0d80c-d9a6-4163-b89b-dd354858e89f`;
+- `fc554903-eb86-46b9-a912-1b4a519656f6` to
+  `593d7c47-e11e-4993-a0c6-0767dcdcaafd`.
+
+Each replacement exactly matched the recording on the already accepted release.
+Identity readiness may therefore treat a retired MBID as equivalent only after this
+lookup proves the redirect target. A successful response for a different recording,
+a missing response, or a provider failure is not proof and must not relax the normal
+conflict gate. The retired value remains in the sealed evidence so Apply can validate
+the exact alias that was reviewed.
+
+## Exact release ownership
+
+Re-verified against the live production JSON API on 2026-08-10 with Clairo's
+_Immunity_ release `c85ad49c-6bfb-4bdc-96f8-f5f305a8799e`. A release request with
+`recordings+artist-credits` returned the canonical release and all 11 tracks but omitted
+the `release-group` member. Adding `release-groups` returned canonical release group
+`fc97b087-221c-4ea4-9dd9-5277a52eb84a` in the same document.
+
+Exact-release identification requires the provider-returned release group to prevent a
+requested alias or edition from being attached to an assumed group. Its request must
+therefore include `release-groups`; absence after that request remains a fail-closed
+provider-evidence result.

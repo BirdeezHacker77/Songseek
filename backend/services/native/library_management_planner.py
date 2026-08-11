@@ -35,6 +35,7 @@ from core.exceptions import (
     AudioFormatError,
     ConfigurationError,
     ExternalServiceError,
+    PathLimitExceededError,
     ProviderIdentityRequiredError,
     RateLimitedError,
     ResourceNotFoundError,
@@ -75,6 +76,7 @@ from models.library_management import (
     RELEASE_NOT_SELECTED,
     ROOT_READ_ONLY,
     ROOT_UNAVAILABLE,
+    SCRIPT_VALIDATION_FAILED,
     SIDECAR_COLLISION,
     SYMLINK_UNSUPPORTED,
     TRACK_NOT_MAPPED,
@@ -1011,8 +1013,10 @@ class LibraryManagementPlanner:
                     tag_edit_intent=tag_edit_intent,
                     selected_artwork=shared_artwork,
                 )
-            except ScriptValidationError:
+            except PathLimitExceededError:
                 return self._blocked_item(snapshot, source, PATH_TOO_LONG)
+            except ScriptValidationError:
+                return self._blocked_item(snapshot, source, SCRIPT_VALIDATION_FAILED)
             except AudioFormatError:
                 return self._blocked_item(snapshot, source, FORMAT_UNSUPPORTED)
             except ValidationError:
@@ -1839,12 +1843,13 @@ class LibraryManagementPlanner:
                         entry.name != destination.name
                         and _path_collision_key(entry.name) == wanted
                     ):
+                        existing_path = destination.parent / entry.name
+                        if existing_path == source:
+                            continue
                         evidence.append(
                             {
                                 "classification": "normalized_path_collision",
-                                "existing_relative_path": (
-                                    destination.parent / entry.name
-                                )
+                                "existing_relative_path": (existing_path)
                                 .relative_to(destination_root)
                                 .as_posix(),
                             }

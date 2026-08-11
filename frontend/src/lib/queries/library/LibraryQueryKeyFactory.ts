@@ -79,6 +79,20 @@ export const LibraryQueryKeyFactory = {
 	album: (mbid: string) => [...LibraryQueryKeyFactory.all, 'album', mbid] as const,
 	albumDetail: (albumId: string) =>
 		[...LibraryQueryKeyFactory.all, 'album-detail', albumId] as const,
+	reidentificationReleases: (
+		userId: string | undefined,
+		albumId: string,
+		q: string,
+		offset: number
+	) =>
+		[
+			...LibraryQueryKeyFactory.all,
+			'reidentification-releases',
+			userId ?? 'anonymous',
+			albumId,
+			q,
+			offset
+		] as const,
 	albumCopies: (albumId: string) =>
 		[...LibraryQueryKeyFactory.all, 'album-copies', albumId] as const,
 	artistDetail: (artistId: string) =>

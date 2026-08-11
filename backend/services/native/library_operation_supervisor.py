@@ -134,6 +134,6 @@ class LibraryOperationSupervisor:
                 job,
                 worker_id,
                 str(job["requested_by_user_id"]),
-                now=timestamp,
+                now=now,
             )
-        return await self._repairs.run_claimed_audit(job, worker_id, now=timestamp)
+        return await self._repairs.run_claimed_audit(job, worker_id, now=now)

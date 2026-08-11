@@ -237,6 +237,8 @@ export const API = {
 			`/api/v1/library/contributions/${contributionId}/musicbrainz/verify`,
 		cachedAlbumArtwork: (albumId: string, coverVersion: number) =>
 			`/api/v1/library/albums/${encodeURIComponent(albumId)}/artwork/cached?v=${coverVersion}`,
+		exactReleaseArtwork: (releaseMbid: string, size = 250) =>
+			`/api/v1/covers/release/${encodeURIComponent(releaseMbid)}?size=${size}`,
 		artistDetail: (artistId: string) => `/api/v1/library/artists/${artistId}`,
 		artistAlbums: (artistId: string) => `/api/v1/library/artists/${artistId}/albums`,
 		artistAppearances: (artistId: string, limit = 20, offset = 0) =>
@@ -246,6 +248,10 @@ export const API = {
 		scanSchedule: () => '/api/v1/settings/library/schedule',
 		rescanAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/rescan`,
 		reidentifyAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/reidentify`,
+		reidentificationReleases: (albumId: string, q: string, limit = 12, offset = 0) => {
+			const query = new URLSearchParams({ q, limit: String(limit), offset: String(offset) });
+			return `/api/v1/library/albums/${encodeURIComponent(albumId)}/reidentification/releases?${query.toString()}`;
+		},
 		trackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}/tags`,
 		removeTrack: (fileId: string) => `/api/v1/library/tracks/${fileId}`,
 		scanCancel: () => '/api/v1/library/scan/cancel',

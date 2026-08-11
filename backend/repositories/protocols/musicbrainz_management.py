@@ -21,3 +21,10 @@ class CanonicalMusicBrainzRepositoryProtocol(Protocol):
         priority: RequestPriority = RequestPriority.USER_INITIATED,
         bypass_cache: bool = False,
     ) -> MbManagementRelease | None: ...
+
+    async def resolve_recording_mbid(
+        self,
+        recording_mbid: str,
+        *,
+        priority: RequestPriority = RequestPriority.USER_INITIATED,
+    ) -> str | None: ...

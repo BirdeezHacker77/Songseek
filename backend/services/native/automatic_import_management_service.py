@@ -19,6 +19,7 @@ from core.exceptions import (
     AutomaticManagementHoldError,
     ConfigurationError,
     ExternalServiceError,
+    PathLimitExceededError,
     ProviderIdentityRequiredError,
     ScriptValidationError,
     StaleRevisionError,
@@ -36,14 +37,16 @@ from models.audio_metadata import (
     DesiredAudioField,
 )
 from models.library_management import (
+    BUNDLE_TOO_LARGE,
     FIELD_UNSUPPORTED_BY_FORMAT,
     FORMAT_UNSUPPORTED,
-    METADATA_UNAVAILABLE,
-    PROFILE_CHANGED,
-    BUNDLE_TOO_LARGE,
     INSUFFICIENT_SPACE,
+    METADATA_UNAVAILABLE,
+    PATH_TOO_LONG,
+    PROFILE_CHANGED,
     ROOT_READ_ONLY,
     ROOT_UNAVAILABLE,
+    SCRIPT_VALIDATION_FAILED,
     SIDECAR_COLLISION,
     SYMLINK_UNSUPPORTED,
     TRACK_NOT_MAPPED,
@@ -295,7 +298,7 @@ class AutomaticImportManagementService:
                     artifacts: list[LibraryManagementImportArtifact] = []
                     if request.ordinal == first_output_ordinal:
                         artifacts.extend(
-                            self._external_artifacts(
+                            await self._external_artifacts(
                                 artwork_outputs,
                                 current,
                                 desired_metadata,
@@ -362,11 +365,19 @@ class AutomaticImportManagementService:
             raise AutomaticManagementHoldError(
                 FORMAT_UNSUPPORTED, str(error)
             ) from error
-        except (ConfigurationError, ScriptValidationError) as error:
+        except PathLimitExceededError as error:
+            raise AutomaticManagementHoldError(PATH_TOO_LONG, str(error)) from error
+        except ConfigurationError as error:
             raise AutomaticManagementHoldError(
                 PROFILE_CHANGED,
                 "The active Library Management profile needs review before this import "
                 f"can continue: {error}",
+            ) from error
+        except ScriptValidationError as error:
+            raise AutomaticManagementHoldError(
+                SCRIPT_VALIDATION_FAILED,
+                "The active Library Management profile could not safely process this "
+                f"file: {error}",
             ) from error
         except ValidationError as error:
             raise AutomaticManagementHoldError(
@@ -597,7 +608,7 @@ class AutomaticImportManagementService:
         name = rendered_path.name if organization.rename_enabled else original.name
         return (parent / name).as_posix()
 
-    def _external_artifacts(
+    async def _external_artifacts(
         self,
         outputs: tuple[ArtworkOutput, ...],
         current,
@@ -645,6 +656,14 @@ class AutomaticImportManagementService:
                     "Two external artwork outputs resolve to the same destination.",
                 )
             collision_keys.add(rendered.collision_key)
+            _collision, identical, _existing_fingerprint = await asyncio.to_thread(
+                self._planner._external_artwork_collision,
+                root / PurePosixPath(rendered.relative_path),
+                output.sha256,
+                overwrite=pinned.profile.artwork.overwrite_external_files,
+            )
+            if identical:
+                continue
             artifacts.append(
                 LibraryManagementImportArtifact(
                     kind="external_art",

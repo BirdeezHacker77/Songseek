@@ -1,5 +1,7 @@
 from typing import Literal
 
+import msgspec
+
 from infrastructure.msgspec_fastapi import AppStruct
 
 
@@ -56,6 +58,35 @@ class TargetNativeAlbumDetail(TargetNativeAlbum):
     ] = "local_metadata"
     review_id: str | None = None
     review_revision: int | None = None
+
+
+class ReleaseEditionResult(AppStruct):
+    release_mbid: str
+    release_group_mbid: str
+    artist_name: str
+    title: str
+    musicbrainz_url: str
+    date: str | None = None
+    country: str | None = None
+    status: str | None = None
+    packaging: str | None = None
+    media_formats: list[str] = msgspec.field(default_factory=list)
+    disc_count: int = 0
+    track_count: int = 0
+    label: str | None = None
+    catalogue_number: str | None = None
+    barcode: str | None = None
+    disambiguation: str | None = None
+    score: int = 0
+    belongs_to_current_release_group: bool = False
+
+
+class ReleaseEditionSearchResponse(AppStruct):
+    query: str
+    items: list[ReleaseEditionResult] = msgspec.field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 12
 
 
 class TargetNativeTrack(AppStruct):

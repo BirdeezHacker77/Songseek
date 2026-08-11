@@ -548,6 +548,7 @@ async def test_recovery_rolls_back_when_configuration_changed(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_recovery_resumes_rollback_pending_and_is_idempotent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _root, source, store, _audio, publisher, job_id = await _ready_apply_operation(
         tmp_path
@@ -562,6 +563,13 @@ async def test_recovery_resumes_rollback_pending_and_is_idempotent(
         updated_at=111,
     )
     service = _recovery(publisher, store)
+    original_inspect = service._inspect
+
+    def reject_temporary_hash(path: Path | None):
+        assert path != prepared[0].temporary
+        return original_inspect(path)
+
+    monkeypatch.setattr(service, "_inspect", reject_temporary_hash)
 
     first = await service.recover_startup()
     second = await service.recover_startup()

@@ -37,12 +37,14 @@ export function reidentifyLibraryAlbum() {
 			expectedAlbumRevision: number;
 			expectedInputRevision: string;
 			oneOffLocalMetadata: boolean;
+			releaseMbid?: string | null;
 		}) =>
 			api.global.post<OperationResponse>(API.library.reidentifyAlbum(input.albumId), {
 				expected_album_revision: input.expectedAlbumRevision,
 				expected_input_revision: input.expectedInputRevision,
 				idempotency_key: createUuid(),
-				one_off_local_metadata: input.oneOffLocalMetadata
+				one_off_local_metadata: input.oneOffLocalMetadata,
+				release_mbid: input.releaseMbid ?? null
 			}),
 		onSuccess: async () => {
 			await invalidateLibraryCatalog();

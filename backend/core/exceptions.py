@@ -87,6 +87,10 @@ class ScriptValidationError(ValidationError):
         super().__init__(f"{script_name}:{line}:{column}: {message}")
 
 
+class PathLimitExceededError(ScriptValidationError):
+    """A rendered management path exceeded an enabled length limit."""
+
+
 class ProviderIdentityRequiredError(ValidationError):
     error_code = "PROVIDER_IDENTITY_REQUIRED"
 

@@ -170,9 +170,6 @@ FORMAT_CAPABILITIES: dict[AudioContainer, FormatCapabilities] = {
         artwork_mime_types=_ARTWORK_MIMES,
         supported_fields=_ALL_FIELDS,
         unsupported_fields=(),
-        representation_warnings=(
-            "ID3v2.3 flattens configured multi-value fields when explicitly selected.",
-        ),
     ),
     "ogg": FormatCapabilities(
         audio_format="ogg",
@@ -480,7 +477,7 @@ def _raw_tags(tags: object, binary_keys: set[str]) -> tuple[RawTagDescriptor, ..
         folded = key.casefold()
         is_binary = (
             folded in binary_keys
-            or folded.startswith(("apic:", "ufid:"))
+            or folded.startswith(("apic:", "priv:", "ufid:"))
             or isinstance(value, APEBinaryValue)
         )
         if is_binary:
@@ -1578,6 +1575,7 @@ def _preserved_native_keys(
             "original_date": ("TDOR",),
             "media": ("TMED",),
             "compilation": ("TCMP",),
+            "label": ("TPUB",),
             "isrc": ("TSRC",),
             "musicbrainz_recording_id": (f"UFID:{_MB_UFID_OWNER}",),
             "movement": ("MVNM",),
@@ -1597,11 +1595,12 @@ def _preserved_native_keys(
             "replaygain_album_gain": ("TXXX:REPLAYGAIN_ALBUM_GAIN",),
             "replaygain_track_peak": ("TXXX:REPLAYGAIN_TRACK_PEAK",),
             "replaygain_album_peak": ("TXXX:REPLAYGAIN_ALBUM_PEAK",),
-            **{
-                field: (f"TXXX:{description}",)
-                for field, description in _ID3_TXXX.items()
-            },
         }
+        for field, description in _ID3_TXXX.items():
+            extras[field] = (
+                *extras.get(field, ()),
+                f"TXXX:{description}",
+            )
         if audio_format == "wav":
             for field, key in {
                 "album": "IPRD",
@@ -1862,7 +1861,16 @@ class AudioMetadataEngine:
         values: dict[str, list[str]] = {}
         names: dict[str, str] = {}
         for raw in current.raw_tags:
-            if raw.value_kind != "text" or raw.key.casefold() in reserved:
+            folded_key = raw.key.casefold()
+            id3_qualified_base = folded_key.split(":", 1)[0]
+            if (
+                raw.value_kind != "text"
+                or folded_key in reserved
+                or (
+                    id3_qualified_base in {"uslt", "sylt"}
+                    and id3_qualified_base in reserved
+                )
+            ):
                 continue
             name = raw.key
             for prefix in ("TXXX:", _MP4_PREFIX, "RIFF_INFO:"):
@@ -1900,6 +1908,10 @@ class AudioMetadataEngine:
         mutations: list[AudioFieldMutation] = []
         blockers: list[str] = []
         warnings_out = list(capabilities.representation_warnings)
+        if audio_format == "mp3" and policy.id3_version == "2.3":
+            warnings_out.append(
+                "ID3v2.3 flattens configured multi-value fields when explicitly selected."
+            )
 
         for requested in desired.fields:
             if requested.name in desired_names:

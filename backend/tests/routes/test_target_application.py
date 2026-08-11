@@ -27,6 +27,7 @@ from core.dependencies import (
     get_requests_page_service,
     get_spotify_import_service,
     get_cache_service,
+    get_coverart_repository,
     get_wrapped_service,
     get_target_acquisition_dispatcher,
     get_target_album_discovery_service,
@@ -59,6 +60,7 @@ from core.dependencies import service_providers
 from core.dependencies import repo_providers
 from core.exceptions import ProviderIdentityRequiredError, TargetStartupInvariantError
 from services.album_discovery_service import AlbumDiscoveryService
+from services.compat.target_cover_art_service import TargetCoverArtService
 from api.v1.schemas.library_policies import LibrarySettingsResponse
 from target_application import (
     _server_timezone_name,
@@ -226,6 +228,25 @@ def test_isolated_target_application_mounts_target_catalog_and_compat_routes() -
     assert app.dependency_overrides[get_events_watcher_getter]() is (
         get_target_events_watcher_service
     )
+
+
+def test_target_release_cover_warming_uses_the_target_adapter_surface() -> None:
+    release_id = "55555555-5555-4555-8555-555555555555"
+    provider = AsyncMock()
+    provider.get_release_cover.return_value = None
+    provider.is_release_cover_warming = MagicMock(return_value=True)
+    covers = TargetCoverArtService(AsyncMock(), provider, AsyncMock())
+    app = create_isolated_target_application(
+        target_composition=SimpleNamespace(covers=covers)
+    )
+
+    assert app.dependency_overrides[get_coverart_repository]() is covers
+
+    response = build_test_client(app).get(f"/api/v1/covers/release/{release_id}")
+
+    assert response.status_code == 202
+    assert response.headers["x-cover-source"] == "warming"
+    provider.is_release_cover_warming.assert_called_once_with(release_id)
 
 
 def test_target_native_scrobble_routes_receive_the_native_service(

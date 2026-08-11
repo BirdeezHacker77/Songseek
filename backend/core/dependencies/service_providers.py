@@ -508,6 +508,17 @@ def get_target_reidentification_service() -> "ReidentificationService":
 
 
 @singleton
+def get_target_album_edition_finder_service() -> "AlbumEditionFinderService":
+    from services.native.album_edition_finder_service import AlbumEditionFinderService
+
+    from .cache_providers import get_native_library_store
+
+    return AlbumEditionFinderService(
+        get_native_library_store(), get_musicbrainz_identification_repository()
+    )
+
+
+@singleton
 def get_target_library_review_service() -> "LibraryReviewService":
     from services.native.library_review_service import LibraryReviewService
 

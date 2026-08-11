@@ -73,6 +73,8 @@
 				return 'This audio format does not have a tested write adapter. The original download was left untouched.';
 			case 'FIELD_UNSUPPORTED_BY_FORMAT':
 				return 'The active profile asked this audio format to make a change its adapter could not represent safely.';
+			case 'SCRIPT_VALIDATION_FAILED':
+				return "The active profile's tagging or naming rules could not process this file safely.";
 			case 'PROFILE_CHANGED':
 			case 'POLICY_CHANGED':
 				return 'The Library Management configuration changed while this album was being prepared. Review it, then retry.';

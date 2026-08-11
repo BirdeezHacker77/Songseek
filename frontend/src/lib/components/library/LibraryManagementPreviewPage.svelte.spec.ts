@@ -175,6 +175,43 @@ beforeEach(() => {
 });
 
 describe('LibraryManagementPreviewPage', () => {
+	it('explains profile script failures without calling them path-length failures', async () => {
+		h.preview = {
+			data: detail({
+				summary: {
+					...(detail().summary as Record<string, unknown>),
+					reasons: { SCRIPT_VALIDATION_FAILED: 1 }
+				}
+			}),
+			isLoading: false,
+			isError: false
+		};
+		h.items = {
+			...h.items,
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								...collisionItem,
+								reason_code: 'SCRIPT_VALIDATION_FAILED',
+								collisions: []
+							}
+						],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			}
+		};
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect
+			.element(page.getByText('Profile script could not safely process this file').last())
+			.toBeVisible();
+		await expect.element(page.getByText(/path exceeds/i)).not.toBeInTheDocument();
+	});
+
 	it('explains identity blockers and links back to identity readiness', async () => {
 		h.preview = {
 			data: detail({

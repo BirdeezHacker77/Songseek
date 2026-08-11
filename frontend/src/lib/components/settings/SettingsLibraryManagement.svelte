@@ -741,11 +741,7 @@
 	});
 </script>
 
-<section
-	id="management-settings"
-	class="management-settings-shell scroll-mt-36"
-	aria-labelledby="library-management-title"
->
+<section class="management-settings-shell" aria-labelledby="library-management-title">
 	<header class="management-settings-header">
 		<div class="management-write-mark"><FolderCog class="h-6 w-6" /></div>
 		<div class="min-w-0 flex-1">

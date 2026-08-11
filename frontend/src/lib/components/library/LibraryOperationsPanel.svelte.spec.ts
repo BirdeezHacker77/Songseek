@@ -163,6 +163,11 @@ vi.mock('./LibraryManagementControlRoom.svelte', () => {
 	Comp.prototype = {};
 	return { default: Comp };
 });
+vi.mock('./LibraryManagementActionDesk.svelte', () => {
+	const Comp = function () {};
+	Comp.prototype = {};
+	return { default: Comp };
+});
 
 import LibraryOperationsPanel from './LibraryOperationsPanel.svelte';
 
@@ -237,6 +242,24 @@ beforeEach(() => {
 });
 
 describe('LibraryOperationsPanel', () => {
+	it('starts detailed controls expanded and keeps them collapsible', async () => {
+		render(LibraryOperationsPanel);
+		const scanDetails = page
+			.getByRole('region', { name: 'Library Scanning & Identification' })
+			.element() as HTMLDetailsElement;
+		const managementDetails = page
+			.getByRole('region', { name: 'Management details' })
+			.element() as HTMLDetailsElement;
+		expect(scanDetails.open).toBe(true);
+		expect(managementDetails.open).toBe(true);
+
+		const scanSummary = page.getByText('Scan details', { exact: true });
+		await scanSummary.click();
+		expect(scanDetails.open).toBe(false);
+		await scanSummary.click();
+		expect(scanDetails.open).toBe(true);
+	});
+
 	it('shows separate stacked workload cards and truthful metrics', async () => {
 		h.activity = {
 			data: { items: [activity('scan'), activity('identification')] },

@@ -287,10 +287,19 @@ class LibraryManagementWorker:
                     failure_code=failure_code,
                     completed_at=time.time(),
                 )
-            except (ValidationError, OSError):
+            except (ValidationError, OSError) as error:
                 current = await self._store.get_operation_work_item(job_id, ordinal)
                 if current is not None and current["state"] == "succeeded":
                     continue
+                logger.error(
+                    "Library management publication failed "
+                    "job_id=%s bundle_ordinal=%s failure_type=%s reason=%s",
+                    job_id,
+                    ordinal,
+                    type(error).__name__,
+                    str(error),
+                    exc_info=True,
+                )
                 await self._store.complete_operation_work(
                     job_id,
                     ordinal,

@@ -1,3 +1,4 @@
+import hashlib
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,21 +12,28 @@ from api.v1.schemas.library_management import (
     LibraryManagementRootAssignment,
     profile_revision,
 )
-from core.exceptions import AutomaticManagementHoldError, ExternalServiceError
+from core.exceptions import (
+    AutomaticManagementHoldError,
+    ExternalServiceError,
+    PathLimitExceededError,
+    ScriptValidationError,
+)
 from infrastructure.audio.metadata_engine import (
     AudioMetadataEngine,
     legacy_audio_projection,
 )
 from models.audio import AudioTag
 from models.library_management import (
-    METADATA_UNAVAILABLE,
     INSUFFICIENT_SPACE,
+    METADATA_UNAVAILABLE,
+    PATH_TOO_LONG,
     PROFILE_CHANGED,
+    SCRIPT_VALIDATION_FAILED,
     TRACK_NOT_MAPPED,
     LibraryManagementImportBundle,
     LibraryManagementImportFile,
 )
-from models.library_management_artwork import ArtworkProjection
+from models.library_management_artwork import ArtworkOutput, ArtworkProjection
 from models.library_management_enrichment import (
     ReplayGainAnalysis,
     ReplayGainTrackResult,
@@ -198,6 +206,62 @@ async def test_automatic_import_preserves_embedded_artwork_without_replacement(
 
 
 @pytest.mark.asyncio
+async def test_automatic_import_coalesces_identical_existing_external_artwork(
+    tmp_path: Path,
+) -> None:
+    root, source, preferences, store, _settings, policy_revision = _configured(tmp_path)
+    current = preferences.get_library_management_settings()
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    profile.artwork.embedded_enabled = False
+    profile.artwork.external_enabled = True
+    preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=current.settings_revision
+    )
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(tmp_path, preferences, store)
+    artwork = b"managed external artwork"
+    artwork_sha256 = hashlib.sha256(artwork).hexdigest()
+    service._artwork.project = AsyncMock(
+        return_value=ArtworkProjection(
+            external=(
+                ArtworkOutput(
+                    output_kind="external",
+                    image_type="front",
+                    content=artwork,
+                    mime_type="image/jpeg",
+                    format="jpeg",
+                    width=1200,
+                    height=1200,
+                    byte_size=len(artwork),
+                    sha256=artwork_sha256,
+                    source="cover_art_archive_release",
+                    source_candidate_id="exact-release-front",
+                    source_is_exact_release=True,
+                ),
+            )
+        )
+    )
+    bundle = _bundle(tmp_path, source, policy_revision)
+
+    initial = await service.prepare(bundle)
+    artifact = initial.files[0].artifacts[0]
+    destination = root / artifact.destination_relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(artwork)
+
+    identical = await service.prepare(bundle)
+    destination.write_bytes(b"different existing artwork")
+    different = await service.prepare(bundle)
+
+    assert identical.files[0].artifacts == ()
+    assert len(different.files[0].artifacts) == 1
+    assert different.files[0].artifacts[0].source_fingerprint == artwork_sha256
+
+
+@pytest.mark.asyncio
 async def test_automatic_import_holds_stale_activation_and_unmapped_files(
     tmp_path: Path,
 ) -> None:
@@ -225,6 +289,57 @@ async def test_automatic_import_holds_stale_activation_and_unmapped_files(
             _bundle(tmp_path, source, policy_revision, authoritative=False)
         )
     assert unmapped.value.reason_code == TRACK_NOT_MAPPED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_reason"),
+    [
+        ("path_limit", PATH_TOO_LONG),
+        ("script", SCRIPT_VALIDATION_FAILED),
+    ],
+)
+async def test_automatic_import_classifies_script_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_reason: str,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(tmp_path, preferences, store)
+
+    if failure_kind == "path_limit":
+        error = PathLimitExceededError(
+            "Rendered relative path exceeds the configured path limit.",
+            script_name="Naming",
+            line=1,
+            column=1,
+        )
+
+        def reject(*_args, **_kwargs):  # noqa: ANN202
+            raise error
+
+        monkeypatch.setattr(service._naming, "format_management_path", reject)
+    else:
+        error = ScriptValidationError(
+            "A custom tag exceeds its name or value-count bound.",
+            script_name="tagging input",
+            line=1,
+            column=1,
+        )
+
+        def reject(*_args, **_kwargs):  # noqa: ANN202
+            raise error
+
+        monkeypatch.setattr(service._tagging, "apply", reject)
+
+    with pytest.raises(AutomaticManagementHoldError) as held:
+        await service.prepare(_bundle(tmp_path, source, policy_revision))
+
+    assert held.value.reason_code == expected_reason
 
 
 @pytest.mark.asyncio

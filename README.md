@@ -143,17 +143,20 @@ The engine acquires whatever the operator directs it to acquire. It is built for
 
 ### Architecture
 
-The backend is layered, and layers are never skipped:
+The backend follows this layered path:
 
 ```
 Routes (api/v1/routes/)            thin HTTP wrappers, auth-postured
   -> Services (services/native/)   scanner, orchestrator, matcher, file processor
-    -> Repositories                 external I/O: slskd, MusicBrainz
-      -> Infrastructure             tagger (mutagen), fingerprinter (fpcalc/AcoustID),
-                                    persistence (SQLite WAL), HTTP, SSE
+    -> Repositories                 external HTTP: slskd, MusicBrainz, metadata providers
+      -> Infrastructure             local stores, tagger (mutagen), fingerprinter
+                                    (fpcalc/AcoustID), SQLite WAL, HTTP, SSE
 ```
 
-Persistence is two SQLite (WAL) stores: `LibraryDB` (scanned and imported files, album metadata) and `DownloadStore` (download tasks, search jobs, quarantine). Progress is pushed to the frontend over SSE, which fetches with TanStack Query.
+Application stores share one SQLite WAL database and one coordinated write lock. Library
+Management keeps its immutable plans, filesystem journals, recovery snapshots, and catalog
+state there. Content-addressed artwork and recovery blobs live under the persistent cache
+mount. Progress is pushed to the frontend over SSE, which fetches with TanStack Query.
 
 ### How identification works
 
@@ -164,7 +167,7 @@ Persistence is two SQLite (WAL) stores: `LibraryDB` (scanned and imported files,
 3. **AcoustID fingerprint.** `fpcalc` fingerprints the audio and AcoustID resolves a recording to a release group, accepted at score >= 0.70.
 4. **Manual review.** Nothing confident matched, so the file is queued for an admin to resolve: accept the top candidate, supply an MBID, or reject.
 
-The scan is resumable from a progress ledger, cooperatively cancellable, and incremental (an unchanged mtime and size is skipped). It ends with a soft-delete reconcile and a canonical-artist pass.
+The scan is resumable from a progress ledger, cooperatively cancellable, and incremental (an unchanged mtime and size is skipped). Accepted exact releases also project MusicBrainz release and track artist credits into the catalog. Duplicate artist records converge only when provider evidence proves the same artist MBID; a matching name alone never merges artists.
 
 ### Download pipeline
 
@@ -230,7 +233,7 @@ The engine speaks a `DownloadClientProtocol`, never slskd directly: `client_name
 
 ### Cover art
 
-With Lidarr removed, album covers resolve on demand through `AlbumCoverFetcher`: AudioDB, then local sources (an existing library or Jellyfin), then the MusicBrainz Cover Art Archive, then a best-release fallback. First success wins. Wikidata is part of the artist-image chain, not the album-cover chain.
+With Lidarr removed, display covers resolve on demand through `AlbumCoverFetcher`: AudioDB, then local sources (an existing library or Jellyfin), then the MusicBrainz Cover Art Archive, then a best-release fallback. First success wins. Library Management uses a separate, pinned artwork decision for the exact MusicBrainz edition, so a later Apply or Undo does not silently switch to whichever display fallback is available. Wikidata is part of the artist-image chain, not the album-cover chain.
 
 ### Auth posture
 
@@ -272,17 +275,31 @@ On **Settings > Library**, click **Scan** (or `POST /api/v1/library/scan/start`)
 
 ### 4. Optional: configure Library Management
 
-Library Management is the administrator-only write system for tags, artwork, names, and file locations. It is off by default and separate from Library Scanning.
+Library Management is the administrator-only write system for tags, artwork, filenames, and folders. It is off by default and separate from Library Scanning.
 
-Open **Settings > Library > Library Management** to review the built-in Picard-style profile or create named profiles of your own. Profiles control managed tag fields, genres, artwork, naming, sidecars, format compatibility, lyrics, ReplayGain, retention, and media-server refresh. Assign a profile to each library root, then choose its automatic triggers independently for acquisitions, drop/free imports, and files found by a scan. Creating or assigning a profile does not enable automatic writes.
+Open **Library Management** from the administrator sidebar. The action desk puts the normal scan, identity preparation, management preview, and system condition in one view. Each card links to its detailed controls, which start expanded and can be collapsed when you do not need them. Existing bookmarked section links still open the relevant controls. The same workspace is linked from **Settings > Library**.
 
-Lyrics use LRCLIB and are accepted only when title, artist, album, and duration agree; DroppedNeedle does not guess from ambiguous search results. Plain lyrics have verified mappings for every admitted container when that container's writable tag mode is selected. Synchronized lyrics require an ID3 or ASF representation, so a preview blocks unsupported format choices instead of silently omitting them.
+Profiles control managed tag fields, genres, artwork, naming, sidecars, format compatibility, lyrics, ReplayGain, retention, and media-server refresh. Choose a library default, let a root inherit it or assign an override, then enable automatic triggers independently for acquisitions, Drop/Free imports, and files found by a scan. Creating or assigning a profile does not enable automatic writes.
+
+The built-in **Picard-style Organizer** profile is the recommended starting point. It manages canonical MusicBrainz tags, normalized genres, front artwork, same-root naming and moves, and recognized sidecars while preserving custom tags, timestamps, and permissions. Lyrics, ReplayGain, tag scrubbing, and scan-discovered automation start disabled. Organization stays within the source root unless an administrator chooses a manual cross-root destination. Copy the profile before adding those policies if you want to keep the preset available for comparison. **Existing naming template** is a path-only compatibility profile for installations that only want their previous naming rule.
+
+Lyrics use LRCLIB and are accepted only when title, artist, album, and duration agree; DroppedNeedle does not guess from ambiguous search results. Plain lyrics have verified mappings for every admitted container when that container's writable tag mode is selected. Synchronized lyrics are supported in MP3, FLAC, Ogg, Opus, WMA, and ID3-tagged WAV. When both outputs are selected, M4A and raw AAC safely use plain lyrics as the fallback. A synchronized-only profile blocks formats that cannot represent them.
 
 ReplayGain measures perceived loudness and stores recommended track/album playback gain and peak values in tags. It does not re-encode, normalize, or change the audio samples. A profile can preserve existing values, fill only missing values, or replace them with a fresh album-aware analysis; make it required only if an unavailable or invalid analysis should hold the entire import.
 
-The first activation, and any later change that broadens destructive access, requires a current dry run and the typed confirmation `Enable Library Management`. Keep a separate backup of the library before enabling it. DroppedNeedle keeps journals, undo snapshots, first-management baselines, and replaced files in the recycle area, but none of those is a substitute for a backup on another device.
+The first activation, and any later change that broadens destructive access, requires a current whole-root dry run and the typed confirmation `CONFIRM`. Enabling another automatic trigger under the same authorized root and profile does not repeat that dry run because it changes when the policy runs, not what it may write. Keep a separate backup of the library before enabling it. DroppedNeedle keeps journals, undo snapshots, first-management baselines, and replaced files in the recycle area, but none of those is a substitute for a backup on another device.
 
-For one-off work, open **Library > Library operations > Library Management**. Select tracks, albums, or roots and create a preview. The preview lists tag, artwork, move, collision, and disk-space effects before Apply becomes available. MusicBrainz release and per-file track mappings must be accepted before DroppedNeedle treats a change as authoritative. Unsupported formats, missing mappings, stale previews, provider failures, and collisions are held for attention instead of being forced through. DroppedNeedle does not automatically overwrite an occupied destination or delete a duplicate source.
+For one-off work, open **Library Management > Manage files**. Select tracks, albums, or roots and create a preview. The preview lists tag, artwork, move, collision, and disk-space effects before Apply becomes available. MusicBrainz release and per-file track mappings must be accepted before DroppedNeedle treats a change as authoritative. Unsupported formats, missing mappings, stale previews, provider failures, and collisions are held for attention instead of being forced through. DroppedNeedle does not automatically overwrite an occupied destination or delete a duplicate source.
+
+When automatic identification cannot prove the physical edition, open the album's
+identity panel or choose the release from the Identity readiness report. The built-in
+MusicBrainz edition finder starts with the local artist and album title, then shows exact
+release dates, countries, formats, labels, catalogue numbers, barcodes, and track counts.
+You can also paste a release UUID or canonical MusicBrainz release URL. Search results are
+suggestions. **Check this edition** starts the existing evidence review for that exact
+release; it never attaches the result directly, substitutes another edition, or bypasses
+administrator confirmation. Every indexed file still needs one unique MusicBrainz
+release-track mapping before the identity can be accepted.
 
 Operation controls have distinct meanings:
 
@@ -468,7 +485,7 @@ DroppedNeedle has a full audio player that supports multiple playback sources pe
 - Local files, served directly from a mounted music directory.
 - YouTube, for previewing albums you haven't downloaded yet. Links can be auto-generated or set manually.
 
-The player supports queue management, shuffle, seek, volume control, and a 10-band equalizer with presets.
+The player supports queue management, shuffle, seek, volume control, a 10-band equalizer with presets, and local plain or time-synchronized lyrics when they are embedded in the managed file.
 
 What you are playing is broadcast live over SSE. Other signed-in users see the current track in real time.
 
@@ -564,8 +581,9 @@ The full API reference is in [PLUGINS.md](PLUGINS.md).
 |-|-|
 | [slskd](https://github.com/slskd/slskd) (operator-supplied) | Soulseek download client the native engine drives over its local HTTP API |
 | [SABnzbd](https://sabnzbd.org/) (operator-supplied) | Usenet download client with Newznab indexer support |
-| [MusicBrainz](https://musicbrainz.org/) | Artist and album metadata, release search, scan identification |
+| [MusicBrainz](https://musicbrainz.org/) | Exact release identities, canonical tags and credits, artist reconciliation, and catalog search |
 | [AcoustID](https://acoustid.org/) | Audio fingerprinting for Tier-3 scan identification (optional API key) |
+| [LRCLIB](https://lrclib.net/) | Exact-match plain and synchronized lyrics for opt-in Library Management profiles |
 | [Cover Art Archive](https://coverartarchive.org/) | Album artwork |
 | [TheAudioDB](https://www.theaudiodb.com/) | Artist and album images (fanart, banners, logos, CD art) |
 | [Wikidata](https://www.wikidata.org/) | Artist descriptions and external links |
@@ -621,6 +639,7 @@ is not a way to override permissions supplied by a download client.
 | Setting | Location |
 |-|-|
 | Library paths, naming template, scan schedule, AcoustID key | Settings > Library |
+| Library Management profiles, root assignments, automatic triggers, previews, recovery, and history | Library Management |
 | slskd URL and API key, SABnzbd/Usenet URL and API key, Newznab indexers, quality tiers, verification, wanted watcher | Settings > Download Client |
 | OpenSubsonic and Jellyfin APIs that let apps stream your library, app-passwords, transcoding | Settings > Connect Apps |
 | Jellyfin URL and API key | Settings > Jellyfin |

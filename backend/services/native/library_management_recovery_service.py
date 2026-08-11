@@ -1003,7 +1003,7 @@ class LibraryManagementRecoveryService:
             if journal.state in {"completed", "rolled_back", "needs_attention"}:
                 continue
             source = self._inspect(value.source)
-            temporary = self._inspect(value.temporary)
+            temporary = self._inspect_kind(value.temporary)
             backup = self._inspect(value.backup)
             destination = self._inspect(value.destination)
             evidence = self._evidence(value, source, temporary, backup, destination)
@@ -1106,7 +1106,7 @@ class LibraryManagementRecoveryService:
             if journal.state != "rollback_pending":
                 continue
             source = self._inspect(value.source)
-            temporary = self._inspect(value.temporary)
+            temporary = self._inspect_kind(value.temporary)
             backup = self._inspect(value.backup)
             destination = self._inspect(value.destination)
             same_path = value.source is not None and value.source == value.destination
@@ -1333,6 +1333,22 @@ class LibraryManagementRecoveryService:
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
                 raise ValidationError("A recovery path contains a symlink.")
         return root.joinpath(*pure.parts)
+
+    @staticmethod
+    def _inspect_kind(path: Path | None) -> _FileEvidence:
+        if path is None:
+            return _FileEvidence("missing")
+        try:
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                return _FileEvidence("symlink")
+            if not stat.S_ISREG(metadata.st_mode):
+                return _FileEvidence("other")
+            return _FileEvidence("regular")
+        except FileNotFoundError:
+            return _FileEvidence("missing")
+        except OSError as error:
+            return _FileEvidence("error", error=type(error).__name__)
 
     @staticmethod
     def _inspect(path: Path | None) -> _FileEvidence:

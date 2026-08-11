@@ -10,7 +10,7 @@ from api.v1.schemas.library_management import (
     build_initial_library_management_settings,
     normalize_library_management_settings,
 )
-from core.exceptions import ScriptValidationError
+from core.exceptions import PathLimitExceededError, ScriptValidationError
 from core.management_script_language import (
     EvaluationBudget,
     compile_expression,
@@ -177,20 +177,20 @@ def test_naming_component_total_and_windows_limits_block() -> None:
     )
     assert len(result.relative_path.encode("utf-8")) == 12
 
-    with pytest.raises(ScriptValidationError, match="relative path"):
+    with pytest.raises(PathLimitExceededError, match="relative path"):
         engine.format_management_path(
             f'{"x" * 70}/{{title}}.{{ext}}',
             _document(),
             PathCompatibilitySettings(maximum_path_length=64),
         )
-    with pytest.raises(ScriptValidationError, match="absolute path"):
+    with pytest.raises(PathLimitExceededError, match="absolute path"):
         engine.format_management_path(
             "{title}.{ext}",
             _document(),
             PathCompatibilitySettings(maximum_path_length=64),
             root=Path("/a/very/long/configured/library/root/for/testing"),
         )
-    with pytest.raises(ScriptValidationError, match="259-character"):
+    with pytest.raises(PathLimitExceededError, match="259-character"):
         engine.format_management_path(
             "{title}.{ext}",
             _document(),

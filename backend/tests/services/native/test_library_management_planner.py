@@ -20,14 +20,23 @@ from api.v1.schemas.library_management import (
     settings_revision,
 )
 from core.config import Settings
-from core.exceptions import ExternalServiceError, StaleRevisionError
+from core.exceptions import (
+    ExternalServiceError,
+    PathLimitExceededError,
+    ScriptValidationError,
+    StaleRevisionError,
+)
 from infrastructure.audio.artwork_processor import ArtworkProcessor
 from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
 from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from repositories.musicbrainz_management_models import MbManagementRelease
-from models.library_management import LibraryManagementPlanItem
+from models.library_management import (
+    PATH_TOO_LONG,
+    SCRIPT_VALIDATION_FAILED,
+    LibraryManagementPlanItem,
+)
 from models.library_management_artwork import ArtworkCandidate, ArtworkProjection
 from models.library_management_enrichment import (
     LyricsProjection,
@@ -1749,6 +1758,70 @@ async def test_preview_blocks_unsafe_sources(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_reason"),
+    [
+        (
+            PathLimitExceededError(
+                "Rendered relative path exceeds the configured path limit.",
+                script_name="Naming",
+                line=1,
+                column=1,
+            ),
+            PATH_TOO_LONG,
+        ),
+        (
+            ScriptValidationError(
+                "A custom tag exceeds its name or value-count bound.",
+                script_name="tagging input",
+                line=1,
+                column=1,
+            ),
+            SCRIPT_VALIDATION_FAILED,
+        ),
+    ],
+)
+async def test_preview_distinguishes_path_limits_from_other_script_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: ScriptValidationError,
+    expected_reason: str,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+
+    async def reject_track(**_kwargs) -> LibraryManagementPlanItem:
+        raise error
+
+    monkeypatch.setattr(planner, "_plan_track", reject_track)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key=None,
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    await planner.run_claimed_preview(claimed, "worker-1")
+    item = (await store.list_library_management_plan_items(handle.job_id))[0]
+
+    assert item.eligibility == "blocked"
+    assert item.reason_code == expected_reason
+
+
+@pytest.mark.asyncio
 async def test_preview_times_out_one_stuck_source_keeps_its_lease_and_retries_later(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1886,6 +1959,24 @@ async def test_preview_blocks_destination_collision_without_overwrite(
         }
     ]
     assert destination.read_bytes() == b"occupied"
+
+
+def test_destination_collision_allows_case_only_rename_of_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Back To Me.flac"
+    source.write_bytes(b"audio")
+    destination = tmp_path / "Back to Me.flac"
+
+    evidence, reason = LibraryManagementPlanner._destination_collisions(
+        source,
+        hashlib.sha256(b"audio").hexdigest(),
+        destination,
+        tmp_path,
+    )
+
+    assert evidence == []
+    assert reason is None
 
 
 @pytest.mark.asyncio

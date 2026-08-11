@@ -223,9 +223,14 @@ class LibraryOperationService:
         if self._on_identified is None:
             return
         context = await self._store.get_album_identification_context(local_album_id)
-        if context is None or not context["tracks"]:
+        if context is None:
             return
-        policy_revision = album_input_revisions(context["tracks"])[2]
+        tracks = [
+            track for track in context["tracks"] if track["availability"] == "indexed"
+        ]
+        if not tracks:
+            return
+        policy_revision = album_input_revisions(tracks)[2]
         try:
             await self._on_identified(local_album_id, policy_revision)
         except Exception:  # noqa: BLE001 - the bulk identity is already committed

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
+import uuid
 
 import msgspec
 
@@ -237,6 +238,15 @@ class ReidentificationRequest(AppStruct):
     expected_input_revision: str
     idempotency_key: str
     one_off_local_metadata: bool = False
+    release_mbid: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.release_mbid is None:
+            return
+        try:
+            self.release_mbid = str(uuid.UUID(self.release_mbid))
+        except (ValueError, AttributeError) as error:
+            raise ValueError("release_mbid must be a MusicBrainz UUID") from error
 
 
 class ReidentificationCandidateRequest(AppStruct):

@@ -39,11 +39,16 @@ class AutomaticScanManagementService:
 
     async def schedule_scanned_album(self, local_album_id: str) -> str | None:
         context = await self._store.get_album_identification_context(local_album_id)
-        if context is None or not context["tracks"]:
+        if context is None:
+            return None
+        tracks = [
+            track for track in context["tracks"] if track["availability"] == "indexed"
+        ]
+        if not tracks:
             return None
         return await self._schedule_identified_context(
             local_album_id,
-            album_input_revisions(context["tracks"])[2],
+            album_input_revisions(tracks)[2],
             context,
         )
 
@@ -67,15 +72,12 @@ class AutomaticScanManagementService:
         expected_input_policy_revision: str,
         context: dict,
     ) -> str | None:
-        if (
-            album_input_revisions(context["tracks"])[2]
-            != expected_input_policy_revision
-        ):
-            return None
         tracks = [
             track for track in context["tracks"] if track["availability"] == "indexed"
         ]
         if not tracks:
+            return None
+        if album_input_revisions(tracks)[2] != expected_input_policy_revision:
             return None
         tag_revision, file_revision, input_policy_revision = album_input_revisions(
             tracks

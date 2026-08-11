@@ -341,6 +341,7 @@ async def reidentify_album(
         expected_album_revision=body.expected_album_revision,
         expected_input_revision=body.expected_input_revision,
         one_off_local_metadata=body.one_off_local_metadata,
+        release_mbid=body.release_mbid,
         idempotency_key=body.idempotency_key,
     )
     return OperationResponse(

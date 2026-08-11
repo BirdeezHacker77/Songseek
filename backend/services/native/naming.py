@@ -17,7 +17,7 @@ from api.v1.schemas.library_management import (
     MANAGED_FIELD_NAMES,
     PathCompatibilitySettings,
 )
-from core.exceptions import ScriptValidationError
+from core.exceptions import PathLimitExceededError, ScriptValidationError
 from core.management_script_language import (
     EvaluationBudget,
     ScriptValue,
@@ -247,7 +247,7 @@ class NamingTemplateEngine:
         relative = "/".join(cleaned)
         encoded_length = len(relative.encode("utf-8"))
         if encoded_length > compatibility.maximum_path_length:
-            raise ScriptValidationError(
+            raise PathLimitExceededError(
                 "Rendered relative path exceeds the configured path limit.",
                 script_name=script_name,
                 line=1,
@@ -255,14 +255,14 @@ class NamingTemplateEngine:
             )
         absolute_text = str(root / Path(relative)) if root is not None else relative
         if len(absolute_text.encode("utf-8")) > compatibility.maximum_path_length:
-            raise ScriptValidationError(
+            raise PathLimitExceededError(
                 "Rendered absolute path exceeds the configured path limit.",
                 script_name=script_name,
                 line=1,
                 column=1,
             )
         if compatibility.windows_legacy_path_limit and len(absolute_text) > 259:
-            raise ScriptValidationError(
+            raise PathLimitExceededError(
                 "Rendered path exceeds the enabled Windows 259-character limit.",
                 script_name=script_name,
                 line=1,

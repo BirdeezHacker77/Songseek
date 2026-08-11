@@ -49,7 +49,11 @@ from services.native.library_management_undo_service import LibraryManagementUnd
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.target_import_library_service import TargetImportLibraryService
 from models.audio import AudioTag
-from models.audio_metadata import DesiredAudioDocument, DesiredAudioField
+from models.audio_metadata import (
+    AudioWritePolicy,
+    DesiredAudioDocument,
+    DesiredAudioField,
+)
 from models.library_management import (
     BUNDLE_BLOCKED,
     PATH_COLLISION_DIFFERENT,
@@ -313,6 +317,22 @@ def _nest_source(root: Path, _preferences, store) -> None:
         )
 
 
+def _case_only_source(root: Path, _preferences, store) -> None:
+    relative = (
+        "Johann Sebastian Bach; Glenn Gould/"
+        "Goldberg Variations, BWV 988 (1982)/0101 ARIA.flac"
+    )
+    source = root / relative
+    source.parent.mkdir(parents=True)
+    (root / "source.flac").replace(source)
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_tracks SET file_path=?,relative_path=?,path_hash=? "
+            "WHERE id='track-1'",
+            (str(source), relative, hashlib.sha256(relative.encode()).hexdigest()),
+        )
+
+
 def _add_second_canonical_track(planner) -> None:
     payload = json.loads(
         (FIXTURES / "musicbrainz" / "management_release.json").read_text(
@@ -430,6 +450,41 @@ def _import_publication_fixture(tmp_path: Path):
         management_publisher=publisher,
     )
     return root, catalog_source, store, audio, publisher, service, policy_revision
+
+
+def test_m4a_staging_mutates_a_local_scratch_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, _catalog_source, _store, audio, publisher, _service, _policy_revision = (
+        _import_publication_fixture(tmp_path)
+    )
+    source = tmp_path / "source.m4a"
+    temporary = tmp_path / "destination" / "temporary.m4a"
+    shutil.copy2(FIXTURES / "library" / "management_full.m4a", source)
+    plan = audio.plan(
+        audio.read(source),
+        DesiredAudioDocument(
+            fields=(
+                DesiredAudioField(name="title", action="set", value="Changed title"),
+            )
+        ),
+        AudioWritePolicy(),
+    )
+    applied_paths: list[Path] = []
+    original_apply = audio.apply
+
+    def record_apply(path: Path, write_plan):
+        applied_paths.append(path)
+        return original_apply(path, write_plan)
+
+    monkeypatch.setattr(audio, "apply", record_apply)
+
+    publisher._stage_audio(source, temporary, plan)
+
+    assert len(applied_paths) == 1
+    assert applied_paths[0] != temporary
+    assert not applied_paths[0].exists()
+    assert audio.read(temporary).metadata.value_for("title") == "Changed title"
 
 
 @pytest.mark.asyncio
@@ -2051,6 +2106,27 @@ async def test_publisher_refuses_destination_created_after_preview_and_records_i
     assert source.is_file()
     assert destination.read_bytes() == b"third-party file"
     assert collision == ("destination_created_after_preview",)
+
+
+@pytest.mark.asyncio
+async def test_publisher_applies_case_only_rename_of_source(tmp_path: Path) -> None:
+    root, _source, store, _audio, publisher, job_id = await _ready_apply_operation(
+        tmp_path,
+        prepare_store=_case_only_source,
+    )
+    source = root / (
+        "Johann Sebastian Bach; Glenn Gould/"
+        "Goldberg Variations, BWV 988 (1982)/0101 ARIA.flac"
+    )
+    destination = source.with_name("0101 Aria.flac")
+
+    result = await publisher.publish_bundle(job_id, 0, "apply-worker")
+
+    assert len(result.committed_journal_ids) == 1
+    assert not source.exists()
+    assert destination.is_file()
+    journals = await store.list_file_mutation_journals_for_bundle(job_id, 0)
+    assert [journal.state for journal in journals] == ["completed"]
 
 
 @pytest.mark.asyncio

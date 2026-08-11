@@ -79,6 +79,16 @@ const COVERAGE: Array<[string, string, string]> = [
 	['local track lyrics', API.local.lyrics('T1'), '/api/v1/local/tracks/T1/lyrics'],
 	['recently added albums', API.library.recentlyAdded(), '/api/v1/library/recently-added?limit=20'],
 	['local album detail', API.library.albumDetail('A1'), '/api/v1/library/albums/A1'],
+	[
+		'MusicBrainz edition search',
+		API.library.reidentificationReleases('A1', 'Artist Album'),
+		'/api/v1/library/albums/A1/reidentification/releases?q=Artist+Album&limit=12&offset=0'
+	],
+	[
+		'exact MusicBrainz release artwork',
+		API.library.exactReleaseArtwork('R1'),
+		'/api/v1/covers/release/R1?size=250'
+	],
 	['local album copies', API.library.albumCopies('A1'), '/api/v1/library/albums/A1/copies'],
 	['local artist detail', API.library.artistDetail('R1'), '/api/v1/library/artists/R1'],
 	['local artist albums', API.library.artistAlbums('R1'), '/api/v1/library/artists/R1/albums'],

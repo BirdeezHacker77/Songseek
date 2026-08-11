@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS library_identification_attempts (
     input_tag_revision TEXT NOT NULL,
     input_policy_revision TEXT NOT NULL,
     input_file_revision TEXT NOT NULL,
+    input_identity_revision TEXT NOT NULL DEFAULT '',
     matcher_version TEXT NOT NULL,
     state TEXT NOT NULL,
     terminal_reason_code TEXT NOT NULL,
@@ -1120,7 +1121,9 @@ CREATE TABLE IF NOT EXISTS library_reidentification_snapshots (
     local_album_id TEXT NOT NULL REFERENCES local_albums(id) ON DELETE RESTRICT,
     expected_album_revision INTEGER NOT NULL,
     expected_input_revision TEXT NOT NULL,
+    expected_identity_revision TEXT NOT NULL DEFAULT '',
     one_off_local_metadata INTEGER NOT NULL DEFAULT 0 CHECK(one_off_local_metadata IN (0,1)),
+    requested_release_mbid TEXT,
     selected_candidate_key TEXT,
     result_json TEXT,
     created_at REAL NOT NULL

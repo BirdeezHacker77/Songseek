@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -6,6 +7,7 @@ import msgspec
 import pytest
 
 from core.exceptions import (
+    AudioWriteError,
     ConflictError,
     LibraryManagementDestinationConflictError,
     StaleRevisionError,
@@ -156,6 +158,36 @@ async def test_apply_worker_preserves_publication_conflict_classification(
     assert values["state"] == "skipped"
     assert values["failure_code"] == failure_code
     assert msgspec.json.decode(values["result_json"])["reason"] == str(error)
+
+
+@pytest.mark.asyncio
+async def test_apply_worker_logs_staged_write_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    worker, store, publisher = _worker()
+    store.claim_operation_work.side_effect = [
+        {"ordinal": 4, "row_revision": 2, "state": "running"},
+        None,
+    ]
+    store.get_operation_work_item.return_value = {
+        "ordinal": 4,
+        "state": "running",
+    }
+    publisher.publish_bundle.side_effect = AudioWriteError(
+        "Staged artwork validation did not match the plan."
+    )
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="services.native.library_management_worker",
+    ):
+        await worker.run_claimed({"id": "management-1"}, "management-worker")
+
+    values = store.complete_operation_work.await_args.kwargs
+    assert values["state"] == "failed"
+    assert values["failure_code"] == "PUBLICATION_FAILED"
+    assert "failure_type=AudioWriteError" in caplog.text
+    assert "Staged artwork validation did not match the plan." in caplog.text
 
 
 @pytest.mark.asyncio

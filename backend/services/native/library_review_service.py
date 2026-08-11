@@ -271,6 +271,9 @@ class LibraryReviewService:
         review = detail["review"]
         album = detail["album"] or {}
         tracks = detail["tracks"]
+        indexed_tracks = [
+            track for track in tracks if track["availability"] == "indexed"
+        ]
         first_track = tracks[0] if tracks else {}
         projection = self._to_list_item(
             {
@@ -409,7 +412,7 @@ class LibraryReviewService:
                 if detail["identity"] is not None
                 else None
             ),
-            input_revision=":".join(album_input_revisions(tracks)),
+            input_revision=":".join(album_input_revisions(indexed_tracks)),
             evidence_revision=evidence_revision,
             job_revision=(detail["job"] or {}).get("row_revision"),
         )
@@ -490,9 +493,14 @@ class LibraryReviewService:
         if self._on_identified is None:
             return
         context = await self._store.get_album_identification_context(local_album_id)
-        if context is None or not context["tracks"]:
+        if context is None:
             return
-        policy_revision = album_input_revisions(context["tracks"])[2]
+        tracks = [
+            track for track in context["tracks"] if track["availability"] == "indexed"
+        ]
+        if not tracks:
+            return
+        policy_revision = album_input_revisions(tracks)[2]
         try:
             await self._on_identified(local_album_id, policy_revision)
         except Exception:  # noqa: BLE001 - the identity decision is already committed
