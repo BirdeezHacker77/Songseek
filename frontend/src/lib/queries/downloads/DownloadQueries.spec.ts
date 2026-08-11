@@ -19,8 +19,13 @@ vi.mock('$lib/api/client', () => ({
 	}
 }));
 
+const { mockInvalidate } = vi.hoisted(() => ({ mockInvalidate: vi.fn() }));
 vi.mock('$lib/queries/QueryClient', () => ({
-	invalidateQueriesWithPersister: vi.fn()
+	invalidateQueriesWithPersister: (...args: unknown[]) => mockInvalidate(...args)
+}));
+
+vi.mock('$lib/stores/authStore.svelte', () => ({
+	authStore: { user: { id: 'user-1' } }
 }));
 
 const { mockToast } = vi.hoisted(() => ({ mockToast: vi.fn() }));
@@ -33,7 +38,9 @@ import {
 	cancelDownload,
 	requestAlbum,
 	requestTrack,
-	retryDownload
+	retryHeldManagementUnit,
+	retryDownload,
+	tryNextSource
 } from './DownloadMutations.svelte';
 
 describe('download queue queries', () => {
@@ -74,6 +81,47 @@ describe('download queue queries', () => {
 		expect(String(mockPost.mock.calls.at(-1)?.[0])).toContain('/downloads/t1/retry');
 	});
 
+	it('tryNextSource posts the rendered candidate index to the task endpoint', async () => {
+		const m = tryNextSource() as unknown as { mutationFn: (i: unknown) => unknown };
+		await m.mutationFn({ id: 't1', candidateIndex: 4 });
+		const call = mockPost.mock.calls.at(-1);
+		expect(String(call?.[0])).toContain('/downloads/t1/next-source');
+		expect(call?.[1]).toEqual({ expected_candidate_index: 4 });
+	});
+
+	it('tryNextSource reports success and conflicts through toasts', () => {
+		mockToast.mockClear();
+		const m = tryNextSource() as unknown as {
+			onSuccess: () => unknown;
+			onError: (error: unknown) => unknown;
+		};
+
+		m.onSuccess();
+		expect(mockToast).toHaveBeenLastCalledWith({
+			message: 'Trying the next source',
+			type: 'info'
+		});
+
+		m.onError(new Error('The transfer has already started'));
+		expect(mockToast).toHaveBeenLastCalledWith({
+			message: 'The transfer has already started',
+			type: 'error'
+		});
+	});
+
+	it('refreshes held and task data immediately when organizer retry is rejected', () => {
+		mockInvalidate.mockClear();
+		const mutation = retryHeldManagementUnit() as unknown as {
+			onError: (error: unknown) => unknown;
+		};
+
+		mutation.onError(new Error('Exact edition proof is incomplete.'));
+
+		expect(mockInvalidate).toHaveBeenCalledWith({
+			queryKey: DownloadQueryKeyFactory.tasks('user-1')
+		});
+	});
+
 	it('requestAlbum shows the "searching" toast for a pending status', () => {
 		mockToast.mockClear();
 		const m = requestAlbum() as unknown as { onSuccess: (d: unknown) => unknown };
@@ -93,7 +141,17 @@ describe('download queue queries', () => {
 	});
 
 	it('the key factory builds stable keys', () => {
-		expect(DownloadQueryKeyFactory.tasks()).toEqual(['downloads', 'tasks']);
+		expect(DownloadQueryKeyFactory.tasks('user-1')).toEqual(['downloads', 'tasks', 'user-1']);
+		expect(DownloadQueryKeyFactory.tasks('user-2')).not.toEqual(
+			DownloadQueryKeyFactory.tasks('user-1')
+		);
+		expect(DownloadQueryKeyFactory.held('user-1')).toEqual([
+			'downloads',
+			'tasks',
+			'user-1',
+			'held',
+			'all'
+		]);
 		expect(DownloadQueryKeyFactory.quarantine()).toEqual(['downloads', 'quarantine']);
 	});
 });

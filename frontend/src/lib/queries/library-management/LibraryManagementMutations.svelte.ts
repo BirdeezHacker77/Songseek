@@ -107,7 +107,13 @@ export const createLibraryManagementActivationPreviewMutation = () =>
 				API.libraryManagement.activationPreviews(),
 				request
 			),
-		onSuccess: showQueued('Activation preview queued'),
+		onSuccess: async (result) => {
+			await invalidateLibraryManagementSurfaces();
+			toastStore.show({
+				message: result.existing ? 'Active dry run resumed' : 'Activation dry run queued',
+				type: 'success'
+			});
+		},
 		onError: showActionError('Could not queue the activation preview')
 	}));
 

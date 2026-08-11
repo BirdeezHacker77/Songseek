@@ -3,6 +3,7 @@ import type { Getter } from 'runed';
 
 import { api } from '$lib/api/client';
 import { API } from '$lib/constants';
+import { authStore } from '$lib/stores/authStore.svelte';
 import type { DownloadListResponse } from '$lib/types';
 
 import { DownloadQueryKeyFactory } from './DownloadQueryKeyFactory';
@@ -13,7 +14,7 @@ export const getDownloadsQueryOptions = () =>
 	queryOptions({
 		staleTime: 0,
 		refetchInterval: 5000,
-		queryKey: DownloadQueryKeyFactory.tasks(),
+		queryKey: DownloadQueryKeyFactory.tasks(authStore.user?.id),
 		queryFn: ({ signal }) =>
 			api.global.get<DownloadListResponse>(API.downloads.list(undefined, 1, 100), { signal })
 	});
@@ -30,7 +31,7 @@ export const getAlbumDownloadsQuery = (
 	createQuery(() => ({
 		staleTime: 0,
 		enabled: getEnabled() && !!getMbid(),
-		queryKey: DownloadQueryKeyFactory.albumTasks(getMbid()),
+		queryKey: DownloadQueryKeyFactory.albumTasks(authStore.user?.id, getMbid()),
 		queryFn: ({ signal }) =>
 			api.global.get<DownloadListResponse>(API.downloads.list(undefined, 1, 100, getMbid()), {
 				signal

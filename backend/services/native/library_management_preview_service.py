@@ -393,6 +393,14 @@ class LibraryManagementPreviewService:
             and not expired
             and not stale_reasons
         )
+        worker_lease_expires_at = operation.get("lease_expires_at")
+        worker_stalled = bool(
+            operation["state"] == "running"
+            and snapshot.phase == "planning"
+            and (
+                worker_lease_expires_at is None or float(worker_lease_expires_at) <= now
+            )
+        )
         return LibraryManagementPreviewDetailResponse(
             job_id=job_id,
             state=str(operation["state"]),
@@ -419,6 +427,17 @@ class LibraryManagementPreviewService:
             operation_row_revision=int(operation["row_revision"]),
             operation_event_revision=int(operation["event_revision"]),
             terminal_code=operation["terminal_code"],
+            worker_heartbeat_at=(
+                float(operation["heartbeat_at"])
+                if operation.get("heartbeat_at") is not None
+                else None
+            ),
+            worker_lease_expires_at=(
+                float(worker_lease_expires_at)
+                if worker_lease_expires_at is not None
+                else None
+            ),
+            worker_stalled=worker_stalled,
             expected_work_count=int(operation.get("expected_work_count", 0)),
             completed_count=int(operation.get("completed_count", 0)),
             succeeded_count=int(operation.get("succeeded_count", 0)),
@@ -910,5 +929,8 @@ class LibraryManagementPreviewService:
             profile_name=pinned.profile.name,
             profile_revision=str(row["management_profile_revision"]),
             target_root_id=row["management_target_root_id"],
+            activation_preview=(
+                row["management_proposed_settings_revision"] is not None
+            ),
             selection=selection,
         )

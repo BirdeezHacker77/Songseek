@@ -4,6 +4,7 @@
 		ArchiveRestore,
 		Check,
 		ChevronRight,
+		Clock3,
 		CircleOff,
 		Copy,
 		FolderCog,
@@ -11,6 +12,7 @@
 		Pencil,
 		RefreshCw,
 		ShieldAlert,
+		Square,
 		Sparkles,
 		Tags,
 		Trash2
@@ -27,6 +29,7 @@
 	} from '$lib/queries/library-management/LibraryManagementQueries.svelte';
 	import {
 		confirmLibraryManagementActivationMutation,
+		controlLibraryManagementOperationMutation,
 		copyLibraryManagementProfileMutation,
 		createLibraryManagementActivationPreviewMutation,
 		deleteLibraryManagementProfileMutation,
@@ -63,6 +66,7 @@
 	const deleteProfile = deleteLibraryManagementProfileMutation();
 	const createActivation = createLibraryManagementActivationPreviewMutation();
 	const confirmActivation = confirmLibraryManagementActivationMutation();
+	const stopActivation = controlLibraryManagementOperationMutation('stop');
 	const purgeImpact = previewLibraryManagementBaselinePurgeMutation();
 	const purgeBaselines = purgeLibraryManagementBaselinesMutation();
 
@@ -85,6 +89,7 @@
 	let activationProofs = $state<LibraryManagementActivationProof[]>([]);
 	let activationPhrase = $state('');
 	let activationError = $state('');
+	let acceptingActivation = $state(false);
 	let deleteDialog: HTMLDialogElement;
 	let deleteHeading: HTMLHeadingElement;
 	let deleteOpener: HTMLButtonElement | null = null;
@@ -158,7 +163,26 @@
 			!activationQuery.data.stale
 		)
 	);
-	const activationPending = $derived(createActivation.isPending || confirmActivation.isPending);
+	const activationStalled = $derived(Boolean(activationQuery.data?.worker_stalled));
+	const activationCoversCurrentDraft = $derived.by(() => {
+		if (!activationDraft || !draft) return true;
+		return (
+			JSON.stringify($state.snapshot(activationDraft)) === JSON.stringify($state.snapshot(draft))
+		);
+	});
+	const activationPending = $derived(
+		createActivation.isPending ||
+			confirmActivation.isPending ||
+			stopActivation.isPending ||
+			acceptingActivation
+	);
+	const activationCanStop = $derived(
+		Boolean(
+			activationQuery.data &&
+			['queued', 'running', 'paused'].includes(activationQuery.data.state) &&
+			activationQuery.data.control_request !== 'stop'
+		)
+	);
 
 	function settingsPayload(response: LibraryManagementSettingsResponse): LibraryManagementSettings {
 		const value = structuredClone(response);
@@ -333,17 +357,22 @@
 				);
 			});
 			if (impact.preview_required && activeAffected.length > 0) {
-				activationDraft = structuredClone(proposed);
-				activationRootIds = activeAffected;
-				activationIndex = 0;
-				activationJobId = null;
-				activationToken = '';
-				activationProofs = [];
+				const resumesCurrentActivation = Boolean(
+					activationDraft &&
+					JSON.stringify($state.snapshot(activationDraft)) === JSON.stringify(proposed) &&
+					JSON.stringify($state.snapshot(activationRootIds)) === JSON.stringify(activeAffected)
+				);
+				if (!resumesCurrentActivation) {
+					activationDraft = structuredClone(proposed);
+					activationRootIds = activeAffected;
+					activationIndex = 0;
+					activationJobId = null;
+					activationToken = '';
+					activationProofs = [];
+				}
 				activationPhrase = '';
 				activationError = '';
-				activationOpener = opener;
-				activationDialog.showModal();
-				activationHeading.focus();
+				showActivationDialog(opener);
 				return;
 			}
 			const saved = await updateSettings.mutateAsync({
@@ -353,6 +382,7 @@
 			draft = settingsPayload(saved);
 			persistedSettings = settingsPayload(saved);
 			sourceRevision = saved.settings_revision;
+			resetActivationSession();
 		} catch (error) {
 			saveError =
 				error instanceof Error ? error.message : 'Could not save Library Management settings.';
@@ -447,8 +477,25 @@
 		}
 	}
 
-	function acceptActivationPreview(): void {
+	async function acceptActivationPreview(): Promise<void> {
 		if (!activationReady || !currentActivationRootId || !activationJobId) return;
+		activationError = '';
+		acceptingActivation = true;
+		try {
+			const refreshed = await activationQuery.refetch();
+			if (refreshed.error) throw refreshed.error;
+			const preview = refreshed.data;
+			if (!preview || !preview.ready_for_confirmation || preview.stale || preview.expired) {
+				activationError =
+					'This dry run is no longer current. Start a fresh dry run before enabling automatic writes.';
+				return;
+			}
+		} catch (error) {
+			activationError = error instanceof Error ? error.message : 'Could not recheck this dry run.';
+			return;
+		} finally {
+			acceptingActivation = false;
+		}
 		activationProofs = [
 			...activationProofs,
 			{
@@ -469,11 +516,56 @@
 		activationError = '';
 	}
 
+	async function stopActivationPreview(): Promise<void> {
+		const preview = activationQuery.data;
+		if (!activationJobId || !preview || !activationCanStop) return;
+		activationError = '';
+		try {
+			await stopActivation.mutateAsync({
+				jobId: activationJobId,
+				expectedRevision: preview.operation_row_revision
+			});
+			await activationQuery.refetch();
+		} catch (error) {
+			activationError = error instanceof Error ? error.message : 'Could not stop this dry run.';
+		}
+	}
+
+	async function restartActivationReview(opener: HTMLButtonElement): Promise<void> {
+		if (!draft || activationPending) return;
+		if (activationCanStop) {
+			await stopActivationPreview();
+			if (activationError) return;
+		}
+		const proposed = $state.snapshot(draft);
+		resetActivationSession();
+		await reviewAndSave(proposed, opener).catch(() => undefined);
+	}
+
+	function showActivationDialog(opener: HTMLButtonElement | null): void {
+		activationPhrase = '';
+		activationOpener = opener;
+		activationDialog.showModal();
+		activationHeading.focus();
+	}
+
+	function resetActivationSession(): void {
+		activationDraft = null;
+		activationRootIds = [];
+		activationIndex = 0;
+		activationJobId = null;
+		activationToken = '';
+		activationProofs = [];
+		activationPhrase = '';
+		activationError = '';
+	}
+
 	async function enableManagement(): Promise<void> {
 		if (
 			!activationDraft ||
 			activationProofs.length !== activationRootIds.length ||
-			activationPhrase !== 'Enable Library Management'
+			activationPhrase !== 'Enable Library Management' ||
+			!activationCoversCurrentDraft
 		)
 			return;
 		activationError = '';
@@ -487,6 +579,7 @@
 			draft = settingsPayload(saved);
 			persistedSettings = settingsPayload(saved);
 			sourceRevision = saved.settings_revision;
+			resetActivationSession();
 			activationDialog.close();
 		} catch (error) {
 			activationError =
@@ -1020,23 +1113,57 @@
 			</details>
 
 			{#if saveError}<div class="alert alert-error text-sm" role="alert">{saveError}</div>{/if}
-			<div class="management-save-bar">
-				<div>
-					<strong class="text-sm">Review configuration changes</strong>
-					<p class="text-xs text-base-content/50">
-						Broader write access cannot save until every affected root has a current dry run.
-					</p>
-				</div>
-				<button
-					class="btn management-btn"
-					disabled={updateSettings.isPending ||
-						validateSettings.isPending ||
-						impactSettings.isPending}
-					onclick={saveDraft}
-					>{#if updateSettings.isPending || validateSettings.isPending || impactSettings.isPending}<span
-							class="loading loading-spinner loading-sm"
-						></span>{/if}<Sparkles class="h-4 w-4" /> Validate and save</button
-				>
+			<div class="management-save-bar" aria-live="polite">
+				{#if activationDraft && activationRootIds.length > 0}
+					<div>
+						<strong class="text-sm">
+							{#if !activationCoversCurrentDraft}Configuration changed after this dry run started{:else if !currentActivationRoot}Activation
+								awaits final confirmation{:else if activationReady}Dry run ready for review{:else if activationQuery.data?.control_request === 'stop'}Dry
+								run stopping{:else if activationStalled}Dry run interrupted{:else if activationQuery.data?.state === 'queued'}Dry
+								run queued{:else if activationQuery.data?.state === 'running'}Dry run planning{:else if ['failed', 'stopped', 'cancelled'].includes(activationQuery.data?.state ?? '')}Dry
+								run needs attention{:else}Activation dry run continues{/if}
+						</strong>
+						<p class="text-xs text-base-content/50">
+							{#if !activationCoversCurrentDraft}The existing result cannot authorize the settings
+								now shown. Restart the review to create one current dry run.{:else if currentActivationRoot}{currentActivationRoot.label}
+								· {(activationQuery.data?.summary.item_count ?? 0).toLocaleString()}
+								files planned · {(activationQuery.data?.summary.bundle_count ?? 0).toLocaleString()}
+								release bundles{:else}Every required dry run is accepted. Automatic writes are still
+								off.{/if}
+						</p>
+					</div>
+					{#if !activationCoversCurrentDraft}<button
+							class="btn management-btn"
+							disabled={activationPending}
+							onclick={(event) => void restartActivationReview(event.currentTarget)}
+							><RefreshCw class="h-4 w-4" /> Restart review</button
+						>
+					{:else}<button
+							class="btn management-btn"
+							onclick={(event) => showActivationDialog(event.currentTarget)}
+							>{#if currentActivationRoot && activationQuery.data?.state === 'running' && !activationStalled}<span
+									class="loading loading-spinner loading-sm"
+								></span>{/if}<ShieldAlert class="h-4 w-4" /> View dry run</button
+						>
+					{/if}
+				{:else}
+					<div>
+						<strong class="text-sm">Review configuration changes</strong>
+						<p class="text-xs text-base-content/50">
+							Broader write access cannot save until every affected root has a current dry run.
+						</p>
+					</div>
+					<button
+						class="btn management-btn"
+						disabled={updateSettings.isPending ||
+							validateSettings.isPending ||
+							impactSettings.isPending}
+						onclick={saveDraft}
+						>{#if updateSettings.isPending || validateSettings.isPending || impactSettings.isPending}<span
+								class="loading loading-spinner loading-sm"
+							></span>{/if}<Sparkles class="h-4 w-4" /> Validate and save</button
+					>
+				{/if}
 			</div>
 		</div>
 	{/if}
@@ -1142,40 +1269,54 @@
 						onclick={discardActivationPreview}>Start a fresh dry run</button
 					>
 				{:else if activationQuery.data}
-					<div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-						<div class="management-mini-stat">
-							<span>Eligible</span><strong>{activationQuery.data.summary.eligible_count}</strong>
-						</div>
-						<div class="management-mini-stat">
-							<span>Warnings</span><strong>{activationQuery.data.summary.warning_count}</strong>
-						</div>
-						<div class="management-mini-stat">
-							<span>Blocked</span><strong>{activationQuery.data.summary.blocked_count}</strong>
-						</div>
-						<div class="management-mini-stat">
-							<span>Moves</span><strong>{activationQuery.data.summary.path_change_count}</strong>
-						</div>
-						<div class="management-mini-stat">
-							<span>Tag writes</span><strong
-								>{activationQuery.data.summary.tag_change_count ?? 0}</strong
+					{#if !activationReady}<div
+							class="mt-4 flex flex-wrap items-baseline justify-between gap-x-5 gap-y-1 rounded-lg border border-library-manage/20 bg-library-manage/5 px-3.5 py-3"
+							aria-live="polite"
+						>
+							<span class="text-xs font-semibold uppercase tracking-[0.16em] text-base-content/45"
+								>Planning progress</span
 							>
-						</div>
-						<div class="management-mini-stat">
-							<span>Artwork</span><strong
-								>{activationQuery.data.summary.artwork_change_count ?? 0}</strong
+							<span class="font-semibold text-base-content/80"
+								>{(activationQuery.data.summary.item_count ?? 0).toLocaleString()} files</span
 							>
-						</div>
-						<div class="management-mini-stat">
-							<span>Sidecars</span><strong
-								>{activationQuery.data.summary.sidecar_change_count ?? 0}</strong
+							<span class="text-sm text-base-content/55"
+								>{(activationQuery.data.summary.bundle_count ?? 0).toLocaleString()} release bundles</span
 							>
-						</div>
-						<div class="management-mini-stat">
-							<span>No change</span><strong
-								>{activationQuery.data.summary.no_change_count ?? 0}</strong
-							>
-						</div>
-					</div>
+						</div>{/if}
+					{#if activationReady}<div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+							<div class="management-mini-stat">
+								<span>Eligible</span><strong>{activationQuery.data.summary.eligible_count}</strong>
+							</div>
+							<div class="management-mini-stat">
+								<span>Warnings</span><strong>{activationQuery.data.summary.warning_count}</strong>
+							</div>
+							<div class="management-mini-stat">
+								<span>Blocked</span><strong>{activationQuery.data.summary.blocked_count}</strong>
+							</div>
+							<div class="management-mini-stat">
+								<span>Moves</span><strong>{activationQuery.data.summary.path_change_count}</strong>
+							</div>
+							<div class="management-mini-stat">
+								<span>Tag writes</span><strong
+									>{activationQuery.data.summary.tag_change_count ?? 0}</strong
+								>
+							</div>
+							<div class="management-mini-stat">
+								<span>Artwork</span><strong
+									>{activationQuery.data.summary.artwork_change_count ?? 0}</strong
+								>
+							</div>
+							<div class="management-mini-stat">
+								<span>Sidecars</span><strong
+									>{activationQuery.data.summary.sidecar_change_count ?? 0}</strong
+								>
+							</div>
+							<div class="management-mini-stat">
+								<span>No change</span><strong
+									>{activationQuery.data.summary.no_change_count ?? 0}</strong
+								>
+							</div>
+						</div>{/if}
 					<a
 						href={`/library/management/previews/${encodeURIComponent(activationJobId)}`}
 						target="_blank"
@@ -1190,28 +1331,71 @@
 						<button class="btn btn-outline btn-sm mt-3" onclick={discardActivationPreview}
 							>Run a fresh dry run</button
 						>
-					{:else if activationQuery.data.state === 'failed'}<div
+					{:else if ['failed', 'stopped', 'cancelled'].includes(activationQuery.data.state)}<div
 							class="alert alert-error mt-3 text-sm"
 							role="alert"
 						>
-							This dry run failed during planning. No files were changed.
+							{activationQuery.data.state === 'failed'
+								? 'This dry run failed during planning.'
+								: 'This dry run was stopped.'} No files were changed.
 						</div>
 						<button class="btn btn-outline btn-sm mt-3" onclick={discardActivationPreview}
 							>Run a fresh dry run</button
 						>
-					{:else if !activationReady}<div
-							class="mt-3 flex items-center justify-between gap-3 text-sm text-base-content/55"
+					{:else if activationQuery.data.control_request === 'stop'}<div
+							class="mt-3 flex items-center gap-3 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2.5 text-sm text-base-content/65"
+							role="status"
+							aria-live="polite"
 						>
-							<span>Planning is still running. Keep this dialog open and refresh its status.</span
-							><button class="btn btn-ghost btn-xs" onclick={() => void activationQuery.refetch()}
-								>Refresh status</button
+							<span class="loading loading-spinner loading-sm text-warning" aria-hidden="true"
+							></span><span
+								><strong class="block text-base-content/80">Stopping this dry run</strong>The
+								planner will stop at its next safe checkpoint. No music files are involved.</span
+							>
+						</div>
+					{:else if activationStalled}<div
+							class="alert alert-error mt-3 items-start text-sm"
+							role="alert"
+						>
+							<ShieldAlert class="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" /><span
+								><strong class="block">Planning stopped responding</strong>The last durable
+								checkpoint contains {(
+									activationQuery.data.summary.item_count ?? 0
+								).toLocaleString()}
+								files. No music files changed. Stop this dry run, then start a fresh one; planning will
+								safely resume from a new durable operation.</span
+							>
+						</div>
+					{:else if activationQuery.data.state === 'queued'}<div
+							class="mt-3 flex items-center gap-3 rounded-lg border border-base-content/10 bg-base-200/45 px-3 py-2.5 text-sm text-base-content/60"
+							role="status"
+							aria-live="polite"
+						>
+							<Clock3 class="h-5 w-5 shrink-0 text-library-manage" aria-hidden="true" /><span
+								><strong class="block text-base-content/75">Queued for planning</strong>It starts
+								automatically when the current library operation finishes. You can safely close this
+								dialog.</span
+							>
+						</div>
+					{:else if !activationReady}<div
+							class="mt-3 flex items-center gap-3 rounded-lg border border-base-content/10 bg-base-200/45 px-3 py-2.5 text-sm text-base-content/60"
+							role="status"
+							aria-live="polite"
+						>
+							<span
+								class="loading loading-spinner loading-sm text-library-manage"
+								aria-hidden="true"
+							></span><span
+								><strong class="block text-base-content/75">Planning this dry run</strong>This
+								updates automatically. You can safely close the dialog while it continues.</span
 							>
 						</div>{/if}
 					<button
 						class="btn management-btn btn-sm mt-4"
-						disabled={!activationReady}
-						onclick={acceptActivationPreview}
-						>Use this dry run <ChevronRight class="h-4 w-4" /></button
+						disabled={!activationReady || activationPending}
+						onclick={() => void acceptActivationPreview()}
+						>{#if acceptingActivation}<span class="loading loading-spinner loading-sm"
+							></span>{/if}Use this dry run <ChevronRight class="h-4 w-4" /></button
 					>
 				{/if}
 			</section>
@@ -1236,13 +1420,23 @@
 				{activationError}
 			</div>{/if}
 		<div class="modal-action">
+			{#if currentActivationRoot && activationCanStop}<button
+					class="btn btn-error btn-outline mr-auto"
+					disabled={activationPending}
+					onclick={() => void stopActivationPreview()}
+					>{#if stopActivation.isPending}<span class="loading loading-spinner loading-sm"
+						></span>{/if}<Square class="h-4 w-4" /> Stop dry run</button
+				>
+			{/if}
 			<button
 				class="btn btn-ghost"
 				onclick={() => activationDialog.close()}
-				disabled={activationPending}>Cancel</button
+				disabled={activationPending}>Close</button
 			>{#if !currentActivationRoot}<button
 					class="btn management-btn"
-					disabled={activationPhrase !== 'Enable Library Management' || activationPending}
+					disabled={activationPhrase !== 'Enable Library Management' ||
+						activationPending ||
+						!activationCoversCurrentDraft}
 					onclick={() => void enableManagement()}
 					>{#if confirmActivation.isPending}<span class="loading loading-spinner loading-sm"
 						></span>{/if} Enable Library Management</button
@@ -1250,7 +1444,7 @@
 		</div>
 	</div>
 	<form method="dialog" class="modal-backdrop">
-		<button aria-label="Cancel Library Management activation" disabled={activationPending}
+		<button aria-label="Close Library Management activation" disabled={activationPending}
 			>close</button
 		>
 	</form>

@@ -81,6 +81,7 @@
 				requesting={state.requesting}
 				refreshing={state.refreshing}
 				headerDownloadTask={state.headerDownloadTask}
+				managementHeld={state.headerManagementHeld}
 				downloadClientConfigured={$integrationStore.download_client}
 				libraryInLibrary={state.libraryInLibrary}
 				libraryTrackCount={state.libraryTrackCount}

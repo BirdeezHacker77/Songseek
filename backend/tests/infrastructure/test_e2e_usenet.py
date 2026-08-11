@@ -227,19 +227,29 @@ def _album_service(tracks):
     svc = SimpleNamespace()
 
     async def get_album_tracks_info(rg):
-        return SimpleNamespace(tracks=tracks, total_tracks=len(tracks))
+        return SimpleNamespace(
+            tracks=tracks,
+            total_tracks=len(tracks),
+            selected_release_mbid="release-okc",
+        )
+
+    async def get_exact_edition_tracks_info(rg, release_mbid):
+        assert release_mbid == "release-okc"
+        return await get_album_tracks_info(rg)
 
     svc.get_album_tracks_info = get_album_tracks_info
+    svc.get_exact_edition_tracks_info = get_exact_edition_tracks_info
     return svc
 
 
-def _track(position, title, length_ms):
+def _track(position, title, length_ms, *, recording_id=None):
     return SimpleNamespace(
         position=position,
         title=title,
         disc_number=1,
         length=length_ms,
-        recording_id=None,
+        recording_id=recording_id or f"recording-{position}",
+        release_track_id=f"release-track-{position}",
     )
 
 
@@ -373,7 +383,7 @@ async def test_usenet_per_track_imports_exactly_one(tmp_path: Path):
         completed, "02 Paranoid Android.flac", title="Paranoid Android", track=2
     )
     # The manifest's tracklist is the SINGLE requested track (D4) -> only it matches.
-    tracks = [_track(2, "Paranoid Android", 300)]
+    tracks = [_track(2, "Paranoid Android", 300, recording_id="rec-pa")]
     store, manager, orch, sab, library = _build(
         tmp_path, album_tracks=tracks, completed_folder=completed
     )
@@ -382,6 +392,8 @@ async def test_usenet_per_track_imports_exactly_one(tmp_path: Path):
         user_id="user-a",
         download_type="track",
         release_group_mbid="rg-okc",
+        release_mbid="release-okc",
+        release_track_mbid="release-track-2",
         recording_mbid="rec-pa",
         artist_name="Radiohead",
         album_title="OK Computer",

@@ -225,7 +225,9 @@
 						><History class="h-4 w-4 text-library-manage" /><span class="min-w-0 flex-1"
 							><span class="flex flex-wrap items-center gap-2"
 								><strong>{item.profile_name}</strong><span class="badge badge-outline badge-sm"
-									>{titleManagementValue(item.mode)}</span
+									>{item.activation_preview
+										? 'Activation dry run'
+										: titleManagementValue(item.mode)}</span
 								><span
 									class="badge badge-sm {item.operation.state === 'failed'
 										? 'badge-error'

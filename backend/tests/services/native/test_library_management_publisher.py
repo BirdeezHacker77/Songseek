@@ -23,9 +23,13 @@ from api.v1.schemas.library_management_preview import (
     LibraryManagementUndoPreviewRequest,
 )
 from core.exceptions import (
+    AudioWriteError,
     AutomaticManagementHoldError,
     ConflictError,
+    LibraryManagementDestinationConflictError,
+    LibraryManagementPolicyChangedError,
     StaleRevisionError,
+    ValidationError,
 )
 from infrastructure.audio.metadata_engine import (
     AudioMetadataEngine,
@@ -47,7 +51,10 @@ from services.native.target_import_library_service import TargetImportLibrarySer
 from models.audio import AudioTag
 from models.audio_metadata import DesiredAudioDocument, DesiredAudioField
 from models.library_management import (
+    BUNDLE_BLOCKED,
     PATH_COLLISION_DIFFERENT,
+    POLICY_CHANGED,
+    ROOT_UNAVAILABLE,
     LibraryManagementImportArtifact,
     LibraryManagementImportBundle,
     LibraryManagementImportFile,
@@ -462,6 +469,50 @@ async def test_import_bundle_publishes_once_and_commits_catalog_atomically(
     assert repeated.repeated is True
     assert [value.state for value in journals] == ["completed"]
     assert [value.id for value in barriers] == [first.bundle_id]
+
+
+@pytest.mark.asyncio
+async def test_import_catalog_commit_atomically_settles_matching_management_hold(
+    tmp_path: Path,
+) -> None:
+    root, catalog_source, store, audio, _publisher, service, policy_revision = (
+        _import_publication_fixture(tmp_path)
+    )
+    incoming = tmp_path / "held-incoming.flac"
+    shutil.copy2(catalog_source, incoming)
+    request = msgspec.structs.replace(
+        _import_file(
+            audio,
+            incoming,
+            ordinal=0,
+            relative_path="Import Artist/Import Album/01 Track.flac",
+        ),
+        source_path=str(incoming),
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "INSERT INTO held_imports "
+            "(user_id,held_path,reason,source,source_task_id,status,created_at) "
+            "VALUES ('admin',?,'management:TRACK_NOT_MAPPED','soulseek',"
+            "'task-1','held',1)",
+            (str(incoming),),
+        )
+    bundle = LibraryManagementImportBundle(
+        idempotency_key="acquisition:held-atomic:minimal",
+        origin="acquisition",
+        policy_revision=policy_revision,
+        files=(request,),
+    )
+
+    result = await service.publish_import_bundle(bundle)
+
+    with sqlite3.connect(store.db_path) as connection:
+        status = connection.execute(
+            "SELECT status FROM held_imports WHERE source_task_id='task-1'"
+        ).fetchone()[0]
+    assert status == "imported"
+    assert (root / request.destination_relative_path).is_file()
+    assert len(result.local_track_ids) == 1
 
 
 @pytest.mark.asyncio
@@ -1007,9 +1058,42 @@ async def test_automatic_managed_upgrade_preserves_baseline_and_undo_state(
     )
 
 
+_IO_WRITE_ERROR = AudioWriteError("staged write failed")
+_IO_WRITE_ERROR.__cause__ = OSError("temporary NFS interruption")
+
+
+@pytest.mark.parametrize(
+    ("publisher_error", "expected_reason"),
+    (
+        (
+            LibraryManagementDestinationConflictError("occupied destination"),
+            PATH_COLLISION_DIFFERENT,
+        ),
+        (
+            LibraryManagementPolicyChangedError("policy changed"),
+            POLICY_CHANGED,
+        ),
+        (StaleRevisionError("journal revision changed"), BUNDLE_BLOCKED),
+        (ConflictError("durable evidence disagrees"), BUNDLE_BLOCKED),
+        (_IO_WRITE_ERROR, ROOT_UNAVAILABLE),
+        (OSError("destination unavailable"), ROOT_UNAVAILABLE),
+        (ValidationError("invalid pinned request"), BUNDLE_BLOCKED),
+    ),
+    ids=(
+        "destination",
+        "policy",
+        "stale-evidence",
+        "conflicting-evidence",
+        "staged-io",
+        "filesystem-io",
+        "invalid-contract",
+    ),
+)
 @pytest.mark.asyncio
-async def test_automatic_import_collision_becomes_actionable_management_hold(
+async def test_automatic_import_conflicts_become_truthful_management_holds(
     tmp_path: Path,
+    publisher_error: Exception,
+    expected_reason: str,
 ) -> None:
     _root, source, preferences, store, _settings, policy_revision = _configured(
         tmp_path
@@ -1033,7 +1117,7 @@ async def test_automatic_import_collision_becomes_actionable_management_hold(
         ),
     )
     publisher = AsyncMock(spec=LibraryManagementPublisher)
-    publisher.publish_import_bundle.side_effect = ConflictError("occupied destination")
+    publisher.publish_import_bundle.side_effect = publisher_error
     service = TargetImportLibraryService(
         store,
         lambda: LibraryPolicyResolver(preferences.get_typed_library_settings_raw()),
@@ -1051,7 +1135,9 @@ async def test_automatic_import_collision_becomes_actionable_management_hold(
             )
         )
 
-    assert held.value.reason_code == PATH_COLLISION_DIFFERENT
+    assert held.value.reason_code == expected_reason
+    if expected_reason == BUNDLE_BLOCKED:
+        assert str(publisher_error) not in str(held.value)
 
 
 @pytest.mark.asyncio
@@ -1087,7 +1173,7 @@ async def test_import_bundle_prepares_every_file_before_any_publish(
         files=(first, second),
     )
 
-    with pytest.raises(ConflictError, match="destination"):
+    with pytest.raises(LibraryManagementDestinationConflictError, match="destination"):
         await service.publish_import_bundle(bundle)
 
     with sqlite3.connect(store.db_path) as connection:
@@ -1105,6 +1191,61 @@ async def test_import_bundle_prepares_every_file_before_any_publish(
     assert first_source.is_file() and second_source.is_file()
     assert record is not None and record.state == "rolled_back"
     assert [value.state for value in journals] == ["rolled_back", "rolled_back"]
+
+
+@pytest.mark.asyncio
+async def test_import_recovery_skips_a_bundle_owned_by_the_active_publisher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, catalog_source, store, audio, publisher, service, policy_revision = (
+        _import_publication_fixture(tmp_path)
+    )
+    incoming = tmp_path / "active-incoming.flac"
+    shutil.copy2(catalog_source, incoming)
+    request = _import_file(
+        audio,
+        incoming,
+        ordinal=0,
+        relative_path="Import Artist/Import Album/01 Active.flac",
+    )
+    bundle = LibraryManagementImportBundle(
+        idempotency_key="acquisition:active-recovery:minimal",
+        origin="acquisition",
+        policy_revision=policy_revision,
+        files=(request,),
+    )
+    entered_preparation = asyncio.Event()
+    release_preparation = asyncio.Event()
+    original = publisher._prepare_import_file
+
+    async def pause_preparation(*args):  # noqa: ANN002, ANN202 - method wrapper
+        entered_preparation.set()
+        await release_preparation.wait()
+        return await original(*args)
+
+    monkeypatch.setattr(publisher, "_prepare_import_file", pause_preparation)
+    publication = asyncio.create_task(service.publish_import_bundle(bundle))
+    await entered_preparation.wait()
+    with sqlite3.connect(store.db_path) as connection:
+        bundle_id = str(
+            connection.execute(
+                "SELECT id FROM library_management_import_bundles "
+                "WHERE idempotency_key=?",
+                (bundle.idempotency_key,),
+            ).fetchone()[0]
+        )
+    record = await store.get_library_management_import_bundle(bundle_id)
+    assert record is not None and record.state == "publishing"
+
+    disposition = await publisher.recover_import_bundle(record)
+    release_preparation.set()
+    result = await publication
+
+    assert disposition == "skipped"
+    assert result.paths == (str(root / request.destination_relative_path),)
+    completed = await store.get_library_management_import_bundle(bundle_id)
+    assert completed is not None and completed.state == "completed"
 
 
 @pytest.mark.asyncio
@@ -1223,17 +1364,29 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
         tmp_path
     )
     audio = AudioMetadataEngine()
+    filesystem = LibraryFilesystemCoordinator()
     publisher = LibraryManagementPublisher(
         store,
         preferences,
         audio,
         AudioWritePlanningService(audio),
         LibraryManagementBlobStore(tmp_path / "rollback-blobs", store),
-        LibraryFilesystemCoordinator(),
+        filesystem,
         clock=lambda: 110.0,
     )
-    incoming = tmp_path / "automatic-rollback.flac"
-    shutil.copy2(catalog_source, incoming)
+    service = TargetImportLibraryService(
+        store,
+        lambda: LibraryPolicyResolver(preferences.get_typed_library_settings_raw()),
+        AsyncMock(),
+        filesystem_coordinator=filesystem,
+        management_publisher=publisher,
+    )
+    sources = [
+        tmp_path / "automatic-rollback-1.flac",
+        tmp_path / "automatic-rollback-2.flac",
+    ]
+    for source in sources:
+        shutil.copy2(catalog_source, source)
     artwork = b"temporary artwork"
     management = preferences.get_library_management_settings_raw()
     profile = next(
@@ -1241,44 +1394,66 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
         for value in management.profiles
         if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
-    request = msgspec.structs.replace(
-        _import_file(
-            audio,
-            incoming,
-            ordinal=0,
-            relative_path="Managed/01 Rollback.flac",
-        ),
-        authoritative_mapping=True,
-        recording_mbid="recording-1",
-        release_track_mbid="release-track-1",
-        medium_position=1,
-        release_track_position=1,
-        baseline_relative_path="Incoming/01 Original.flac",
-        desired_document=DesiredAudioDocument(
-            fields=(DesiredAudioField(name="title", action="set", value="Managed"),)
-        ),
-        pinned_profile=_planner(tmp_path, store, preferences).pin_profile(
-            management, profile
-        ),
-        metadata_snapshot_id="automatic-rollback-snapshot",
-        projection_hash="d" * 64,
-        settings_revision=settings_revision(management),
-        undo_retention_days=management.undo_retention_days,
-        artifacts=(
-            LibraryManagementImportArtifact(
-                kind="external_art",
-                destination_root_id="root-1",
-                destination_relative_path="Managed/cover.jpg",
-                content=artwork,
-                source_fingerprint=hashlib.sha256(artwork).hexdigest(),
+    pinned_profile = _planner(tmp_path, store, preferences).pin_profile(
+        management, profile
+    )
+    metadata_snapshot = await store.put_management_metadata_snapshot(
+        LibraryManagementMetadataSnapshot(
+            id="automatic-rollback-snapshot",
+            provider="musicbrainz",
+            entity_kind="release",
+            entity_id="import-release",
+            input_hash="d" * 64,
+            canonical_payload_json="{}",
+            payload_sha256=hashlib.sha256(b"{}").hexdigest(),
+            fetched_at=100.0,
+        )
+    )
+    requests = tuple(
+        msgspec.structs.replace(
+            _import_file(
+                audio,
+                source,
+                ordinal=ordinal,
+                relative_path=f"Managed/0{ordinal + 1} Rollback.flac",
             ),
-        ),
+            authoritative_mapping=True,
+            recording_mbid=f"recording-{ordinal + 1}",
+            release_track_mbid=f"release-track-{ordinal + 1}",
+            medium_position=1,
+            release_track_position=ordinal + 1,
+            baseline_relative_path=f"Incoming/0{ordinal + 1} Original.flac",
+            desired_document=DesiredAudioDocument(
+                fields=(
+                    DesiredAudioField(
+                        name="title", action="set", value=f"Managed {ordinal + 1}"
+                    ),
+                )
+            ),
+            pinned_profile=pinned_profile,
+            metadata_snapshot_id=metadata_snapshot.id,
+            projection_hash="d" * 64,
+            settings_revision=settings_revision(management),
+            undo_retention_days=management.undo_retention_days,
+            artifacts=(
+                LibraryManagementImportArtifact(
+                    kind="external_art",
+                    destination_root_id="root-1",
+                    destination_relative_path="Managed/cover.jpg",
+                    content=artwork,
+                    source_fingerprint=hashlib.sha256(artwork).hexdigest(),
+                ),
+            )
+            if ordinal == 0
+            else (),
+        )
+        for ordinal, source in enumerate(sources)
     )
     bundle = LibraryManagementImportBundle(
         idempotency_key="acquisition:automatic-rollback",
         origin="acquisition",
         policy_revision=policy_revision,
-        files=(request,),
+        files=requests,
     )
 
     with pytest.raises(OSError, match="catalog failure"):
@@ -1302,12 +1477,26 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
         )
     journals = await store.list_library_management_import_journals(bundle_id)
     assert references == 0
-    assert incoming.is_file()
-    assert not (root / request.destination_relative_path).exists()
+    assert all(source.is_file() for source in sources)
+    assert not any(
+        (root / request.destination_relative_path).exists() for request in requests
+    )
     assert not (root / "Managed/cover.jpg").exists()
-    assert journals[0].baseline_blob_sha256 is None
-    assert journals[0].baseline_ancillary_snapshot_json == "[]"
+    assert len(journals) == 2
+    assert all(journal.baseline_blob_sha256 is None for journal in journals)
+    assert all(journal.baseline_ancillary_snapshot_json == "[]" for journal in journals)
     assert not list(root.rglob(".droppedneedle-management-*"))
+
+    published = await service.publish_import_bundle(bundle)
+    repeated = await service.publish_import_bundle(bundle)
+
+    assert len(published.local_track_ids) == 2
+    assert all(
+        (root / request.destination_relative_path).is_file() for request in requests
+    )
+    assert (root / "Managed/cover.jpg").read_bytes() == artwork
+    assert all(not source.exists() for source in sources)
+    assert repeated.repeated is True
 
 
 @pytest.mark.asyncio

@@ -41,9 +41,12 @@ from models.library_management import (
     FORMAT_UNSUPPORTED,
     METADATA_UNAVAILABLE,
     PROFILE_CHANGED,
+    BUNDLE_TOO_LARGE,
     INSUFFICIENT_SPACE,
     ROOT_READ_ONLY,
     ROOT_UNAVAILABLE,
+    SIDECAR_COLLISION,
+    SYMLINK_UNSUPPORTED,
     TRACK_NOT_MAPPED,
     LibraryManagementImportArtifact,
     LibraryManagementImportBundle,
@@ -270,8 +273,10 @@ class AutomaticImportManagementService:
                         current=current, desired=desired, profile=profile
                     )
                     if plan.blockers:
-                        raise ValidationError(
-                            "An automatic import file does not pass its format capability gate."
+                        raise AutomaticManagementHoldError(
+                            FIELD_UNSUPPORTED_BY_FORMAT,
+                            "The file format cannot safely apply this profile: "
+                            + "; ".join(plan.blockers),
                         )
                     destination_relative = self._destination_relative(
                         request,
@@ -350,7 +355,13 @@ class AutomaticImportManagementService:
             raise AutomaticManagementHoldError(
                 FORMAT_UNSUPPORTED, str(error)
             ) from error
-        except (ConfigurationError, ScriptValidationError, ValidationError) as error:
+        except (ConfigurationError, ScriptValidationError) as error:
+            raise AutomaticManagementHoldError(
+                PROFILE_CHANGED,
+                "The active Library Management profile needs review before this import "
+                f"can continue: {error}",
+            ) from error
+        except ValidationError as error:
             raise AutomaticManagementHoldError(
                 FIELD_UNSUPPORTED_BY_FORMAT, str(error)
             ) from error
@@ -635,7 +646,10 @@ class AutomaticImportManagementService:
                     artwork_format=output.format,
                 )
             if rendered.collision_key in collision_keys:
-                raise ValidationError("Automatic external artwork paths collide.")
+                raise AutomaticManagementHoldError(
+                    SIDECAR_COLLISION,
+                    "Two external artwork outputs resolve to the same destination.",
+                )
             collision_keys.add(rendered.collision_key)
             artifacts.append(
                 LibraryManagementImportArtifact(
@@ -723,8 +737,9 @@ class AutomaticImportManagementService:
                 selected[key] = artifact
                 continue
             if existing.source_fingerprint != artifact.source_fingerprint:
-                raise ValidationError(
-                    "Automatic artwork and sidecar destinations collide."
+                raise AutomaticManagementHoldError(
+                    SIDECAR_COLLISION,
+                    "Artwork and sidecar files resolve to the same destination.",
                 )
             if artifact.kind == "external_art":
                 selected[key] = artifact
@@ -755,7 +770,11 @@ class AutomaticImportManagementService:
             for name in sorted(files):
                 examined += 1
                 if examined > _MAX_SIDECAR_ENTRIES:
-                    raise ValidationError("Automatic sidecar enumeration is too large.")
+                    raise AutomaticManagementHoldError(
+                        BUNDLE_TOO_LARGE,
+                        "The acquisition folder contains too many sidecar entries to "
+                        "organize automatically.",
+                    )
                 path = current / name
                 relative = path.relative_to(source_directory).as_posix()
                 folded = relative.casefold()
@@ -769,8 +788,9 @@ class AutomaticImportManagementService:
                 if path.suffix.casefold() in AUDIO_EXTENSION_FORMATS:
                     continue
                 if path.is_symlink() or not path.is_file():
-                    raise ValidationError(
-                        "Automatic sidecars cannot be symbolic links."
+                    raise AutomaticManagementHoldError(
+                        SYMLINK_UNSUPPORTED,
+                        "Automatic sidecars cannot be symbolic links.",
                     )
                 content_hash = AutomaticImportManagementService._hash_file(path)
                 artifacts.append(

@@ -240,6 +240,126 @@ async def test_planning_progress_does_not_invalidate_operation_controls(
 
 
 @pytest.mark.asyncio
+async def test_expired_preview_lease_stops_immediately_but_apply_stays_cooperative(
+    store: NativeLibraryStore,
+) -> None:
+    preview_id = "stalled-preview"
+    await store.create_library_management_job(
+        OperationJob(
+            id=preview_id,
+            kind="library_management",
+            input_catalog_revision=0,
+            created_at=10,
+        ),
+        _job_snapshot(preview_id),
+    )
+    preview = await store.claim_operation_job(
+        "worker", now=10, lease_seconds=60, kind="library_management"
+    )
+    assert preview is not None
+
+    stopped = await store.request_operation_control(
+        preview_id,
+        control="stop",
+        expected_row_revision=int(preview["row_revision"]),
+        now=71,
+    )
+
+    assert stopped["state"] == "stopped"
+    assert stopped["control_request"] == "none"
+    assert stopped["terminal_code"] == "STOPPED_EXPIRED_LEASE"
+    assert stopped["lease_owner"] is None
+
+    apply_id = "stalled-apply"
+    await store.create_library_management_job(
+        OperationJob(
+            id=apply_id,
+            kind="library_management",
+            input_catalog_revision=0,
+            created_at=80,
+        ),
+        msgspec.structs.replace(
+            _job_snapshot(apply_id), mode="apply", phase="applying"
+        ),
+    )
+    applying = await store.claim_operation_job(
+        "worker", now=80, lease_seconds=60, kind="library_management"
+    )
+    assert applying is not None
+
+    requested = await store.request_operation_control(
+        apply_id,
+        control="stop",
+        expected_row_revision=int(applying["row_revision"]),
+        now=141,
+    )
+
+    assert requested["state"] == "running"
+    assert requested["control_request"] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_recovery_keeps_one_equivalent_activation_preview(
+    store: NativeLibraryStore,
+    db_path: Path,
+) -> None:
+    selection = json.dumps(
+        {
+            "kind": "roots",
+            "ids": ["root-1"],
+            "root_scopes": [{"root_id": "root-1", "relative_prefix": None}],
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    for index, state in enumerate(("queued", "running", "queued"), start=1):
+        job_id = f"activation-{index}"
+        await store.create_library_management_job(
+            OperationJob(
+                id=job_id,
+                kind="library_management",
+                requested_by_user_id="admin",
+                input_catalog_revision=0,
+                idempotency_key=f"activation-key-{index}",
+                created_at=float(index),
+            ),
+            msgspec.structs.replace(
+                _job_snapshot(job_id),
+                selection_json=selection,
+                proposed_settings_revision="proposed-1",
+                preview_token_hash=f"token-{index}",
+                preview_expires_at=100,
+                created_at=float(index),
+                updated_at=float(index),
+            ),
+        )
+        if state == "running":
+            with sqlite3.connect(db_path) as connection:
+                connection.execute(
+                    "UPDATE library_operation_jobs SET state='running', lease_owner='worker', "
+                    "lease_expires_at=70, heartbeat_at=10, started_at=10 WHERE id=?",
+                    (job_id,),
+                )
+
+    changed = await store.recover_expired_operation_leases(now=20)
+    jobs = {
+        job["id"]: job
+        for job in await store.list_operation_jobs(kind="library_management")
+    }
+
+    assert changed == 2
+    assert jobs["activation-1"]["state"] == "stopped"
+    assert jobs["activation-2"]["state"] == "running"
+    assert jobs["activation-3"]["state"] == "stopped"
+    assert jobs["activation-1"]["terminal_code"] == "SUPERSEDED_ACTIVATION_PREVIEW"
+    assert jobs["activation-3"]["terminal_code"] == "SUPERSEDED_ACTIVATION_PREVIEW"
+    history = await store.list_library_management_operations(limit=10)
+    assert all(
+        row["management_proposed_settings_revision"] == "proposed-1" for row in history
+    )
+
+
+@pytest.mark.asyncio
 async def test_management_history_filters_source_or_destination_root(
     store: NativeLibraryStore,
 ) -> None:

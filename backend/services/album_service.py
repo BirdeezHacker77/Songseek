@@ -517,6 +517,60 @@ class AlbumService:
             logger.error(f"Failed to get album tracks for {release_group_id}: {e}")
             raise ResourceNotFoundError(f"Failed to get album tracks: {e}")
 
+    async def get_exact_edition_tracks_info(
+        self,
+        release_group_id: str,
+        release_mbid: str,
+        priority: RequestPriority = RequestPriority.USER_INITIATED,
+    ) -> AlbumTracksInfo:
+        """Fetch one explicit edition without falling back to another release.
+
+        Acquisition identity is unsafe if a selected release silently drifts when
+        MusicBrainz cannot return it. This internal lookup therefore returns only the
+        requested release's tracklist or fails as a unit.
+        """
+
+        release_group_id = validate_mbid(
+            await self._provider_album_id(release_group_id), "album"
+        )
+        release_mbid = validate_mbid(release_mbid, "release")
+        release_data = await self._mb_repo.get_release_by_id(
+            release_mbid,
+            includes=["recordings", "labels"],
+            priority=priority,
+        )
+        if not release_data:
+            raise ResourceNotFoundError("The selected exact edition is unavailable")
+
+        linked_group = release_data.get("release-group") or release_data.get(
+            "release_group"
+        )
+        linked_group_id = (
+            str(linked_group.get("id"))
+            if isinstance(linked_group, dict) and linked_group.get("id")
+            else None
+        )
+        if (
+            linked_group_id
+            and linked_group_id.casefold() != release_group_id.casefold()
+        ):
+            raise ResourceNotFoundError(
+                "The selected exact edition does not belong to this album"
+            )
+
+        tracks, total_length = extract_tracks(release_data)
+        if not tracks:
+            raise ResourceNotFoundError("The selected exact edition has no tracklist")
+        return AlbumTracksInfo(
+            tracks=tracks,
+            total_tracks=len(tracks),
+            total_length=total_length if total_length > 0 else None,
+            label=extract_label(release_data),
+            barcode=release_data.get("barcode"),
+            country=release_data.get("country"),
+            selected_release_mbid=release_mbid,
+        )
+
     async def annotate_album_coverage(self, release_group_id: str, status):  # noqa: ANN001
         """Fill a ``LibraryAlbumStatus``'s coverage fields (P5, 2026-07-05 incident):
         which held files actually COVER the release's expected tracks, and which are

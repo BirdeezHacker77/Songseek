@@ -2544,6 +2544,7 @@ def _build_download_orchestrator(
         manual_threshold=policy.preflight_score_manual_min,
         stall_timeout_minutes=policy.download_stall_timeout_minutes,
         queued_timeout_minutes=policy.download_queued_timeout_minutes,
+        preferred_quality_wait_minutes=policy.preferred_quality_wait_minutes,
         max_failover_attempts=policy.max_failover_attempts,
         max_concurrent_downloads=policy.max_concurrent_downloads,
         auto_retry_enabled=policy.auto_retry_enabled,

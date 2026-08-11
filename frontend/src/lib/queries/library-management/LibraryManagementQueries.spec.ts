@@ -105,6 +105,44 @@ describe('Library Management query endpoints', () => {
 		expect(mockGet).toHaveBeenCalledWith('/api/v1/settings/library-management', { signal });
 	});
 
+	it('polls an activation preview until it is ready or terminal', () => {
+		const options = getLibraryManagementActivationPreviewQuery(
+			() => 'admin-a',
+			() => 'activation-1'
+		) as unknown as {
+			refetchInterval: (query: {
+				state: {
+					data?: {
+						state: string;
+						ready_for_confirmation: boolean;
+						stale: boolean;
+						expired: boolean;
+					};
+				};
+			}) => number | false;
+		};
+		const preview = {
+			state: 'planning',
+			ready_for_confirmation: false,
+			stale: false,
+			expired: false
+		};
+
+		expect(options.refetchInterval({ state: {} })).toBe(2000);
+		expect(options.refetchInterval({ state: { data: preview } })).toBe(2000);
+		expect(
+			options.refetchInterval({
+				state: { data: { ...preview, state: 'ready', ready_for_confirmation: true } }
+			})
+		).toBe(false);
+		expect(options.refetchInterval({ state: { data: { ...preview, state: 'failed' } } })).toBe(
+			false
+		);
+		expect(options.refetchInterval({ state: { data: { ...preview, state: 'stopped' } } })).toBe(
+			false
+		);
+	});
+
 	it('uses every detail endpoint through encoded API builders', async () => {
 		const signal = new AbortController().signal;
 		const queries = [

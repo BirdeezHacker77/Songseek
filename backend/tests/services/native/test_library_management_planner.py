@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from io import BytesIO
 import json
@@ -23,6 +24,7 @@ from core.exceptions import ExternalServiceError, StaleRevisionError
 from infrastructure.audio.artwork_processor import ArtworkProcessor
 from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
+from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from repositories.musicbrainz_management_models import MbManagementRelease
 from models.library_management_artwork import ArtworkCandidate
@@ -49,6 +51,7 @@ from services.native.effective_metadata_projection_service import (
 from services.native.genre_normalizer import GenreNormalizer
 from services.native.genre_projection_service import GenreProjectionService
 from services.native.library_management_planner import LibraryManagementPlanner
+import services.native.library_management_planner as planner_module
 from services.native.library_management_publisher import LibraryManagementPublisher
 from services.native.library_management_worker import LibraryManagementWorker
 from services.native.library_management_undo_service import LibraryManagementUndoService
@@ -98,7 +101,9 @@ def _seed_store(database: Path, audio_path: Path) -> NativeLibraryStore:
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE auth_users (id TEXT PRIMARY KEY)")
         connection.execute("INSERT INTO auth_users(id) VALUES ('admin')")
-    store = NativeLibraryStore(database, threading.Lock())
+    write_lock = threading.Lock()
+    DownloadStore(database, write_lock)
+    store = NativeLibraryStore(database, write_lock)
     metadata = audio_path.stat()
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -866,6 +871,122 @@ async def test_preview_idempotency_binds_unsaved_activation_settings(
 
 
 @pytest.mark.asyncio
+async def test_equivalent_activation_previews_reuse_the_active_durable_job(
+    tmp_path: Path,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        current_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+    proposed = preferences.get_library_management_settings_raw()
+    proposed.preview_retention_hours += 1
+    profile = next(
+        value for value in proposed.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    first = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=profile.id,
+        expected_settings_revision=current_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="activation-first-click",
+        settings_snapshot=proposed,
+        effective_profile=profile,
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=20, lease_seconds=60, kind="library_management"
+    )
+
+    resumed = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=profile.id,
+        expected_settings_revision=current_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="another-admin",
+        idempotency_key="activation-after-reload",
+        settings_snapshot=proposed,
+        effective_profile=profile,
+    )
+    jobs = await store.list_operation_jobs(kind="library_management")
+
+    assert claimed is not None and claimed["id"] == first.job_id
+    assert resumed.existing is True
+    assert resumed.job_id == first.job_id
+    assert resumed.preview_token == first.preview_token
+    assert [job["id"] for job in jobs] == [first.job_id]
+
+
+@pytest.mark.asyncio
+async def test_changed_activation_supersedes_running_preview_before_queueing_new_one(
+    tmp_path: Path,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        current_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+    proposed = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in proposed.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    first = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=profile.id,
+        expected_settings_revision=current_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="activation-old-proposal",
+        settings_snapshot=proposed,
+        effective_profile=profile,
+    )
+    await store.claim_operation_job(
+        "worker-1", now=20, lease_seconds=60, kind="library_management"
+    )
+    changed_proposal = msgspec.convert(
+        msgspec.to_builtins(proposed), type=type(proposed)
+    )
+    changed_proposal.undo_retention_days += 1
+    changed_profile = next(
+        value
+        for value in changed_proposal.profiles
+        if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+
+    replacement = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=changed_profile.id,
+        expected_settings_revision=current_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="activation-new-proposal",
+        settings_snapshot=changed_proposal,
+        effective_profile=changed_profile,
+    )
+    old_job = await store.get_operation_job(first.job_id)
+    new_job = await store.get_operation_job(replacement.job_id)
+
+    assert replacement.job_id != first.job_id
+    assert old_job is not None
+    assert old_job["state"] == "running"
+    assert old_job["control_request"] == "stop"
+    assert old_job["terminal_code"] == "SUPERSEDED_ACTIVATION_PREVIEW"
+    assert new_job is not None and new_job["state"] == "queued"
+
+    stopped = await store.checkpoint_operation_control(first.job_id, "worker-1", now=21)
+    assert stopped is not None and stopped["state"] == "stopped"
+    assert stopped["terminal_code"] == "SUPERSEDED_ACTIVATION_PREVIEW"
+
+
+@pytest.mark.asyncio
 async def test_management_preview_dispatches_through_supervisor_and_defers_for_scan(
     tmp_path: Path,
 ) -> None:
@@ -1011,6 +1132,95 @@ async def test_preview_blocks_unsafe_sources(
         "catalog_track_number": 2,
         "catalog_track_title": "Management Track",
     }
+
+
+@pytest.mark.asyncio
+async def test_preview_times_out_one_stuck_source_keeps_its_lease_and_retries_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (
+        root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    second_source = root / "source-2.flac"
+    shutil.copy2(FIXTURES / "library" / "management_full.flac", second_source)
+    _add_second_track(
+        tmp_path / "library.db",
+        second_source,
+        release_track_mbid="44444444-4444-4444-8444-444444444444",
+        recording_mbid="55555555-5555-4555-8555-555555555555",
+    )
+    planner = _planner(tmp_path, store, preferences)
+    original_inspect = planner._inspect_source
+    original_heartbeat = store.heartbeat_operation_job
+    release_inspection = threading.Event()
+    inspection_started = threading.Event()
+    inspection_calls = 0
+
+    def stuck_inspection(subject, roots):  # noqa: ANN001
+        nonlocal inspection_calls
+        inspection_calls += 1
+        inspection_started.set()
+        release_inspection.wait(timeout=2)
+        return original_inspect(subject, roots)
+
+    heartbeat = AsyncMock(side_effect=original_heartbeat)
+    monkeypatch.setattr(planner, "_inspect_source", stuck_inspection)
+    monkeypatch.setattr(store, "heartbeat_operation_job", heartbeat)
+    monkeypatch.setattr(planner_module, "SOURCE_INSPECTION_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(planner_module, "PLANNING_LEASE_RENEWAL_SECONDS", 0.005)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="albums", ids=("album-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="stuck-source-preview",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    try:
+        snapshot = await planner.run_claimed_preview(claimed, "worker-1")
+    finally:
+        release_inspection.set()
+        await asyncio.sleep(0)
+
+    plan = await store.list_library_management_plan_items(handle.job_id)
+    operation = await store.get_operation_job(handle.job_id)
+    assert inspection_started.is_set()
+    assert heartbeat.await_count >= 2
+    assert snapshot.phase == "ready"
+    assert operation is not None and operation["state"] == "ready"
+    assert len(plan) == 2
+    assert all(item.eligibility == "blocked" for item in plan)
+    assert all(item.reason_code == "FILE_UNREADABLE" for item in plan)
+
+    repeated = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="albums", ids=("album-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="stuck-source-preview-repeat",
+    )
+    repeated_claim = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert repeated_claim is not None
+    repeated_snapshot = await planner.run_claimed_preview(repeated_claim, "worker-1")
+    repeated_plan = await store.list_library_management_plan_items(repeated.job_id)
+
+    assert repeated_snapshot.phase == "ready"
+    assert inspection_calls == 3
+    assert len(repeated_plan) == 2
+    assert all(item.reason_code != "FILE_UNREADABLE" for item in repeated_plan)
 
 
 @pytest.mark.asyncio

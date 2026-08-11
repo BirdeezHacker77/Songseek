@@ -96,7 +96,19 @@ export const getLibraryManagementActivationPreviewQuery = (
 		const jobId = getJobId();
 		return {
 			enabled: Boolean(jobId),
-			refetchInterval: jobId ? 2000 : false,
+			refetchInterval: (query: { state: { data?: LibraryManagementPreviewDetailResponse } }) => {
+				if (!jobId) return false;
+				const preview = query.state.data;
+				if (!preview) return 2000;
+				if (
+					preview.ready_for_confirmation ||
+					preview.stale ||
+					preview.expired ||
+					['failed', 'cancelled', 'discarded', 'stopped'].includes(preview.state)
+				)
+					return false;
+				return 2000;
+			},
 			queryKey: LibraryManagementQueryKeyFactory.activationPreview(getUserId(), jobId ?? ''),
 			queryFn: ({ signal }) =>
 				api.global.get<LibraryManagementPreviewDetailResponse>(

@@ -211,4 +211,41 @@ describe('LibraryManagementControlRoom', () => {
 			request: { expected_operation_row_revision: 7 }
 		});
 	});
+
+	it('does not present an activation dry run as an awaiting manual preview', async () => {
+		h.operations = {
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								operation: {
+									id: 'activation-preview-1',
+									state: 'ready',
+									row_revision: 7,
+									updated_at: 1_800_000_000,
+									failed_count: 0
+								},
+								profile_name: 'Picard-style Organizer',
+								mode: 'preview',
+								phase: 'ready',
+								activation_preview: true
+							}
+						]
+					}
+				]
+			},
+			isLoading: false,
+			isError: false
+		};
+		render(LibraryManagementControlRoom);
+
+		await expect.element(page.getByText('Ready previews')).toBeVisible();
+		await expect
+			.element(page.getByRole('heading', { name: 'Ready previews' }))
+			.not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('button', { name: /Discard preview/ }))
+			.not.toBeInTheDocument();
+	});
 });

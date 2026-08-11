@@ -99,7 +99,12 @@ def _preferences(tmp_path: Path) -> tuple[PreferencesService, str]:
     return preferences, "root-1"
 
 
-def _operation(*, state: str = "ready") -> dict:
+def _operation(
+    *,
+    state: str = "ready",
+    heartbeat_at: float | None = None,
+    lease_expires_at: float | None = None,
+) -> dict:
     return {
         "id": "job-1",
         "kind": "library_management",
@@ -113,6 +118,8 @@ def _operation(*, state: str = "ready") -> dict:
         "failed_count": 0,
         "skipped_count": 0,
         "control_request": "none",
+        "heartbeat_at": heartbeat_at,
+        "lease_expires_at": lease_expires_at,
         "created_at": 90.0,
         "updated_at": 100.0,
     }
@@ -190,6 +197,27 @@ def _service_fixture(
         clock=lambda: clock,
     )
     return service, store, preferences, snapshot
+
+
+def test_history_marks_activation_dry_runs(tmp_path: Path) -> None:
+    service, _store, _preferences_service, snapshot = _service_fixture(
+        tmp_path, proposed_settings_revision="proposed-1"
+    )
+    row = {
+        **_operation(),
+        "management_mode": snapshot.mode,
+        "management_origin": snapshot.origin,
+        "management_phase": snapshot.phase,
+        "management_selection_json": snapshot.selection_json,
+        "management_profile_revision": snapshot.profile_revision,
+        "management_profile_snapshot_json": snapshot.profile_snapshot_json,
+        "management_target_root_id": snapshot.target_root_id,
+        "management_proposed_settings_revision": snapshot.proposed_settings_revision,
+    }
+
+    item = service._history_item(row)
+
+    assert item.activation_preview is True
 
 
 @pytest.mark.asyncio
@@ -438,6 +466,8 @@ async def test_detail_reports_expiry_and_current_staleness(tmp_path: Path) -> No
     assert detail.undo_expired_count == 0
     assert detail.undo_expires_at == 300.0
     assert detail.baseline_available_count == 2
+    assert detail.worker_stalled is False
+    assert detail.worker_heartbeat_at is None
     store.get_management_operation_recovery_availability.assert_awaited_with(
         "job-1", now=100.0
     )
@@ -466,6 +496,25 @@ async def test_detail_reports_expiry_and_current_staleness(tmp_path: Path) -> No
     expired = await service.detail("job-1")
     assert expired.expired is True
     assert expired.ready_for_confirmation is False
+
+
+@pytest.mark.asyncio
+async def test_detail_marks_an_expired_planning_lease_as_stalled(
+    tmp_path: Path,
+) -> None:
+    service, store, _preferences, snapshot = _service_fixture(tmp_path)
+    snapshot.phase = "planning"
+    store.get_operation_job.return_value = _operation(
+        state="running", heartbeat_at=20.0, lease_expires_at=80.0
+    )
+
+    detail = await service.detail("job-1")
+
+    assert detail.state == "running"
+    assert detail.worker_heartbeat_at == 20.0
+    assert detail.worker_lease_expires_at == 80.0
+    assert detail.worker_stalled is True
+    assert detail.ready_for_confirmation is False
 
 
 @pytest.mark.asyncio

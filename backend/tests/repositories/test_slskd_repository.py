@@ -349,6 +349,40 @@ async def test_get_status_correlates_by_filename(mock_repo):
     assert status.status == "completed"
 
 
+def test_status_aggregates_live_queue_position_range():
+    repo = SlskdRepository(client=None, url="", api_key="", downloads_mount=Path("/dl"))
+    handle = _h("alice", ["dir/1.flac", "dir/2.flac", "dir/3.flac"])
+    transfers = [
+        SlskdTransfer(
+            id="1",
+            username="alice",
+            filename="dir/1.flac",
+            state="Queued",
+            place_in_queue=100,
+        ),
+        SlskdTransfer(
+            id="2",
+            username="alice",
+            filename="dir/2.flac",
+            state="Queued",
+            place_in_queue=91,
+        ),
+        SlskdTransfer(
+            id="3",
+            username="alice",
+            filename="dir/3.flac",
+            state="Queued",
+            place_in_queue=None,
+        ),
+    ]
+
+    status = repo._aggregate_status(handle, transfers)
+
+    assert status.status == "queued"
+    assert status.queue_position_start == 91
+    assert status.queue_position_end == 100
+
+
 @pytest.mark.asyncio
 async def test_discard_client_artifacts_removes_matching_transfers(mock_repo):
     ref = await mock_repo.enqueue(

@@ -236,6 +236,9 @@ class LibraryManagementPreviewDetailResponse(AppStruct):
     operation_row_revision: int = 1
     operation_event_revision: int = 0
     terminal_code: str | None = None
+    worker_heartbeat_at: float | None = None
+    worker_lease_expires_at: float | None = None
+    worker_stalled: bool = False
     expected_work_count: int = 0
     completed_count: int = 0
     succeeded_count: int = 0
@@ -299,6 +302,7 @@ class LibraryManagementOperationHistoryItemResponse(AppStruct):
     profile_name: str
     profile_revision: str
     target_root_id: str | None = None
+    activation_preview: bool = False
     selection: dict = msgspec.field(default_factory=dict)
 
 

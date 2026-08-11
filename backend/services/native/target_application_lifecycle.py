@@ -247,6 +247,7 @@ async def start_target_operational_runtime(
         start_download_auto_retry_task,
         start_download_resume_task,
         start_download_watchdog_task,
+        start_management_hold_auto_retry_task,
         start_events_watcher_task,
         start_orphan_cover_demotion_task,
         start_personal_mix_refresh_task,
@@ -272,6 +273,7 @@ async def start_target_operational_runtime(
     start_download_resume_task(get_target_download_orchestrator())
     start_download_watchdog_task(get_target_download_orchestrator)
     start_download_auto_retry_task(get_target_download_orchestrator)
+    start_management_hold_auto_retry_task(get_target_download_service)
 
     try:
         await get_target_drop_import_service().sweep_stale()

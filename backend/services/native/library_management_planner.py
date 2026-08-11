@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import secrets
@@ -125,7 +128,21 @@ from services.preferences_service import PreferencesService
 MAX_EXPLICIT_SELECTION_IDS = 10_000
 MAX_SIDECAR_ENTRIES = 10_000
 DISK_SAFETY_BYTES = 64 * 1024 * 1024
+SOURCE_INSPECTION_TIMEOUT_SECONDS = 90.0
+MAX_TIMED_OUT_INSPECTIONS_PER_ROOT = 3
+PLANNING_LEASE_SECONDS = 60.0
+PLANNING_LEASE_RENEWAL_SECONDS = 20.0
 _PREVIEW_NAMESPACE = uuid.UUID("8e6fd30e-412f-50c0-9e82-3019dc602f70")
+
+logger = logging.getLogger(__name__)
+
+# Audio metadata reads can block indefinitely on a broken network mount. A dedicated
+# process-lifetime pool keeps those abandoned calls away from asyncio's shared executor
+# and caps the total resource debt across repeated previews.
+_SOURCE_INSPECTION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_TIMED_OUT_INSPECTIONS_PER_ROOT,
+    thread_name_prefix="management-source-inspection",
+)
 
 
 def _json(value: object) -> str:
@@ -301,16 +318,30 @@ class LibraryManagementPlanner:
                 created_at=now,
             ),
             snapshot,
+            activation_root_id=(
+                selection.ids[0]
+                if settings_snapshot is not None
+                and selection.kind == "roots"
+                and len(selection.ids) == 1
+                else None
+            ),
         )
         if not created:
             existing = await self._store.get_library_management_job_snapshot(
                 existing_id
             )
             operation = await self._store.get_operation_job(existing_id)
+            existing_idempotency_key = (
+                str(operation["idempotency_key"])
+                if operation is not None and operation["idempotency_key"] is not None
+                else None
+            )
+            existing_token = _preview_token(existing_id, existing_idempotency_key)
             request_matches = (
                 existing is not None
                 and operation is not None
-                and existing.preview_token_hash == token_hash
+                and existing_idempotency_key is not None
+                and existing.preview_token_hash == _sha256_text(existing_token)
                 and existing.mode == snapshot.mode
                 and existing.origin == snapshot.origin
                 and existing.selection_json == snapshot.selection_json
@@ -323,7 +354,10 @@ class LibraryManagementPlanner:
                 and existing.profile_snapshot_json == snapshot.profile_snapshot_json
                 and existing.target_root_id == snapshot.target_root_id
                 and existing.intent_json == snapshot.intent_json
-                and operation["requested_by_user_id"] == actor_user_id
+                and (
+                    settings_snapshot is not None
+                    or operation["requested_by_user_id"] == actor_user_id
+                )
             )
             if not request_matches:
                 raise StaleRevisionError(
@@ -332,7 +366,7 @@ class LibraryManagementPlanner:
             assert existing is not None
             return LibraryManagementPreviewHandle(
                 job_id=existing_id,
-                preview_token=token,
+                preview_token=existing_token,
                 created_at=existing.preview_created_at or existing.created_at,
                 expires_at=existing.preview_expires_at or existing.created_at,
                 existing=True,
@@ -491,6 +525,8 @@ class LibraryManagementPlanner:
         )
         roots = await self._current_roots(snapshot)
         snapshot_revision = snapshot.row_revision
+        timed_out_sources: set[tuple[str, str, int, int]] = set()
+        timed_out_inspections_by_root: dict[str, int] = {}
         while True:
             if self._workload_gate is not None and self._workload_gate.scan_active:
                 await self._store.defer_library_management_preview_for_scan(
@@ -531,22 +567,16 @@ class LibraryManagementPlanner:
             for subject in page.subjects:
                 groups.setdefault(subject.local_album_id, []).append(subject)
             for subjects in groups.values():
-                renewed = await self._store.heartbeat_operation_job(
+                planned, pinned_ids = await self._plan_album_page_with_lease(
                     job_id,
                     worker_id,
-                    now=self._clock(),
-                    lease_seconds=60.0,
-                )
-                if not renewed:
-                    raise StaleRevisionError(
-                        "The management preview lease changed during planning."
-                    )
-                planned, pinned_ids = await self._plan_album_page(
                     snapshot,
                     pinned,
                     tuple(subjects),
                     roots,
                     tag_edit_intent=tag_edit_intent,
+                    timed_out_sources=timed_out_sources,
+                    timed_out_inspections_by_root=timed_out_inspections_by_root,
                 )
                 items.extend(planned)
                 metadata_snapshot_ids.extend(pinned_ids)
@@ -554,7 +584,7 @@ class LibraryManagementPlanner:
                     job_id,
                     worker_id,
                     now=self._clock(),
-                    lease_seconds=60.0,
+                    lease_seconds=PLANNING_LEASE_SECONDS,
                 )
                 if not renewed:
                     raise StaleRevisionError(
@@ -579,6 +609,56 @@ class LibraryManagementPlanner:
                     expected_snapshot_revision=snapshot_revision,
                     roots=roots,
                 )
+
+    async def _plan_album_page_with_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        snapshot: LibraryManagementJobSnapshot,
+        pinned: PinnedLibraryManagementProfile,
+        subjects: tuple[LibraryManagementSelectionSubject, ...],
+        roots: dict[str, object],
+        *,
+        tag_edit_intent: LibraryManagementTagEditIntent | None = None,
+        timed_out_sources: set[tuple[str, str, int, int]],
+        timed_out_inspections_by_root: dict[str, int],
+    ) -> tuple[list[LibraryManagementPlanItem], list[str]]:
+        planning = asyncio.create_task(
+            self._plan_album_page(
+                snapshot,
+                pinned,
+                subjects,
+                roots,
+                tag_edit_intent=tag_edit_intent,
+                timed_out_sources=timed_out_sources,
+                timed_out_inspections_by_root=timed_out_inspections_by_root,
+            )
+        )
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    (planning,), timeout=PLANNING_LEASE_RENEWAL_SECONDS
+                )
+                if done:
+                    return planning.result()
+                renewed = await self._store.heartbeat_operation_job(
+                    job_id,
+                    worker_id,
+                    now=self._clock(),
+                    lease_seconds=PLANNING_LEASE_SECONDS,
+                )
+                if not renewed:
+                    planning.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await planning
+                    raise StaleRevisionError(
+                        "The management preview lease changed during planning."
+                    )
+        finally:
+            if not planning.done():
+                planning.cancel()
+                with suppress(asyncio.CancelledError):
+                    await planning
 
     async def _current_roots(
         self, snapshot: LibraryManagementJobSnapshot
@@ -612,16 +692,33 @@ class LibraryManagementPlanner:
         roots: dict[str, object],
         *,
         tag_edit_intent: LibraryManagementTagEditIntent | None = None,
+        timed_out_sources: set[tuple[str, str, int, int]],
+        timed_out_inspections_by_root: dict[str, int],
     ) -> tuple[list[LibraryManagementPlanItem], list[str]]:
         if (
             tag_edit_intent is not None
             and tag_edit_intent.local_album_id != subjects[0].local_album_id
         ):
             raise ValidationError("The tag edit selection changed before planning.")
-        inspected = [
-            await asyncio.to_thread(self._inspect_source, subject, roots)
-            for subject in subjects
-        ]
+        inspected: list[_SourceInspection] = []
+        album_inspection_timed_out = False
+        for subject in subjects:
+            if album_inspection_timed_out:
+                inspected.append(
+                    _SourceInspection(subject, None, None, "", FILE_UNREADABLE)
+                )
+                continue
+            inspected.append(
+                await self._inspect_source_bounded(
+                    subject,
+                    roots,
+                    timed_out_sources=timed_out_sources,
+                    timed_out_inspections_by_root=timed_out_inspections_by_root,
+                )
+            )
+            album_inspection_timed_out = (
+                self._source_inspection_key(subject) in timed_out_sources
+            )
         readable = [value for value in inspected if value.document is not None]
         if not readable:
             return (
@@ -809,6 +906,55 @@ class LibraryManagementPlanner:
                 break
             final_artwork_types = updated_artwork_types
         return planned, [canonical.metadata_snapshot_id]
+
+    async def _inspect_source_bounded(
+        self,
+        subject: LibraryManagementSelectionSubject,
+        roots: dict[str, object],
+        *,
+        timed_out_sources: set[tuple[str, str, int, int]],
+        timed_out_inspections_by_root: dict[str, int],
+    ) -> _SourceInspection:
+        source_key = self._source_inspection_key(subject)
+        if (
+            source_key in timed_out_sources
+            or timed_out_inspections_by_root.get(subject.root_id, 0)
+            >= MAX_TIMED_OUT_INSPECTIONS_PER_ROOT
+        ):
+            return _SourceInspection(subject, None, None, "", FILE_UNREADABLE)
+        try:
+            loop = asyncio.get_running_loop()
+            return await asyncio.wait_for(
+                loop.run_in_executor(
+                    _SOURCE_INSPECTION_EXECUTOR,
+                    self._inspect_source,
+                    subject,
+                    roots,
+                ),
+                timeout=SOURCE_INSPECTION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            timed_out_sources.add(source_key)
+            timed_out_inspections_by_root[subject.root_id] = (
+                timed_out_inspections_by_root.get(subject.root_id, 0) + 1
+            )
+            logger.warning(
+                "Library Management source inspection timed out: root_id=%s track_id=%s",
+                subject.root_id,
+                subject.local_track_id,
+            )
+            return _SourceInspection(subject, None, None, "", FILE_UNREADABLE)
+
+    @staticmethod
+    def _source_inspection_key(
+        subject: LibraryManagementSelectionSubject,
+    ) -> tuple[str, str, int, int]:
+        return (
+            subject.root_id,
+            subject.relative_path,
+            subject.file_size_bytes,
+            subject.file_mtime_ns,
+        )
 
     async def _plan_track(
         self,

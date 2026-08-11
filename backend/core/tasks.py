@@ -1003,6 +1003,35 @@ def start_download_auto_retry_task(get_orchestrator) -> asyncio.Task:
     return task
 
 
+_MANAGEMENT_HOLD_AUTO_RETRY_INTERVAL = 60
+_MANAGEMENT_HOLD_AUTO_RETRY_INITIAL_DELAY = 60
+
+
+async def auto_retry_management_holds_periodically(
+    get_download_service, interval: int = _MANAGEMENT_HOLD_AUTO_RETRY_INTERVAL
+) -> None:
+    await asyncio.sleep(_MANAGEMENT_HOLD_AUTO_RETRY_INITIAL_DELAY)
+    while True:
+        try:
+            await get_download_service().retry_due_management_holds()
+        except asyncio.CancelledError:
+            break
+        except Exception as error:  # noqa: BLE001 - durable retry loop survives one sweep
+            logger.error("Organizer auto-retry sweep failed: %s", error, exc_info=True)
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            break
+
+
+def start_management_hold_auto_retry_task(get_download_service) -> asyncio.Task:
+    task = asyncio.create_task(
+        auto_retry_management_holds_periodically(get_download_service)
+    )
+    TaskRegistry.get_instance().register("management-hold-auto-retry", task)
+    return task
+
+
 _WANTED_WATCHER_INTERVAL = 900
 _WANTED_WATCHER_INITIAL_DELAY = 240
 

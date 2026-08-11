@@ -2037,6 +2037,7 @@ export interface DownloadClientConfig {
 	preflight_score_manual_min: number;
 	download_stall_timeout_minutes: number;
 	download_queued_timeout_minutes: number;
+	preferred_quality_wait_minutes: number;
 	max_failover_attempts: number;
 	max_concurrent_downloads: number;
 }
@@ -2142,6 +2143,7 @@ export interface DownloadPolicySettings {
 	preflight_score_manual_min: number;
 	download_stall_timeout_minutes: number;
 	download_queued_timeout_minutes: number;
+	preferred_quality_wait_minutes: number;
 	max_failover_attempts: number;
 	max_concurrent_downloads: number;
 	auto_retry_enabled: boolean;
@@ -2257,6 +2259,8 @@ export interface DownloadTask {
 	// Optional for backward-compat with cached/older responses.
 	source?: string;
 	release_group_mbid: string;
+	release_mbid: string | null;
+	release_track_mbid: string | null;
 	recording_mbid: string | null;
 	// Backfilled from the release group at request time; older tasks predating the
 	// backfill (or one MusicBrainz couldn't resolve) have no artist link.
@@ -2294,6 +2298,18 @@ export interface DownloadTask {
 		| 'complete'
 		| 'preserved'
 		| 'needs_attention';
+	quality_format: string | null;
+	quality_bit_depth: number | null;
+	quality_sample_rate: number | null;
+	advertised_queue_depth: number | null;
+	queue_position_start: number | null;
+	queue_position_end: number | null;
+	remote_queued: boolean;
+	preferred_quality_fallback_at: number | null;
+	attempt_number: number;
+	attempt_total: number;
+	has_next_source: boolean;
+	held_for_review: boolean;
 }
 
 export interface DownloadListResponse {
@@ -2308,6 +2324,8 @@ export interface DownloadListResponse {
 export interface HeldImport {
 	id: number;
 	release_group_mbid: string | null;
+	release_mbid: string | null;
+	release_track_mbid: string | null;
 	recording_mbid: string | null;
 	track_number: number | null;
 	disc_number: number | null;
@@ -2319,20 +2337,39 @@ export interface HeldImport {
 	file_format: string | null;
 	duration_seconds: number | null;
 	reason: string;
+	reason_detail: string | null;
 	source: string;
 	source_task_id: string | null;
 	created_at: number;
 	evidence_title: string | null;
 	evidence_artist: string | null;
 	evidence_score: number | null;
+	management_retry_count: number;
+	management_next_retry_at: number | null;
 }
 
 export interface HeldListResponse {
 	items: HeldImport[];
 }
 
+export interface DownloadSourceUpdate {
+	candidate_index: number | null;
+	source: string | null;
+	quality_format: string | null;
+	quality_bit_depth: number | null;
+	quality_sample_rate: number | null;
+	advertised_queue_depth: number | null;
+	queue_position_start: number | null;
+	queue_position_end: number | null;
+	remote_queued: boolean;
+	preferred_quality_fallback_at: number | null;
+	attempt_number: number;
+	attempt_total: number;
+	has_next_source: boolean;
+}
+
 // SSE payload on the `download:{task_id}` channel `progress` event
-export interface DownloadProgress {
+export interface DownloadProgress extends DownloadSourceUpdate {
 	bytes_downloaded: number;
 	bytes_total: number;
 	files_completed: number;
@@ -2357,6 +2394,12 @@ export interface TrackRequestResponse {
 export interface CancelDownloadResponse {
 	success: boolean;
 	status?: string;
+}
+
+export interface NextSourceResponse {
+	success: boolean;
+	status: string;
+	candidate_index: number;
 }
 
 export interface RetryDownloadResponse {

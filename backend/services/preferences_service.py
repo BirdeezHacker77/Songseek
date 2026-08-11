@@ -260,6 +260,7 @@ class PreferencesService:
                 "preflight_score_manual_min": settings.preflight_score_manual_min,
                 "download_stall_timeout_minutes": settings.download_stall_timeout_minutes,
                 "download_queued_timeout_minutes": settings.download_queued_timeout_minutes,
+                "preferred_quality_wait_minutes": settings.preferred_quality_wait_minutes,
                 "max_failover_attempts": settings.max_failover_attempts,
                 "max_concurrent_downloads": settings.max_concurrent_downloads,
             }
@@ -293,6 +294,9 @@ class PreferencesService:
                 ),
                 download_queued_timeout_minutes=dc.get(
                     "download_queued_timeout_minutes", 120
+                ),
+                preferred_quality_wait_minutes=dc.get(
+                    "preferred_quality_wait_minutes", 15
                 ),
                 max_failover_attempts=dc.get("max_failover_attempts", 3),
                 max_concurrent_downloads=dc.get("max_concurrent_downloads", 3),

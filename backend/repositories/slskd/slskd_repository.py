@@ -635,8 +635,11 @@ class SlskdRepository:
         failed = 0
         succeeded_filenames: list[str] = []
         has_active_transfer = False
+        queue_positions: list[int] = []
         for transfer in transfers:
             flags = self._state_flags(transfer.state)
+            if transfer.place_in_queue is not None and transfer.place_in_queue >= 0:
+                queue_positions.append(transfer.place_in_queue)
             if "succeeded" in flags:
                 completed += 1
                 succeeded_filenames.append(transfer.filename)
@@ -687,4 +690,6 @@ class SlskdRepository:
             succeeded_filenames=succeeded_filenames,
             has_active_transfer=has_active_transfer,
             matched_transfers=len(transfers),
+            queue_position_start=min(queue_positions) if queue_positions else None,
+            queue_position_end=max(queue_positions) if queue_positions else None,
         )

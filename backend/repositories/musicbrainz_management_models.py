@@ -63,7 +63,7 @@ class MbManagementWork(msgspec.Struct):
     id: str = ""
     title: str = ""
     type: str | None = None
-    type_id: str = msgspec.field(name="type-id", default="")
+    type_id: str | None = msgspec.field(name="type-id", default=None)
     disambiguation: str = ""
     attributes: list[str] = msgspec.field(default_factory=list)
     languages: list[str] = msgspec.field(default_factory=list)

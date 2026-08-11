@@ -54,7 +54,9 @@
 		history.find((item) => ['queued', 'running', 'paused'].includes(item.operation.state)) ?? null
 	);
 	const readyPreviews = $derived(
-		history.filter((item) => item.operation.state === 'ready').slice(0, 3)
+		history
+			.filter((item) => item.operation.state === 'ready' && !item.activation_preview)
+			.slice(0, 3)
 	);
 	const recent = $derived(history.filter((item) => item.operation.state !== 'ready').slice(0, 5));
 	const activeAssignments = $derived(
@@ -152,7 +154,7 @@
 						>{activeAssignments.length
 							? `${activeAssignments.length} active root${activeAssignments.length === 1 ? '' : 's'}`
 							: 'Off everywhere'}</strong
-					><small>Manual previews remain available while automatic management is off.</small>
+					><small>Manual previews remain available whether automation is on or off.</small>
 				</div>
 				<div class="management-control-stat">
 					<span>Ready previews</span><strong>{readyPreviews.length}</strong><small

@@ -3,11 +3,17 @@
 <img src="Images/logo_wide.png" alt="DroppedNeedle" width="400" />
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/DroppedNeedle/DroppedNeedle?label=stars&logo=github&logoColor=white)](https://github.com/DroppedNeedle/DroppedNeedle)
 [![Docker Hub](https://img.shields.io/badge/docker-hub-blue?logo=docker&logoColor=white)](https://hub.docker.com/r/droppedneedle/droppedneedle)
 [![Discord](https://img.shields.io/discord/1356702267809808404?label=discord&logo=discord&logoColor=white)](https://discord.gg/B5suDg7gu2)
+<br>
+
 [![Docs](https://img.shields.io/badge/docs-droppedneedle.com-blue)](https://www.droppedneedle.com/)
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/HabiRabbu?label=sponsors&logo=github&logoColor=white)](https://github.com/sponsors/HabiRabbu)
+<br>
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M41URGJO)
+<a href="https://github.com/sponsors/HabiRabbu"><img src="https://img.shields.io/badge/Sponsor%20this%20project-ea4aaa?style=for-the-badge&logo=github&logoColor=white" alt="Sponsor this project" style="border-radius: 6px; height: 30px" /></a>
 
 </div>
 
@@ -742,6 +748,30 @@ For questions, help, or just to chat, join the [Discord](https://discord.gg/B5su
 If you find DroppedNeedle useful, consider supporting development:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M41URGJO)
+<a href="https://github.com/sponsors/HabiRabbu"><img src="https://img.shields.io/badge/Sponsor%20this%20project-ea4aaa?style=for-the-badge&logo=github&logoColor=white" alt="Sponsor this project" style="border-radius: 6px; height: 30px" /></a>
+
+Monthly sponsorships keep development sustainable and unlock a few perks for you:
+
+| Tier | Amount | Perks |
+| --- | --- | --- |
+| Supporter | $5/month | Sponsor badge on your GitHub profile |
+| Backer | $20/month | All of the above, plus your name in the README credits and a private Discord role |
+| Patron | $50/month | All of the above, plus early access to beta builds and a vote on upcoming features |
+| Guardian | $100/month | All of the above, plus your name or logo on the website and prioritized bug reports and feature requests |
+
+Prefer to give once? One-time donations are welcome through [GitHub Sponsors](https://github.com/sponsors/HabiRabbu) or [Ko-fi](https://ko-fi.com/M4M41URGJO).
+
+---
+
+## Sponsors
+
+Thanks to everyone who supports the project - your sponsorship keeps development sustainable.
+
+<!-- Add sponsors here as they join, e.g.:
+- [@username](https://github.com/username) - Patron
+-->
+
+Become a sponsor on [GitHub Sponsors](https://github.com/sponsors/HabiRabbu) or [Ko-fi](https://ko-fi.com/M4M41URGJO).
 
 ---
 

@@ -677,6 +677,8 @@ _ADMIN_ENDPOINTS = [
         "/api/v1/library/scan-runs/run-1/stop",
         {"expected_revision": 1},
     ),
+    ("POST", "/api/v1/downloads/held/management/task-1/retry", None),
+    ("POST", "/api/v1/downloads/held/management/task-1/discard", None),
 ]
 
 _USER_ENDPOINTS = [
@@ -692,6 +694,11 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/downloads", None),
     ("GET", "/api/v1/downloads/task-1/files", None),
     ("POST", "/api/v1/downloads/task-1/cancel", None),
+    (
+        "POST",
+        "/api/v1/downloads/task-1/next-source",
+        {"expected_candidate_index": 0},
+    ),
     ("POST", "/api/v1/downloads/task-1/retry", None),
     ("GET", "/api/v1/downloads/task-1", None),
     (

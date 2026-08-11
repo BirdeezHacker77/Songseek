@@ -107,6 +107,7 @@ class DownloadTask(AppStruct):
     download_type: str = "album"
     release_group_mbid: str = ""
     release_mbid: str | None = None
+    release_track_mbid: str | None = None
     recording_mbid: str | None = None
     artist_mbid: str | None = None
     artist_name: str = ""
@@ -143,6 +144,19 @@ class DownloadTask(AppStruct):
     quality_bitrate: int | None = None
     quality_sample_rate: int | None = None
     quality_bit_depth: int | None = None
+    # Durable source-selection state. Search-time queue depth is an advertised peer
+    # signal; queue_position_* is refreshed from live slskd transfers. The preferred
+    # quality deadline is an epoch timestamp so the shared resolution-pool budget
+    # survives restarts.
+    advertised_queue_depth: int | None = None
+    queue_position_start: int | None = None
+    queue_position_end: int | None = None
+    remote_queued: bool = False
+    preferred_quality_fallback_at: float | None = None
+    quality_pool_key: str | None = None
+    attempt_number: int = 0
+    attempt_total: int = 0
+    has_next_source: bool = False
     staging_path: str | None = None
     final_path: str | None = None
     error_message: str | None = None

@@ -61,6 +61,88 @@ async def _upgrade_held_tier(library, task) -> "str | None":  # noqa: ANN001
     return None
 
 
+async def _expected_tracks_for_task(  # noqa: ANN001, ANN201
+    task, album_service, task_store=None
+):
+    """Return ``(release_mbid, exact tracks)`` for one durable task identity."""
+
+    if task.download_type == "track" or (
+        task.track_count == 1
+        and task.release_mbid
+        and task.release_track_mbid
+        and task.recording_mbid
+        and task.track_number
+    ):
+        if (
+            not task.release_mbid
+            or not task.release_track_mbid
+            or not task.recording_mbid
+            or not task.track_number
+        ):
+            return task.release_mbid, []
+        return task.release_mbid, [
+            ExpectedTrack(
+                track_number=task.track_number,
+                disc_number=task.disc_number or 1,
+                duration_seconds=task.track_duration_seconds,
+                recording_mbid=task.recording_mbid,
+                title=task.track_title,
+                release_track_mbid=task.release_track_mbid,
+            )
+        ]
+    if album_service is None or not task.release_group_mbid:
+        return task.release_mbid, []
+    try:
+        if task.release_mbid:
+            info = await album_service.get_exact_edition_tracks_info(
+                task.release_group_mbid,
+                task.release_mbid,
+            )
+        else:
+            # Upgrade compatibility for a queued pre-identity task: resolve once at
+            # manifest creation. New tasks always arrive with release_mbid pinned.
+            info = await album_service.get_album_tracks_info(task.release_group_mbid)
+    except Exception as error:  # noqa: BLE001 - no exact proof means no enqueue
+        raise OrchestrationError("could not verify the exact album edition") from error
+    expected = [
+        ExpectedTrack(
+            track_number=track.position,
+            disc_number=track.disc_number or 1,
+            duration_seconds=(track.length / 1000.0) if track.length else None,
+            recording_mbid=track.recording_id,
+            title=track.title,
+            release_track_mbid=track.release_track_id,
+        )
+        for track in info.tracks
+    ]
+    if (
+        not expected
+        or any(
+            not value.recording_mbid
+            or not value.release_track_mbid
+            or value.track_number < 1
+            or value.disc_number < 1
+            for value in expected
+        )
+        or len({(value.disc_number, value.track_number) for value in expected})
+        != len(expected)
+        or len({str(value.release_track_mbid).casefold() for value in expected})
+        != len(expected)
+    ):
+        raise OrchestrationError("the exact album edition has an incomplete track map")
+    selected_release = task.release_mbid or info.selected_release_mbid
+    if not task.release_mbid and selected_release and task_store is not None:
+        try:
+            selected_release = await task_store.pin_task_release_mbid(
+                task.id, task.release_group_mbid, selected_release
+            )
+        except Exception as error:  # noqa: BLE001 - edition drift must fail closed
+            raise OrchestrationError(
+                "could not pin the exact album edition to this download"
+            ) from error
+    return selected_release, expected
+
+
 @runtime_checkable
 class SourceStrategy(Protocol):
     """One acquisition source's behaviour. The orchestrator holds a ``{name: strategy}``
@@ -158,6 +240,7 @@ class SoulseekStrategy:
         manifest_codec,
         naming_template,
         library=None,
+        album_service=None,
     ):
         self._indexer = indexer
         self._scorer = scorer
@@ -170,6 +253,7 @@ class SoulseekStrategy:
         self._naming_template = naming_template
         # Resolves the held tier an origin='upgrade' run must beat (upgrade-floor, D12).
         self._library = library
+        self._album_service = album_service
 
     @property
     def client(self):  # noqa: ANN201
@@ -282,6 +366,13 @@ class SoulseekStrategy:
             and strict_track_duration
             and bool(task.track_duration_seconds)
         )
+        release_mbid, expected_tracks = await _expected_tracks_for_task(
+            task, self._album_service, self._store
+        )
+        if not expected_tracks and (
+            self._album_service is not None or task.release_mbid is not None
+        ):
+            raise OrchestrationError("could not resolve the exact album tracklist")
 
         files = [
             DownloadFileRef(
@@ -321,7 +412,7 @@ class SoulseekStrategy:
             handle=initial_handle,
             origin=task.origin,
             release_group_mbid=task.release_group_mbid,
-            release_mbid=task.release_mbid,
+            release_mbid=release_mbid,
             artist_mbid=task.artist_mbid,
             artist_name=task.artist_name,
             album_title=task.album_title,
@@ -339,23 +430,10 @@ class SoulseekStrategy:
                 )
                 for f in candidate.files
             ],
-            # The expected track identity, when this download targets exactly one
-            # known track (a track download or a 1-track single): arms the AcoustID
-            # TITLE check and the import-time tag verification, which the per-file
-            # slskd path otherwise runs artist-only (2026-07-05 wrong-single incident).
-            expected_tracks=(
-                [
-                    ExpectedTrack(
-                        track_number=task.track_number or 1,
-                        disc_number=task.disc_number or 1,
-                        duration_seconds=task.track_duration_seconds,
-                        recording_mbid=task.recording_mbid,
-                        title=task.track_title,
-                    )
-                ]
-                if task.track_title and len(candidate.files) == 1
-                else []
-            ),
+            # Complete selected-edition map. Transfer filenames remain the correlation
+            # keys; import maps each audio file to one exact release position and then
+            # verifies its recording/title/duration evidence.
+            expected_tracks=expected_tracks,
             attempt_id=attempt.id,
         )
         self._staging.joinpath(task.id).mkdir(parents=True, exist_ok=True)
@@ -598,7 +676,9 @@ class UsenetStrategy:
             and strict_track_duration
             and bool(task.track_duration_seconds)
         )
-        expected_tracks = await self._expected_tracks(task)
+        release_mbid, expected_tracks = await _expected_tracks_for_task(
+            task, self._album_service, self._store
+        )
         if not expected_tracks:
             raise OrchestrationError("could not resolve the album tracklist")
         # Unique per failover candidate: failover reuses the same task object (only
@@ -626,7 +706,7 @@ class UsenetStrategy:
             handle=initial_handle,
             origin=task.origin,
             release_group_mbid=task.release_group_mbid,
-            release_mbid=task.release_mbid,
+            release_mbid=release_mbid,
             artist_mbid=task.artist_mbid,
             artist_name=task.artist_name,
             album_title=task.album_title,
@@ -714,43 +794,6 @@ class UsenetStrategy:
                 task.id, str(Path(result.succeeded[0]).parent)
             )
         return result, enumerated
-
-    async def _expected_tracks(self, task):  # noqa: ANN001, ANN201
-        """The MB tracklist the folder-import matches files against (D18). For a per-track
-        download (D4) it's the single requested track; for an album it's the full MB
-        tracklist (durations in seconds, from MB milliseconds)."""
-        if task.download_type == "track":
-            return [
-                ExpectedTrack(
-                    track_number=task.track_number or 1,
-                    disc_number=task.disc_number or 1,
-                    duration_seconds=task.track_duration_seconds,
-                    recording_mbid=task.recording_mbid,
-                    title=task.track_title,
-                )
-            ]
-        if self._album_service is None or not task.release_group_mbid:
-            return []
-        try:
-            info = await self._album_service.get_album_tracks_info(
-                task.release_group_mbid
-            )
-        except Exception:  # noqa: BLE001 - tracklist resolution must not crash the task
-            logger.warning(
-                "Could not resolve MB tracklist for %s", task.release_group_mbid
-            )
-            return []
-        return [
-            ExpectedTrack(
-                track_number=track.position,
-                disc_number=track.disc_number or 1,
-                duration_seconds=(track.length / 1000.0) if track.length else None,
-                recording_mbid=track.recording_id,
-                title=track.title,
-                release_track_mbid=getattr(track, "release_track_id", None),
-            )
-            for track in info.tracks
-        ]
 
     async def _settle_files(self, handle):  # noqa: ANN001, ANN201
         """Re-poll the completed job's folder for audio, tolerating the window where a

@@ -354,6 +354,7 @@ async def lifespan(app: FastAPI):
 
     from core.dependencies import (
         get_acquisition_cleanup_service,
+        get_download_service,
         get_download_orchestrator,
         get_library_scanner,
     )
@@ -363,6 +364,7 @@ async def lifespan(app: FastAPI):
         start_download_resume_task,
         start_download_watchdog_task,
         start_library_scan_resume_task,
+        start_management_hold_auto_retry_task,
     )
 
     start_library_scan_resume_task(
@@ -406,6 +408,7 @@ async def lifespan(app: FastAPI):
     # orchestrator singleton, which is rebuilt when download-client settings are saved
     start_download_watchdog_task(get_download_orchestrator)
     start_download_auto_retry_task(get_download_orchestrator)
+    start_management_hold_auto_retry_task(get_download_service)
 
     from core.dependencies import get_download_store as _get_download_store
 

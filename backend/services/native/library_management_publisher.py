@@ -18,7 +18,13 @@ from pathlib import Path, PurePosixPath
 
 import msgspec
 
-from core.exceptions import ConflictError, StaleRevisionError, ValidationError
+from core.exceptions import (
+    ConflictError,
+    LibraryManagementDestinationConflictError,
+    LibraryManagementPolicyChangedError,
+    StaleRevisionError,
+    ValidationError,
+)
 from infrastructure.audio.metadata_engine import (
     AudioMetadataEngine,
     legacy_audio_projection,
@@ -298,6 +304,7 @@ class LibraryManagementPublisher:
         self._filesystem = filesystem
         self._on_commit = on_commit
         self._clock = clock
+        self._active_import_bundles: dict[str, int] = {}
 
     @staticmethod
     async def _finish_critical_task[ResultT](
@@ -325,6 +332,24 @@ class LibraryManagementPublisher:
         """
 
         self._validate_import_bundle(bundle)
+        bundle_id = str(uuid.uuid5(_IMPORT_BUNDLE_NAMESPACE, bundle.idempotency_key))
+        self._active_import_bundles[bundle_id] = (
+            self._active_import_bundles.get(bundle_id, 0) + 1
+        )
+        try:
+            return await self._publish_import_bundle(bundle, catalog_commit)
+        finally:
+            remaining = self._active_import_bundles[bundle_id] - 1
+            if remaining:
+                self._active_import_bundles[bundle_id] = remaining
+            else:
+                del self._active_import_bundles[bundle_id]
+
+    async def _publish_import_bundle(
+        self,
+        bundle: LibraryManagementImportBundle,
+        catalog_commit: ImportCommitCallback,
+    ) -> LibraryManagementImportResult:
         request_json = msgspec.json.encode(bundle).decode()
         request_hash = hashlib.sha256(request_json.encode()).hexdigest()
         bundle_id = str(uuid.uuid5(_IMPORT_BUNDLE_NAMESPACE, bundle.idempotency_key))
@@ -466,6 +491,8 @@ class LibraryManagementPublisher:
     async def recover_import_bundle(
         self, record: LibraryManagementImportBundleRecord
     ) -> str:
+        if self._active_import_bundles.get(record.id, 0):
+            return "skipped"
         try:
             request_bytes = record.request_json.encode()
             if hashlib.sha256(request_bytes).hexdigest() != record.request_hash:
@@ -699,7 +726,9 @@ class LibraryManagementPublisher:
     ) -> _PreparedImportMutation:
         root = roots.get(request.destination_root_id)
         if root is None:
-            raise StaleRevisionError("An import destination root changed.")
+            raise LibraryManagementPolicyChangedError(
+                "An import destination root changed."
+            )
         destination = self._safe_path(
             root, request.destination_relative_path, create_parent=True
         )
@@ -713,7 +742,9 @@ class LibraryManagementPublisher:
         if request.replacement_root_id is not None:
             replacement_root = roots.get(request.replacement_root_id)
             if replacement_root is None:
-                raise StaleRevisionError("An import replacement root changed.")
+                raise LibraryManagementPolicyChangedError(
+                    "An import replacement root changed."
+                )
             replacement = self._safe_path(
                 replacement_root, str(request.replacement_relative_path)
             )
@@ -997,7 +1028,9 @@ class LibraryManagementPublisher:
         for index, artifact in enumerate(request.artifacts):
             root = roots.get(artifact.destination_root_id)
             if root is None:
-                raise StaleRevisionError("An import artifact root changed.")
+                raise LibraryManagementPolicyChangedError(
+                    "An import artifact root changed."
+                )
             destination = self._safe_path(
                 root, artifact.destination_relative_path, create_parent=True
             )
@@ -1104,11 +1137,11 @@ class LibraryManagementPublisher:
                     or cls._hash_file(value.destination)
                     != journal.replacement_fingerprint
                 ):
-                    raise ConflictError(
+                    raise LibraryManagementDestinationConflictError(
                         "An import destination was created after planning."
                     )
             elif cls._has_normalized_destination_sibling(value.destination):
-                raise ConflictError(
+                raise LibraryManagementDestinationConflictError(
                     "An import destination collides after normalization."
                 )
             if value.replacement is not None and not same_path_replacement:
@@ -1119,11 +1152,11 @@ class LibraryManagementPublisher:
                     if cls._hash_file(artifact.temporary) != artifact.fingerprint:
                         raise ConflictError("A staged import artifact changed.")
                     if artifact.destination.exists():
-                        raise ConflictError(
+                        raise LibraryManagementDestinationConflictError(
                             "An import artifact destination is occupied."
                         )
                     if cls._has_normalized_destination_sibling(artifact.destination):
-                        raise ConflictError(
+                        raise LibraryManagementDestinationConflictError(
                             "An import artifact collides after normalization."
                         )
                 elif (
@@ -1228,7 +1261,9 @@ class LibraryManagementPublisher:
         for artifact in value.artifacts:
             if artifact.temporary.exists():
                 if artifact.destination.exists():
-                    raise ConflictError("An import artifact destination is occupied.")
+                    raise LibraryManagementDestinationConflictError(
+                        "An import artifact destination is occupied."
+                    )
                 await asyncio.to_thread(
                     replace_rooted,
                     roots,
@@ -1849,7 +1884,9 @@ class LibraryManagementPublisher:
             self._preferences.get_typed_library_settings_raw()
         )
         if resolver.policy_revision != policy_revision:
-            raise StaleRevisionError("Library policy changed after preview.")
+            raise LibraryManagementPolicyChangedError(
+                "Library policy changed after preview."
+            )
         roots = {root.id: Path(root.path) for root in resolver.settings.library_roots}
         if pinned is not None and pinned.recycle_bin_path:
             roots[MANAGEMENT_RECYCLE_ROOT_ID] = Path(pinned.recycle_bin_path)

@@ -516,6 +516,15 @@ details[open] > summary .management-editor-chevron {
 	background: color-mix(in oklab, var(--color-library-manage) 61%, var(--color-base-content));
 }
 
+.management-btn:disabled {
+	border-color: color-mix(in oklab, var(--color-base-content) 12%, transparent);
+	background: color-mix(in oklab, var(--color-base-content) 7%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-base-content) 34%, transparent);
+	box-shadow: none;
+	cursor: not-allowed;
+	opacity: 1;
+}
+
 .management-profile-editor,
 .management-activation-dialog,
 .management-tag-editor {

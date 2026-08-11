@@ -18,8 +18,10 @@ const h = vi.hoisted(() => ({
 	deleteProfile: vi.fn(),
 	createActivation: vi.fn(),
 	confirmActivation: vi.fn(),
+	stopActivation: vi.fn(),
 	createActivationPending: false,
 	confirmActivationPending: false,
+	stopActivationPending: false,
 	purgeImpact: vi.fn(),
 	purge: vi.fn(),
 	purgeData: null as Record<string, unknown> | null,
@@ -59,6 +61,12 @@ vi.mock('$lib/queries/library-management/LibraryManagementMutations.svelte', () 
 		mutateAsync: h.confirmActivation,
 		get isPending() {
 			return h.confirmActivationPending;
+		}
+	}),
+	controlLibraryManagementOperationMutation: () => ({
+		mutateAsync: h.stopActivation,
+		get isPending() {
+			return h.stopActivationPending;
 		}
 	}),
 	previewLibraryManagementBaselinePurgeMutation: () => ({
@@ -233,6 +241,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	h.createActivationPending = false;
 	h.confirmActivationPending = false;
+	h.stopActivationPending = false;
 	h.purgeData = null;
 	const settings = baseSettings();
 	const presetProfile = structuredClone(settings.profiles[0]);
@@ -277,6 +286,7 @@ beforeEach(() => {
 		operation_revision: 1
 	});
 	h.confirmActivation.mockResolvedValue({ ...settings, settings_revision: 'settings-2' });
+	h.stopActivation.mockResolvedValue({ state: 'stopped' });
 });
 
 describe('SettingsLibraryManagement', () => {
@@ -468,22 +478,23 @@ describe('SettingsLibraryManagement', () => {
 			affected_root_ids: ['root-1'],
 			reasons: ['automatic trigger enabled']
 		});
+		const activationData = {
+			job_id: 'preview-1',
+			state: 'ready',
+			ready_for_confirmation: true,
+			expired: false,
+			stale: false,
+			summary: {
+				eligible_count: 8,
+				warning_count: 1,
+				blocked_count: 0,
+				path_change_count: 7
+			}
+		};
 		h.activation = {
-			data: {
-				job_id: 'preview-1',
-				state: 'ready',
-				ready_for_confirmation: true,
-				expired: false,
-				stale: false,
-				summary: {
-					eligible_count: 8,
-					warning_count: 1,
-					blocked_count: 0,
-					path_change_count: 7
-				}
-			},
+			data: activationData,
 			isLoading: false,
-			refetch: vi.fn()
+			refetch: vi.fn(async () => ({ data: activationData, error: null }))
 		};
 
 		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
@@ -516,6 +527,257 @@ describe('SettingsLibraryManagement', () => {
 				proofs: [{ root_id: 'root-1', job_id: 'preview-1', preview_token: 'token-1' }]
 			})
 		);
+	});
+
+	it('rechecks a ready dry run before accepting it for activation', async () => {
+		h.impact.mockResolvedValue({
+			current_settings_revision: 'settings-1',
+			proposed_settings_revision: 'settings-2',
+			stale: false,
+			classification: 'destructive',
+			preview_required: true,
+			affected_root_ids: ['root-1'],
+			reasons: ['automatic trigger enabled']
+		});
+		const ready = {
+			job_id: 'preview-1',
+			state: 'ready',
+			ready_for_confirmation: true,
+			expired: false,
+			stale: false,
+			summary: {
+				eligible_count: 8,
+				warning_count: 1,
+				blocked_count: 0,
+				path_change_count: 7
+			}
+		};
+		const refetch = vi.fn(async () => ({
+			data: { ...ready, ready_for_confirmation: false, stale: true },
+			error: null
+		}));
+		h.activation = { data: ready, isLoading: false, refetch };
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByRole('checkbox', { name: /Acquisitions/ }).click();
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+		await page.getByRole('button', { name: 'Run dry run' }).click();
+		await page.getByRole('button', { name: 'Use this dry run' }).click();
+
+		expect(refetch).toHaveBeenCalledOnce();
+		await expect
+			.element(page.getByRole('alert'))
+			.toHaveTextContent('This dry run is no longer current.');
+		await expect
+			.element(page.getByRole('textbox', { name: /Type Enable Library Management/ }))
+			.not.toBeInTheDocument();
+	});
+
+	it('shows automatic planning progress and resumes the same dry run after closing', async () => {
+		h.impact.mockResolvedValue({
+			current_settings_revision: 'settings-1',
+			proposed_settings_revision: 'settings-2',
+			stale: false,
+			classification: 'destructive',
+			preview_required: true,
+			affected_root_ids: ['root-1'],
+			reasons: ['automatic trigger enabled']
+		});
+		h.activation = {
+			data: {
+				job_id: 'preview-1',
+				state: 'running',
+				worker_stalled: false,
+				control_request: 'none',
+				operation_row_revision: 2,
+				ready_for_confirmation: false,
+				expired: false,
+				stale: false,
+				summary: {
+					item_count: 1500,
+					bundle_count: 169,
+					eligible_count: 0,
+					warning_count: 0,
+					blocked_count: 0,
+					path_change_count: 0
+				}
+			},
+			isLoading: false,
+			isError: false,
+			isFetching: false,
+			refetch: vi.fn()
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByRole('checkbox', { name: /Acquisitions/ }).click();
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+		await page.getByRole('button', { name: 'Run dry run' }).click();
+
+		await expect.element(page.getByRole('status')).toHaveTextContent(/updates automatically/i);
+		await expect.element(page.getByText('1,500 files', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('169 release bundles', { exact: true })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Use this dry run' })).toBeDisabled();
+		await expect
+			.element(page.getByRole('button', { name: 'Refresh status' }))
+			.not.toBeInTheDocument();
+
+		await page.getByRole('button', { name: 'Close', exact: true }).click();
+		await expect.element(page.getByText('Dry run planning', { exact: true })).toBeVisible();
+		await page.getByRole('button', { name: 'View dry run' }).click();
+
+		await expect.element(page.getByRole('status')).toHaveTextContent(/updates automatically/i);
+		await expect.element(page.getByRole('button', { name: 'Run dry run' })).not.toBeInTheDocument();
+		expect(h.createActivation).toHaveBeenCalledOnce();
+	});
+
+	it('cannot authorize settings edited after a dry run started', async () => {
+		h.impact.mockResolvedValue({
+			current_settings_revision: 'settings-1',
+			proposed_settings_revision: 'settings-2',
+			stale: false,
+			classification: 'destructive',
+			preview_required: true,
+			affected_root_ids: ['root-1'],
+			reasons: ['automatic trigger enabled']
+		});
+		h.activation = {
+			data: {
+				job_id: 'preview-1',
+				state: 'running',
+				worker_stalled: false,
+				control_request: 'none',
+				operation_row_revision: 2,
+				ready_for_confirmation: false,
+				expired: false,
+				stale: false,
+				summary: { item_count: 20, bundle_count: 2 }
+			},
+			isLoading: false,
+			isError: false,
+			isFetching: false,
+			refetch: vi.fn()
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByRole('checkbox', { name: /Acquisitions/ }).click();
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+		await page.getByRole('button', { name: 'Run dry run' }).click();
+		await page.getByRole('button', { name: 'Close', exact: true }).click();
+
+		await page.getByRole('checkbox', { name: /Drop & Free imports/ }).click();
+		await expect
+			.element(page.getByText('Configuration changed after this dry run started'))
+			.toBeVisible();
+		await page.getByRole('button', { name: 'Restart review' }).click();
+
+		expect(h.stopActivation).toHaveBeenCalledWith({ jobId: 'preview-1', expectedRevision: 2 });
+		await expect.element(page.getByRole('button', { name: 'Run dry run' })).toBeVisible();
+		expect(h.createActivation).toHaveBeenCalledOnce();
+	});
+
+	it('shows durable progress and a safe recovery action when the worker lease expires', async () => {
+		h.impact.mockResolvedValue({
+			current_settings_revision: 'settings-1',
+			proposed_settings_revision: 'settings-2',
+			stale: false,
+			classification: 'destructive',
+			preview_required: true,
+			affected_root_ids: ['root-1'],
+			reasons: ['automatic trigger enabled']
+		});
+		h.activation = {
+			data: {
+				job_id: 'preview-1',
+				state: 'running',
+				control_request: 'none',
+				operation_row_revision: 5,
+				ready_for_confirmation: false,
+				expired: false,
+				stale: false,
+				worker_stalled: true,
+				summary: {
+					item_count: 1500,
+					bundle_count: 169,
+					eligible_count: 0,
+					warning_count: 0,
+					blocked_count: 0,
+					path_change_count: 0
+				}
+			},
+			isLoading: false,
+			isError: false,
+			isFetching: false,
+			refetch: vi.fn()
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByRole('checkbox', { name: /Acquisitions/ }).click();
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+		await page.getByRole('button', { name: 'Run dry run' }).click();
+
+		const dialog = page.getByRole('dialog', { name: 'Enable Library Management' });
+		await expect.element(dialog.getByRole('alert')).toHaveTextContent(/stopped responding/i);
+		await expect.element(dialog.getByRole('alert')).toHaveTextContent(/1,500 files/i);
+		await expect.element(dialog.getByText('Eligible', { exact: true })).not.toBeInTheDocument();
+		await expect.element(dialog.getByRole('button', { name: 'Stop dry run' })).toBeEnabled();
+
+		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+		await expect.element(page.getByText('Dry run interrupted', { exact: true })).toBeVisible();
+		await expect
+			.element(page.getByText(/files planned/))
+			.toHaveTextContent(/1,500 files planned · 169 release bundles/);
+	});
+
+	it('distinguishes queued work and can stop the durable dry run', async () => {
+		h.impact.mockResolvedValue({
+			current_settings_revision: 'settings-1',
+			proposed_settings_revision: 'settings-2',
+			stale: false,
+			classification: 'destructive',
+			preview_required: true,
+			affected_root_ids: ['root-1'],
+			reasons: ['automatic trigger enabled']
+		});
+		const refetch = vi.fn();
+		h.activation = {
+			data: {
+				job_id: 'preview-1',
+				state: 'queued',
+				control_request: 'none',
+				operation_row_revision: 7,
+				ready_for_confirmation: false,
+				expired: false,
+				stale: false,
+				summary: {
+					eligible_count: 0,
+					warning_count: 0,
+					blocked_count: 0,
+					path_change_count: 0
+				}
+			},
+			isLoading: false,
+			isError: false,
+			isFetching: false,
+			refetch
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByRole('checkbox', { name: /Acquisitions/ }).click();
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+		await page.getByRole('button', { name: 'Run dry run' }).click();
+
+		await expect.element(page.getByRole('status')).toHaveTextContent(/Queued for planning/);
+		await page.getByRole('button', { name: 'Stop dry run' }).click();
+		expect(h.stopActivation).toHaveBeenCalledWith({
+			jobId: 'preview-1',
+			expectedRevision: 7
+		});
+		expect(refetch).toHaveBeenCalledOnce();
 	});
 
 	it('does not accept an expired or stale activation preview', async () => {
@@ -637,9 +899,9 @@ describe('SettingsLibraryManagement', () => {
 		await page.getByRole('checkbox', { name: /Acquisitions/ }).click();
 		await page.getByRole('button', { name: 'Validate and save' }).click();
 
-		await expect.element(page.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled();
+		await expect.element(page.getByRole('button', { name: 'Close', exact: true })).toBeDisabled();
 		await expect
-			.element(page.getByRole('button', { name: 'Cancel Library Management activation' }))
+			.element(page.getByRole('button', { name: 'Close Library Management activation' }))
 			.toBeDisabled();
 	});
 

@@ -19,6 +19,7 @@ import msgspec
 
 from core.exceptions import (
     ConflictError,
+    LibraryManagementPolicyChangedError,
     ResourceNotFoundError,
     RevisionOverflowError,
     StaleRevisionError,
@@ -303,6 +304,8 @@ _SCAN_ACTIVE_STATES = (
     "paused",
     "stopping",
 )
+
+_ACTIVATION_PREVIEW_SUPERSEDED = "SUPERSEDED_ACTIVATION_PREVIEW"
 
 _SCAN_TRANSITIONS: dict[str, set[str]] = {
     "queued": {"discovering", "cancelled", "failed"},
@@ -6458,7 +6461,7 @@ class NativeLibraryStore(PersistenceBase):
                 return
             desired = str(state["desired_policy_revision"])
         if desired != expected_policy_revision:
-            raise StaleRevisionError(
+            raise LibraryManagementPolicyChangedError(
                 "The library policy changed while the file was being imported."
             )
 
@@ -17140,12 +17143,224 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._write(operation)
 
+    @staticmethod
+    def _activation_preview_signature(row: sqlite3.Row) -> tuple[object, ...]:
+        return (
+            row["selection_json"],
+            row["profile_revision"],
+            row["settings_revision"],
+            row["proposed_settings_revision"],
+            row["naming_revision"],
+            row["policy_revision"],
+            row["catalog_revision"],
+            row["profile_snapshot_json"],
+            row["target_root_id"],
+            row["intent_json"],
+        )
+
+    @staticmethod
+    def _new_activation_preview_signature(
+        snapshot: LibraryManagementJobSnapshot,
+    ) -> tuple[object, ...]:
+        return (
+            snapshot.selection_json,
+            snapshot.profile_revision,
+            snapshot.settings_revision,
+            snapshot.proposed_settings_revision,
+            snapshot.naming_revision,
+            snapshot.policy_revision,
+            snapshot.catalog_revision,
+            snapshot.profile_snapshot_json,
+            snapshot.target_root_id,
+            snapshot.intent_json,
+        )
+
+    @staticmethod
+    def _activation_preview_rank(row: sqlite3.Row) -> tuple[int, float, float, str]:
+        state_rank = {"ready": 0, "running": 1, "queued": 2, "paused": 3}
+        return (
+            state_rank.get(str(row["state"]), 4),
+            -float(row["started_at"] or 0),
+            float(row["job_created_at"]),
+            str(row["job_id"]),
+        )
+
+    @staticmethod
+    def _activation_preview_rows(
+        connection: sqlite3.Connection, root_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        root_filter = (
+            "AND json_extract(snapshot.selection_json, '$.ids[0]') = ? "
+            if root_id is not None
+            else ""
+        )
+        parameters: tuple[object, ...] = (root_id,) if root_id is not None else ()
+        return connection.execute(
+            "SELECT job.id AS job_id, job.state, job.control_request, "
+            "job.idempotency_key, job.created_at AS job_created_at, job.started_at, "
+            "snapshot.selection_json, snapshot.profile_revision, "
+            "snapshot.settings_revision, snapshot.proposed_settings_revision, "
+            "snapshot.naming_revision, snapshot.policy_revision, "
+            "snapshot.catalog_revision, snapshot.profile_snapshot_json, "
+            "snapshot.target_root_id, snapshot.intent_json, "
+            "snapshot.preview_expires_at "
+            "FROM library_operation_jobs job "
+            "JOIN library_management_job_snapshots snapshot ON snapshot.job_id = job.id "
+            "WHERE job.kind = 'library_management' "
+            "AND job.state IN ('queued','running','paused','ready') "
+            "AND snapshot.mode = 'preview' "
+            "AND snapshot.proposed_settings_revision IS NOT NULL "
+            "AND json_extract(snapshot.selection_json, '$.kind') = 'roots' "
+            "AND json_array_length(snapshot.selection_json, '$.ids') = 1 "
+            + root_filter
+            + "ORDER BY job.created_at, job.id",
+            parameters,
+        ).fetchall()
+
+    def _supersede_activation_preview_rows(
+        self,
+        connection: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+        *,
+        keep_job_id: str | None,
+        now: float,
+    ) -> int:
+        changed = 0
+        for row in rows:
+            job_id = str(row["job_id"])
+            if job_id == keep_job_id:
+                continue
+            state = str(row["state"])
+            if state == "running":
+                if str(row["control_request"]) == "stop":
+                    continue
+                cursor = connection.execute(
+                    "UPDATE library_operation_jobs SET control_request='stop', "
+                    "terminal_code=?, updated_at=?, row_revision=row_revision+1, "
+                    "event_revision=event_revision+1 WHERE id=? AND state='running' "
+                    "AND control_request!='stop' AND row_revision < ? AND event_revision < ?",
+                    (
+                        _ACTIVATION_PREVIEW_SUPERSEDED,
+                        now,
+                        job_id,
+                        MAX_REVISION,
+                        MAX_REVISION,
+                    ),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE library_operation_jobs SET state='stopped', "
+                    "control_request='none', terminal_code=?, terminal_at=?, updated_at=?, "
+                    "lease_owner=NULL, lease_expires_at=NULL, heartbeat_at=NULL, "
+                    "row_revision=row_revision+1, event_revision=event_revision+1 "
+                    "WHERE id=? AND state IN ('queued','paused','ready') "
+                    "AND row_revision < ? AND event_revision < ?",
+                    (
+                        _ACTIVATION_PREVIEW_SUPERSEDED,
+                        now,
+                        now,
+                        job_id,
+                        MAX_REVISION,
+                        MAX_REVISION,
+                    ),
+                )
+            if cursor.rowcount != 1:
+                self._refuse_max_revision(
+                    connection,
+                    table="library_operation_jobs",
+                    predicate="id = ?",
+                    parameters=(job_id,),
+                    include_event_revision=True,
+                )
+                continue
+            changed += 1
+        return changed
+
+    def _coalesce_activation_previews_for_create(
+        self,
+        connection: sqlite3.Connection,
+        job: OperationJob,
+        snapshot: LibraryManagementJobSnapshot,
+        *,
+        root_id: str,
+    ) -> tuple[str | None, int]:
+        prior = None
+        if job.idempotency_key is not None:
+            prior = connection.execute(
+                "SELECT id FROM library_operation_jobs WHERE idempotency_key = ?",
+                (job.idempotency_key,),
+            ).fetchone()
+        rows = self._activation_preview_rows(connection, root_id)
+        signature = self._new_activation_preview_signature(snapshot)
+        reusable = [
+            row
+            for row in rows
+            if self._activation_preview_signature(row) == signature
+            and row["idempotency_key"] is not None
+            and str(row["control_request"]) == "none"
+            and float(row["preview_expires_at"] or 0) > job.created_at
+        ]
+        if prior is not None and not any(
+            str(row["job_id"]) == str(prior["id"]) for row in reusable
+        ):
+            return str(prior["id"]), 0
+        survivor = (
+            min(reusable, key=self._activation_preview_rank) if reusable else None
+        )
+        changed = self._supersede_activation_preview_rows(
+            connection,
+            rows,
+            keep_job_id=str(survivor["job_id"]) if survivor is not None else None,
+            now=job.created_at,
+        )
+        return (str(survivor["job_id"]) if survivor is not None else None), changed
+
+    def _coalesce_recovered_activation_previews(
+        self, connection: sqlite3.Connection, *, now: float
+    ) -> int:
+        rows = self._activation_preview_rows(connection)
+        by_root: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            selection = json.loads(str(row["selection_json"]))
+            root_id = str(selection["ids"][0])
+            by_root.setdefault(root_id, []).append(row)
+        changed = 0
+        for root_rows in by_root.values():
+            reusable = [
+                row
+                for row in root_rows
+                if row["idempotency_key"] is not None
+                and str(row["control_request"]) == "none"
+                and float(row["preview_expires_at"] or 0) > now
+            ]
+            survivor = None
+            if reusable:
+                newest = max(
+                    reusable,
+                    key=lambda row: (float(row["job_created_at"]), str(row["job_id"])),
+                )
+                desired_signature = self._activation_preview_signature(newest)
+                matching = [
+                    row
+                    for row in reusable
+                    if self._activation_preview_signature(row) == desired_signature
+                ]
+                survivor = min(matching, key=self._activation_preview_rank)
+            changed += self._supersede_activation_preview_rows(
+                connection,
+                root_rows,
+                keep_job_id=(str(survivor["job_id"]) if survivor is not None else None),
+                now=now,
+            )
+        return changed
+
     async def create_library_management_job(
         self,
         job: OperationJob,
         snapshot: LibraryManagementJobSnapshot,
         *,
         metadata_snapshot_ids: list[str] | None = None,
+        activation_root_id: str | None = None,
     ) -> tuple[str, bool]:
         if job.kind != "library_management" or snapshot.job_id != job.id:
             raise ValidationError("The management job and snapshot do not match.")
@@ -17159,6 +17374,21 @@ class NativeLibraryStore(PersistenceBase):
             raise ValidationError("Too many metadata snapshots were pinned at once.")
 
         def operation(connection: sqlite3.Connection) -> tuple[str, bool]:
+            if activation_root_id is not None:
+                if snapshot.proposed_settings_revision is None:
+                    raise ValidationError(
+                        "Only an activation preview can use activation coalescing."
+                    )
+                existing_id, changed = self._coalesce_activation_previews_for_create(
+                    connection,
+                    job,
+                    snapshot,
+                    root_id=activation_root_id,
+                )
+                if existing_id is not None:
+                    if changed:
+                        self._bump_stream(connection, "operation")
+                    return existing_id, False
             if job.idempotency_key is not None:
                 existing = connection.execute(
                     "SELECT id, kind FROM library_operation_jobs WHERE idempotency_key = ?",
@@ -18418,7 +18648,9 @@ class NativeLibraryStore(PersistenceBase):
                 "snapshot.selection_json management_selection_json, "
                 "snapshot.profile_revision management_profile_revision, "
                 "snapshot.profile_snapshot_json management_profile_snapshot_json, "
-                "snapshot.target_root_id management_target_root_id "
+                "snapshot.target_root_id management_target_root_id, "
+                "snapshot.proposed_settings_revision "
+                "management_proposed_settings_revision "
                 "FROM library_operation_jobs job JOIN "
                 "library_management_job_snapshots snapshot ON snapshot.job_id=job.id "
                 "WHERE "
@@ -19214,6 +19446,7 @@ class NativeLibraryStore(PersistenceBase):
         *,
         writes: list[tuple[int, ScannedTrackWrite]],
         replacement_track_ids: dict[int, str],
+        requests_by_ordinal: dict[int, LibraryManagementImportFile],
         automatic_requests: dict[int, LibraryManagementImportFile],
         expected_policy_revision: str,
         result_paths: list[str],
@@ -19226,6 +19459,8 @@ class NativeLibraryStore(PersistenceBase):
         ordinals = [ordinal for ordinal, _write in writes]
         if len(set(ordinals)) != len(ordinals) or len(result_paths) != len(writes):
             raise ValidationError("The import catalog bundle is inconsistent.")
+        if set(requests_by_ordinal) != set(ordinals):
+            raise ValidationError("Import requests do not match the catalog bundle.")
         if not set(automatic_requests).issubset(ordinals):
             raise ValidationError("Automatic import requests do not match the bundle.")
 
@@ -19340,6 +19575,11 @@ class NativeLibraryStore(PersistenceBase):
                     catalog_revision=new_catalog_revision,
                     now=updated_at,
                 )
+            self._resolve_published_management_hold_tx(
+                connection,
+                requests=requests_by_ordinal,
+                now=updated_at,
+            )
             connection.execute(
                 "UPDATE library_management_import_journal SET state='catalog_committed',"
                 "updated_at=?,row_revision=row_revision+1 WHERE bundle_id=? "
@@ -19365,6 +19605,47 @@ class NativeLibraryStore(PersistenceBase):
             return tuple(local_track_ids)
 
         return await self._write(operation)
+
+    @staticmethod
+    def _resolve_published_management_hold_tx(
+        connection: sqlite3.Connection,
+        *,
+        requests: dict[int, LibraryManagementImportFile],
+        now: float,
+    ) -> None:
+        """Settle a secured acquisition in the same transaction as catalog adoption."""
+
+        task_ids = {
+            request.download_task_id
+            for request in requests.values()
+            if request.download_task_id is not None
+        }
+        if len(task_ids) != 1:
+            return
+        task_id = next(iter(task_ids))
+        rows = connection.execute(
+            "SELECT id, held_path FROM held_imports WHERE source_task_id = ? "
+            "AND status = 'held' AND reason LIKE 'management:%' ORDER BY id",
+            (task_id,),
+        ).fetchall()
+        if not rows:
+            return
+        requested_paths = {
+            str(request.source_path)
+            for request in requests.values()
+            if request.download_task_id == task_id and request.source_path is not None
+        }
+        held_paths = {str(row["held_path"]) for row in rows}
+        if len(rows) != len(requests) or held_paths != requested_paths:
+            raise ValidationError(
+                "The secured acquisition changed before its catalog commit."
+            )
+        connection.execute(
+            "UPDATE held_imports SET status = 'imported', resolved_at = ? "
+            "WHERE source_task_id = ? AND status = 'held' "
+            "AND reason LIKE 'management:%'",
+            (now, task_id),
+        )
 
     def _commit_automatic_import_management_tx(
         self,
@@ -22350,13 +22631,40 @@ class NativeLibraryStore(PersistenceBase):
                             (idempotency_key, job_id, control, now),
                         )
                     return dict(row)
-                if control == "stop" and row["state"] in {"queued", "paused"}:
+                stale_planning_preview = False
+                if (
+                    control == "stop"
+                    and row["kind"] == "library_management"
+                    and row["state"] == "running"
+                    and (
+                        row["lease_expires_at"] is None
+                        or float(row["lease_expires_at"]) <= now
+                    )
+                ):
+                    snapshot = connection.execute(
+                        "SELECT mode, phase FROM library_management_job_snapshots "
+                        "WHERE job_id = ?",
+                        (job_id,),
+                    ).fetchone()
+                    stale_planning_preview = bool(
+                        snapshot is not None
+                        and str(snapshot["mode"]) == "preview"
+                        and str(snapshot["phase"]) == "planning"
+                    )
+                if control == "stop" and (
+                    row["state"] in {"queued", "paused"} or stale_planning_preview
+                ):
                     assignments = (
                         "state = 'stopped', control_request = 'none', "
-                        "terminal_code = 'STOPPED', terminal_at = ?, lease_owner = NULL, "
+                        "terminal_code = ?, terminal_at = ?, lease_owner = NULL, "
                         "lease_expires_at = NULL, heartbeat_at = NULL"
                     )
-                    assignment_parameters = (now,)
+                    assignment_parameters = (
+                        "STOPPED_EXPIRED_LEASE"
+                        if stale_planning_preview
+                        else "STOPPED",
+                        now,
+                    )
                 else:
                     assignments = f"control_request = '{control}'"
             else:
@@ -22404,7 +22712,8 @@ class NativeLibraryStore(PersistenceBase):
             state = "paused" if row["control_request"] == "pause" else "stopped"
             updated = connection.execute(
                 "UPDATE library_operation_jobs SET state = ?, control_request = 'none', "
-                "terminal_code = ?, lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, "
+                "terminal_code = COALESCE(terminal_code, ?), lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, "
                 "updated_at = ?, terminal_at = CASE WHEN ? = 'stopped' THEN ? ELSE terminal_at END, "
                 "row_revision = row_revision + 1, event_revision = event_revision + 1 "
                 "WHERE id = ? AND state = 'running' AND lease_owner = ? RETURNING *",
@@ -22794,9 +23103,12 @@ class NativeLibraryStore(PersistenceBase):
                 "AND event_revision < ?",
                 (now, now, MAX_REVISION, MAX_REVISION),
             )
-            if cursor.rowcount:
+            superseded = self._coalesce_recovered_activation_previews(
+                connection, now=now
+            )
+            if cursor.rowcount or superseded:
                 self._bump_stream(connection, "operation")
-            return cursor.rowcount
+            return cursor.rowcount + superseded
 
         return await self._write(operation)
 

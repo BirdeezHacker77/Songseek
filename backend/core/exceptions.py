@@ -109,6 +109,12 @@ class ConflictError(DroppedNeedleException):
     pass
 
 
+class LibraryManagementDestinationConflictError(ConflictError):
+    """A staged Library Management destination is occupied or aliases another path."""
+
+    pass
+
+
 class MediaAccountRelinkRequiredError(ConflictError):
     """A linked media-server account exists but cannot be used safely."""
 
@@ -132,6 +138,12 @@ class ConfigurationError(DroppedNeedleException):
 
 
 class StaleRevisionError(ConflictError):
+    pass
+
+
+class LibraryManagementPolicyChangedError(StaleRevisionError):
+    """The Library Management policy or root projection changed during publication."""
+
     pass
 
 

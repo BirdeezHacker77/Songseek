@@ -3,6 +3,7 @@
 		AlbumBasicInfo,
 		AlbumTracksInfo,
 		DownloadTask,
+		HeldImport,
 		LibraryAlbumSummary
 	} from '$lib/types';
 	import { getApiUrl } from '$lib/api/api-utils';
@@ -47,6 +48,7 @@
 		requesting: boolean;
 		refreshing: boolean;
 		headerDownloadTask: DownloadTask | null;
+		managementHeld?: HeldImport[];
 		downloadClientConfigured: boolean;
 
 		libraryInLibrary?: boolean;
@@ -72,6 +74,7 @@
 		requesting,
 		refreshing,
 		headerDownloadTask,
+		managementHeld = [],
 		downloadClientConfigured,
 		libraryInLibrary = false,
 		libraryTrackCount = 0,
@@ -525,7 +528,7 @@
 			{#if downloadClientConfigured}
 				<div class="pt-4 flex flex-col gap-3">
 					{#if headerDownloadTask}
-						<AlbumDownloadStatus task={headerDownloadTask} />
+						<AlbumDownloadStatus task={headerDownloadTask} {managementHeld} />
 					{/if}
 					<div class="flex flex-wrap items-start gap-3">
 						{#if inLibrary || libraryInLibrary}

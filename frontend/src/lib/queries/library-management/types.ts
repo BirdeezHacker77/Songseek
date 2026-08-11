@@ -384,6 +384,9 @@ export interface LibraryManagementPreviewDetailResponse {
 	operation_row_revision: number;
 	operation_event_revision: number;
 	terminal_code: string | null;
+	worker_heartbeat_at: number | null;
+	worker_lease_expires_at: number | null;
+	worker_stalled: boolean;
 	expected_work_count: number;
 	completed_count: number;
 	succeeded_count: number;
@@ -583,6 +586,7 @@ export interface LibraryManagementOperationHistoryItem {
 	profile_name: string;
 	profile_revision: string;
 	target_root_id: string | null;
+	activation_preview: boolean;
 	selection: Record<string, unknown>;
 }
 

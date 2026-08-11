@@ -98,6 +98,12 @@ class DownloadTaskStatus(AppStruct):
     # the orchestrator fail a no-show enqueue over fast instead of waiting out the
     # full queued timeout for a transfer that never existed.
     matched_transfers: int = 0
+    # slskd supplies a per-file ``placeInQueue`` for remotely queued transfers.
+    # A task usually contains several files, so expose the inclusive range instead
+    # of pretending one file's position represents the whole album. Other clients
+    # leave both values absent.
+    queue_position_start: int | None = None
+    queue_position_end: int | None = None
 
 
 class DownloadMaterialization(AppStruct):

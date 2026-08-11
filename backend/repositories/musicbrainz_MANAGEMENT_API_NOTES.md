@@ -45,7 +45,7 @@ and must never derive one from the other.
 ## Release-track titles and recording titles
 
 Re-verified against the live production API on 2026-07-29 with Anthony Green's
-*Avalon* release `0687c8a5-40a2-4a0c-bdc9-c1d80d94bef5` and the `recordings` and
+_Avalon_ release `0687c8a5-40a2-4a0c-bdc9-c1d80d94bef5` and the `recordings` and
 `artist-credits` includes. Track 14 (`741e8bcd-9d03-3b61-bb04-ecf22f4784e1`) returned
 the release-track title `The Fisherman Will Be Bewildered`, while its linked recording
 (`ec935e35-b2fa-4925-aa83-052d9e3e69f1`) returned the distinct title
@@ -66,11 +66,21 @@ therefore remain nullable in the provider model.
 ## Nullable catalogue numbers
 
 Re-verified against the live production API on 2026-07-28 with Anthony Green's
-*Avalon* release `0687c8a5-40a2-4a0c-bdc9-c1d80d94bef5` and the complete include set
+_Avalon_ release `0687c8a5-40a2-4a0c-bdc9-c1d80d94bef5` and the complete include set
 required by the Picard-style Organizer profile. The response returned HTTP 200 and a
 41,819-byte JSON document. Its first `label-info` entry contained a label object while
 `catalog-number` was explicitly JSON null. The catalogue-number field must therefore
 remain nullable independently of the label object.
+
+## Nullable work type identifiers
+
+Re-verified against the live production API on 2026-08-03 with release
+`8c66c2ac-bcb3-4b5a-8a0a-f0d5f24ceed2` and the relationship includes used by the
+Picard-style Organizer. The performance relationship for work
+`fa1f9350-3d27-35c8-abc2-a4455cf68d24` returned both `work.type` and
+`work.type-id` explicitly set to JSON null. Linked work type identifiers must
+therefore be nullable and must not make an otherwise valid canonical release
+fail decoding.
 
 ## Missing and malformed identifiers
 

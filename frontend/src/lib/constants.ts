@@ -750,6 +750,7 @@ export const API = {
 		get: (taskId: string) => `/api/v1/downloads/${taskId}`,
 		stream: (taskId: string) => `/api/v1/downloads/${taskId}/stream`,
 		cancel: (taskId: string) => `/api/v1/downloads/${taskId}/cancel`,
+		nextSource: (taskId: string) => `/api/v1/downloads/${taskId}/next-source`,
 		retry: (taskId: string) => `/api/v1/downloads/${taskId}/retry`,
 		clear: () => '/api/v1/downloads/clear',
 		stopAllRetries: () => '/api/v1/downloads/stop-all-retries',
@@ -762,6 +763,9 @@ export const API = {
 		},
 		heldImport: (id: number) => `/api/v1/downloads/held/${id}/import`,
 		heldDiscard: (id: number) => `/api/v1/downloads/held/${id}/discard`,
+		heldManagementRetry: (taskId: string) => `/api/v1/downloads/held/management/${taskId}/retry`,
+		heldManagementDiscard: (taskId: string) =>
+			`/api/v1/downloads/held/management/${taskId}/discard`,
 		heldAudio: (id: number) => `/api/v1/downloads/held/${id}/audio`,
 		reimport: (taskId: string) => `/api/v1/downloads/${taskId}/reimport`,
 		cutoffUnmet: () => '/api/v1/downloads/cutoff-unmet',

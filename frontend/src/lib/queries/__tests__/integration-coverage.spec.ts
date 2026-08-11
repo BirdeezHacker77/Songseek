@@ -33,8 +33,19 @@ const COVERAGE: Array<[string, string, string]> = [
 	['download detail', API.downloads.get('T1'), '/api/v1/downloads/T1'],
 	['download stream', API.downloads.stream('T1'), '/api/v1/downloads/T1/stream'],
 	['download cancel', API.downloads.cancel('T1'), '/api/v1/downloads/T1/cancel'],
+	['download next source', API.downloads.nextSource('T1'), '/api/v1/downloads/T1/next-source'],
 	['download retry', API.downloads.retry('T1'), '/api/v1/downloads/T1/retry'],
 	['download reimport', API.downloads.reimport('T1'), '/api/v1/downloads/T1/reimport'],
+	[
+		'management hold retry',
+		API.downloads.heldManagementRetry('T1'),
+		'/api/v1/downloads/held/management/T1/retry'
+	],
+	[
+		'management hold discard',
+		API.downloads.heldManagementDiscard('T1'),
+		'/api/v1/downloads/held/management/T1/discard'
+	],
 	// search (user-scoped)
 	['search album', API.downloads.searchAlbum(), '/api/v1/downloads/search/album'],
 	['search job', API.downloads.searchJob('J1'), '/api/v1/downloads/search/J1'],

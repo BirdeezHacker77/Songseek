@@ -180,12 +180,18 @@ def _test_publisher(manager: LibraryManager, library: Path):
 
 
 def _manifest(
-    *files: ExpectedFile, task_id="t1", rg="rg-1", is_track=False, expected_tracks=()
+    *files: ExpectedFile,
+    task_id="t1",
+    rg="rg-1",
+    release_mbid=None,
+    is_track=False,
+    expected_tracks=(),
 ) -> DownloadManifest:
     return DownloadManifest(
         task_id=task_id,
         source_username="peer",
         release_group_mbid=rg,
+        release_mbid=release_mbid,
         artist_name="Radiohead",
         artist_mbid="a74b1b7f-71a5-4011-9441-d0b5e4122711",
         album_title="OK Computer",
@@ -255,11 +261,31 @@ async def test_shared_publisher_receives_complete_slskd_album_bundle(tmp_path: P
         current, _info = tagger.read_tags(downloads / name)
         _write_fixture_tag(
             downloads / name,
-            msgspec.structs.replace(current, title=title, track_number=position),
+            msgspec.structs.replace(
+                current,
+                title=title,
+                track_number=position,
+                musicbrainz_recording_id=f"recording-{position}",
+            ),
         )
     manifest = _manifest(
         ExpectedFile(filename="A/one.flac", size=1),
         ExpectedFile(filename="A/two.flac", size=1),
+        release_mbid="release-1",
+        expected_tracks=(
+            ExpectedTrack(
+                track_number=1,
+                title="One",
+                recording_mbid="recording-1",
+                release_track_mbid="release-track-1",
+            ),
+            ExpectedTrack(
+                track_number=2,
+                title="Two",
+                recording_mbid="recording-2",
+                release_track_mbid="release-track-2",
+            ),
+        ),
     )
 
     result = await fp.process_downloaded(manifest)
@@ -271,6 +297,11 @@ async def test_shared_publisher_receives_complete_slskd_album_bundle(tmp_path: P
     assert len(bundle.files) == 2
     assert bundle.origin == "acquisition"
     assert bundle.policy_revision == "policy-1"
+    assert all(value.authoritative_mapping for value in bundle.files)
+    assert {value.release_track_mbid for value in bundle.files} == {
+        "release-track-1",
+        "release-track-2",
+    }
     assert result.failed == []
     assert len(result.succeeded) == 2
     assert await manager.has_album("rg-1") is False
@@ -1204,12 +1235,15 @@ def _single_manifest(
     hold_on_wrong_track=False,
     canonical=None,
     expected_title="the arrival",
+    release_mbid=None,
+    release_track_mbid=None,
 ):
     """A 1-track single manifest as the P1 enqueue writes it (Yan Qing / the arrival)."""
     return DownloadManifest(
         task_id=task_id,
         source_username="Fabrizio83a",
         release_group_mbid="rg-single",
+        release_mbid=release_mbid,
         artist_name="Yan Qing",
         album_title="the arrival",
         naming_template=_TEMPLATE,
@@ -1224,6 +1258,7 @@ def _single_manifest(
                 track_number=1,
                 title=expected_title,
                 recording_mbid="rec-180ceef5",
+                release_track_mbid=release_track_mbid,
                 duration_seconds=canonical,
             )
         ],
@@ -1295,10 +1330,114 @@ async def test_automatic_management_failure_holds_acquisition_source_for_retry(
     assert result.failed[0].reason == MANAGEMENT_HELD
     assert len(held) == 1
     assert held[0].reason == "management:METADATA_UNAVAILABLE"
+    assert held[0].reason_detail == "MusicBrainz is temporarily unavailable."
+    assert held[0].management_retry_count == 1
+    assert held[0].management_next_retry_at is not None
     assert Path(held[0].held_path).is_file()
     assert source.is_file()
     assert await manager.has_album("rg-single") is False
     assert result.workspace_disposition == "discard"
+    assert result.management_hold_reason_code == "METADATA_UNAVAILABLE"
+    assert result.management_hold_message == "MusicBrainz is temporarily unavailable."
+    assert result.management_hold_secured is True
+
+
+@pytest.mark.asyncio
+async def test_management_hold_storage_failure_preserves_source_and_stops_failover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.exceptions import AutomaticManagementHoldError
+    from services.native.file_processor import IMPORT_FAILED
+
+    publisher = AsyncMock(
+        side_effect=AutomaticManagementHoldError(
+            "PROFILE_CHANGED", "The profile changed during preparation."
+        )
+    )
+    fp, store, manager, downloads = _held_wired_processor(
+        tmp_path, verify=False, publisher=publisher
+    )
+    task = await store.create_task(
+        user_id="user-a",
+        release_group_mbid="rg-single",
+        artist_name="Yan Qing",
+        album_title="the arrival",
+    )
+    _place(downloads, "A/track.flac")
+    source = downloads / "A/track.flac"
+    monkeypatch.setattr(
+        store,
+        "replace_management_hold_bundle",
+        AsyncMock(side_effect=OSError("database unavailable")),
+    )
+
+    result = await fp.process_downloaded(_single_manifest(task.id))
+
+    assert result.succeeded == []
+    assert result.failed[0].reason == IMPORT_FAILED
+    assert result.workspace_disposition == "preserve"
+    assert result.management_hold_reason_code == "PROFILE_CHANGED"
+    assert result.management_hold_secured is False
+    assert source.is_file()
+    assert list((tmp_path / "held").iterdir()) == []
+    assert await store.list_held_imports("user-a", "user") == []
+    assert await manager.has_album("rg-single") is False
+
+
+@pytest.mark.asyncio
+async def test_management_hold_retry_republishes_the_secured_unit_once(
+    tmp_path: Path,
+) -> None:
+    from core.exceptions import AutomaticManagementHoldError
+
+    publisher = AsyncMock(
+        side_effect=AutomaticManagementHoldError(
+            "PROFILE_CHANGED", "The profile changed during preparation."
+        )
+    )
+    fp, store, _manager, downloads = _held_wired_processor(
+        tmp_path, verify=False, publisher=publisher
+    )
+    task = await store.create_task(
+        user_id="user-a",
+        release_group_mbid="rg-single",
+        release_mbid="release-1",
+        release_track_mbid="release-track-1",
+        recording_mbid="rec-180ceef5",
+        track_number=1,
+        disc_number=1,
+        artist_name="Yan Qing",
+        album_title="the arrival",
+    )
+    _place(downloads, "A/track.flac")
+    await fp.process_downloaded(
+        _single_manifest(
+            task.id,
+            release_mbid="release-1",
+            release_track_mbid="release-track-1",
+        )
+    )
+    held = await store.list_held_imports("user-a", "user", source_task_id=task.id)
+    assert len(held) == 1
+    expected = tmp_path / "library" / "the arrival (None)" / "0101 the arrival.flac"
+    publisher.side_effect = None
+    publisher.return_value = LibraryManagementImportResult(
+        bundle_id="bundle-retry",
+        paths=(str(expected),),
+        local_track_ids=("track-1",),
+    )
+
+    paths = await fp.place_held_management_bundle(held)
+
+    assert paths == [expected]
+    retry_bundle = publisher.await_args.args[0]
+    assert len(retry_bundle.files) == 1
+    assert retry_bundle.files[0].input_path == held[0].held_path
+    assert retry_bundle.files[0].download_task_id == task.id
+    assert retry_bundle.files[0].release_track_position == 1
+    assert retry_bundle.files[0].release_mbid == "release-1"
+    assert retry_bundle.files[0].release_track_mbid == "release-track-1"
+    assert retry_bundle.files[0].authoritative_mapping is True
 
 
 @pytest.mark.asyncio

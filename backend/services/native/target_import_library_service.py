@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import sqlite3
 import time
@@ -44,8 +45,11 @@ from services.native.local_album_grouping_service import (
     grouping_artist_candidate_id,
 )
 from core.exceptions import (
+    AudioWriteError,
     AutomaticManagementHoldError,
     ConflictError,
+    LibraryManagementDestinationConflictError,
+    LibraryManagementPolicyChangedError,
     StaleRevisionError,
     ValidationError,
 )
@@ -64,6 +68,18 @@ if TYPE_CHECKING:
     from services.native.library_policy_resolver import LibraryPolicyResolver
 
 _TRACK_NAMESPACE = uuid.UUID("1a8da1ca-9ca8-4bc5-bdb7-512fcf58ef67")
+logger = logging.getLogger(__name__)
+
+
+def _caused_by_os_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if isinstance(current, OSError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class TargetImportLibraryService:
@@ -116,30 +132,76 @@ class TargetImportLibraryService:
             )
         except AutomaticManagementHoldError:
             raise
-        except ConflictError as error:
-            if not automatic:
-                raise
-            raise AutomaticManagementHoldError(
-                PATH_COLLISION_DIFFERENT,
-                "Library Management found a destination conflict. Resolve it and retry.",
-            ) from error
-        except StaleRevisionError as error:
+        except LibraryManagementPolicyChangedError as error:
             if not automatic:
                 raise
             raise AutomaticManagementHoldError(
                 POLICY_CHANGED,
-                "The library policy changed during publication. Retry this import.",
+                "The Library Management policy changed during publication. Retry this import.",
+            ) from error
+        except LibraryManagementDestinationConflictError as error:
+            if not automatic:
+                raise
+            raise AutomaticManagementHoldError(
+                PATH_COLLISION_DIFFERENT,
+                "A planned destination is occupied by different content. Nothing was overwritten.",
+            ) from error
+        except StaleRevisionError as error:
+            if not automatic:
+                raise
+            logger.warning(
+                "Automatic import publication was blocked by stale durable evidence",
+                exc_info=True,
+            )
+            raise AutomaticManagementHoldError(
+                BUNDLE_BLOCKED,
+                "The secured publication evidence changed while the organizer was verifying it. Nothing was overwritten.",
+            ) from error
+        except ConflictError as error:
+            if not automatic:
+                raise
+            logger.warning(
+                "Automatic import publication was blocked by conflicting durable evidence",
+                exc_info=True,
+            )
+            raise AutomaticManagementHoldError(
+                BUNDLE_BLOCKED,
+                "The durable publication evidence no longer agrees with its journal. Nothing was overwritten.",
+            ) from error
+        except AudioWriteError as error:
+            if not automatic:
+                raise
+            logger.warning(
+                "Automatic import staged audio verification failed",
+                exc_info=True,
+            )
+            if _caused_by_os_error(error):
+                raise AutomaticManagementHoldError(
+                    ROOT_UNAVAILABLE,
+                    "The library destination interrupted the staged write. The secured files will be retried automatically.",
+                ) from error
+            raise AutomaticManagementHoldError(
+                FIELD_UNSUPPORTED_BY_FORMAT,
+                "The staged audio write did not match its pinned format contract.",
             ) from error
         except ValidationError as error:
             if not automatic:
                 raise
+            logger.warning(
+                "Automatic import publication contract failed validation",
+                exc_info=True,
+            )
             raise AutomaticManagementHoldError(
-                FIELD_UNSUPPORTED_BY_FORMAT,
-                "The automatic write no longer passes its safety checks.",
+                BUNDLE_BLOCKED,
+                "The pinned publication contract no longer passes its safety checks. Nothing was overwritten.",
             ) from error
         except OSError as error:
             if not automatic:
                 raise
+            logger.warning(
+                "Automatic import publication hit a filesystem I/O failure",
+                exc_info=True,
+            )
             raise AutomaticManagementHoldError(
                 ROOT_UNAVAILABLE,
                 "The library destination is unavailable. Restore it and retry.",
@@ -380,7 +442,9 @@ class TargetImportLibraryService:
     ) -> tuple[str, ...]:
         resolver = self._resolver_getter()
         if resolver.policy_revision != expected_policy_revision:
-            raise StaleRevisionError("Library policy changed before import commit.")
+            raise LibraryManagementPolicyChangedError(
+                "Library policy changed before import commit."
+            )
         writes: list[tuple[int, ScannedTrackWrite]] = []
         replacements: dict[int, str] = {}
         for value in files:
@@ -405,6 +469,9 @@ class TargetImportLibraryService:
             bundle_id,
             writes=writes,
             replacement_track_ids=replacements,
+            requests_by_ordinal={
+                value.request.ordinal: value.request for value in files
+            },
             automatic_requests={
                 value.request.ordinal: value.request
                 for value in files

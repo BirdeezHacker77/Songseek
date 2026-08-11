@@ -30,6 +30,7 @@
 	import { albumHref, artistHref } from '$lib/utils/entityRoutes';
 
 	import DownloadProgressBar from './DownloadProgressBar.svelte';
+	import DownloadSourceStatus from './DownloadSourceStatus.svelte';
 	import DownloadStatusBadge from './DownloadStatusBadge.svelte';
 	import ReviewCandidates from './ReviewCandidates.svelte';
 	import VinylProgress from './VinylProgress.svelte';
@@ -160,8 +161,20 @@
 					/>
 				</div>
 			{/if}
+			<DownloadSourceStatus
+				{task}
+				live={stream.state.source}
+				bytesDownloaded={progress?.bytes_downloaded ?? task.downloaded_bytes}
+				compact
+			/>
 			{#if task.error_message}
-				<p class="mt-1 line-clamp-2 text-xs text-error/80">{task.error_message}</p>
+				<p
+					class="mt-1 line-clamp-2 text-xs {task.held_for_review
+						? 'text-warning/85'
+						: 'text-error/80'}"
+				>
+					{task.error_message}
+				</p>
 			{/if}
 		</div>
 

@@ -60,17 +60,17 @@ CREATE INDEX IF NOT EXISTS idx_quarantine_lookup ON download_quarantine(source, 
 CREATE INDEX IF NOT EXISTS idx_quarantine_quarantined_at ON download_quarantine(quarantined_at);
 """
 
-# Held imports (the "import anyway" review queue): a downloaded file that matched a track
-# by duration but failed the AcoustID recording-identity backstop, copied into an app-owned
-# held area so it survives the download client cleaning its completed folder. One 'held' row
-# per (release_group, disc, track) - de-duped so failover across editions doesn't pile up
-# copies. Resolving a row (imported/discarded) is what re-enables the album's auto-retry.
+# Held imports: verified acquisition bytes copied into app-owned storage when either the
+# recording-identity backstop or automatic Library Management blocks publication.
+# Identity holds de-duplicate by release position. Management holds are replaced as one
+# task-scoped acquisition unit so an interrupted write cannot masquerade as a complete album.
 _HELD_IMPORTS_DDL = """
 CREATE TABLE IF NOT EXISTS held_imports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     release_group_mbid TEXT,
     release_mbid TEXT,
+    release_track_mbid TEXT,
     recording_mbid TEXT,
     track_number INTEGER,
     disc_number INTEGER,
@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS held_imports (
     file_format TEXT,
     duration_seconds REAL,
     reason TEXT NOT NULL,
+    reason_detail TEXT,
     evidence_title TEXT,
     evidence_artist TEXT,
     evidence_score REAL,
@@ -93,10 +94,13 @@ CREATE TABLE IF NOT EXISTS held_imports (
     -- (clear_finished): the D10 confirm-replace must survive a cleared queue.
     origin TEXT NOT NULL DEFAULT 'user',
     naming_template TEXT,
+    management_retry_count INTEGER NOT NULL DEFAULT 0,
+    management_next_retry_at REAL,
     status TEXT NOT NULL DEFAULT 'held'
         CHECK(status IN ('held','imported','discarded')),
     created_at REAL NOT NULL,
-    resolved_at REAL
+    resolved_at REAL,
+    file_cleanup_completed_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_held_user ON held_imports(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_held_rg ON held_imports(release_group_mbid, status);
@@ -165,6 +169,7 @@ _SOULSEEK_ID_SEP = "\x1f"
 _TASK_UPDATABLE = frozenset(
     {
         "release_mbid",
+        "release_track_mbid",
         "recording_mbid",
         "artist_mbid",
         "source_username",
@@ -183,6 +188,15 @@ _TASK_UPDATABLE = frozenset(
         "quality_bitrate",
         "quality_sample_rate",
         "quality_bit_depth",
+        "advertised_queue_depth",
+        "queue_position_start",
+        "queue_position_end",
+        "remote_queued",
+        "preferred_quality_fallback_at",
+        "quality_pool_key",
+        "attempt_number",
+        "attempt_total",
+        "has_next_source",
         "staging_path",
         "final_path",
         "error_message",
@@ -200,6 +214,7 @@ _TASK_COLUMNS = (
     "download_type",
     "release_group_mbid",
     "release_mbid",
+    "release_track_mbid",
     "recording_mbid",
     "artist_mbid",
     "artist_name",
@@ -230,6 +245,15 @@ _TASK_COLUMNS = (
     "quality_bitrate",
     "quality_sample_rate",
     "quality_bit_depth",
+    "advertised_queue_depth",
+    "queue_position_start",
+    "queue_position_end",
+    "remote_queued",
+    "preferred_quality_fallback_at",
+    "quality_pool_key",
+    "attempt_number",
+    "attempt_total",
+    "has_next_source",
     "staging_path",
     "final_path",
     "error_message",
@@ -292,6 +316,7 @@ class DownloadStore(PersistenceBase):
                     download_type TEXT NOT NULL DEFAULT 'album',
                     release_group_mbid TEXT NOT NULL,
                     release_mbid TEXT,
+                    release_track_mbid TEXT,
                     recording_mbid TEXT,
                     artist_mbid TEXT,
                     artist_name TEXT NOT NULL,
@@ -330,6 +355,15 @@ class DownloadStore(PersistenceBase):
                     quality_bitrate INTEGER,
                     quality_sample_rate INTEGER,
                     quality_bit_depth INTEGER,
+                    advertised_queue_depth INTEGER,
+                    queue_position_start INTEGER,
+                    queue_position_end INTEGER,
+                    remote_queued INTEGER NOT NULL DEFAULT 0,
+                    preferred_quality_fallback_at REAL,
+                    quality_pool_key TEXT,
+                    attempt_number INTEGER NOT NULL DEFAULT 0,
+                    attempt_total INTEGER NOT NULL DEFAULT 0,
+                    has_next_source INTEGER NOT NULL DEFAULT 0,
                     staging_path TEXT,
                     final_path TEXT,
                     error_message TEXT,
@@ -375,11 +409,23 @@ class DownloadStore(PersistenceBase):
             # (try/except duplicate-column, per the plan's migration convention).
             for column, ddl in (
                 ("track_duration_seconds", "REAL"),
+                ("release_track_mbid", "TEXT"),
                 ("source", "TEXT NOT NULL DEFAULT 'soulseek'"),
                 ("origin", "TEXT NOT NULL DEFAULT 'user'"),
+                ("advertised_queue_depth", "INTEGER"),
+                ("queue_position_start", "INTEGER"),
+                ("queue_position_end", "INTEGER"),
+                ("remote_queued", "INTEGER NOT NULL DEFAULT 0"),
+                ("preferred_quality_fallback_at", "REAL"),
+                ("quality_pool_key", "TEXT"),
+                ("attempt_number", "INTEGER NOT NULL DEFAULT 0"),
+                ("attempt_total", "INTEGER NOT NULL DEFAULT 0"),
+                ("has_next_source", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 try:
-                    conn.execute(f"ALTER TABLE download_tasks ADD COLUMN {column} {ddl}")
+                    conn.execute(
+                        f"ALTER TABLE download_tasks ADD COLUMN {column} {ddl}"
+                    )
                 except sqlite3.OperationalError:
                     pass  # duplicate column - already present
             try:
@@ -402,11 +448,20 @@ class DownloadStore(PersistenceBase):
             for column, ddl in (
                 ("artist_mbid", "TEXT"),
                 ("origin", "TEXT NOT NULL DEFAULT 'user'"),
+                ("reason_detail", "TEXT"),
+                ("release_track_mbid", "TEXT"),
+                ("management_retry_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("management_next_retry_at", "REAL"),
+                ("file_cleanup_completed_at", "REAL"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE held_imports ADD COLUMN {column} {ddl}")
                 except sqlite3.OperationalError:
                     pass  # duplicate column - already present
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_held_management_retry "
+                "ON held_imports(management_next_retry_at, status)"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -423,7 +478,9 @@ class DownloadStore(PersistenceBase):
             for row in conn.execute("PRAGMA table_info(download_quarantine)").fetchall()
         }
         if "username" in cols:  # legacy slskd-shaped schema -> rebuild
-            conn.execute("ALTER TABLE download_quarantine RENAME TO download_quarantine_legacy")
+            conn.execute(
+                "ALTER TABLE download_quarantine RENAME TO download_quarantine_legacy"
+            )
             # The legacy indexes follow the renamed table but keep their names; SQLite index
             # names are schema-global, so the new CREATE INDEX IF NOT EXISTS would no-op
             # against them and the rebuilt table would end up index-less. Drop them first.
@@ -456,6 +513,7 @@ class DownloadStore(PersistenceBase):
         artist_name: str = "",
         album_title: str = "",
         release_mbid: str | None = None,
+        release_track_mbid: str | None = None,
         recording_mbid: str | None = None,
         artist_mbid: str | None = None,
         track_title: str | None = None,
@@ -485,6 +543,7 @@ class DownloadStore(PersistenceBase):
             artist_name=artist_name,
             album_title=album_title,
             release_mbid=release_mbid,
+            release_track_mbid=release_track_mbid,
             recording_mbid=recording_mbid,
             artist_mbid=artist_mbid,
             track_title=track_title,
@@ -529,7 +588,42 @@ class DownloadStore(PersistenceBase):
 
         return await self._read(operation)
 
-    async def get_parked_task_for_search_job(self, search_job_id: str) -> DownloadTask | None:
+    async def pin_task_release_mbid(
+        self, task_id: str, release_group_mbid: str, release_mbid: str
+    ) -> str:
+        """Pin a legacy task's first verified exact edition without allowing drift."""
+
+        def operation(conn: sqlite3.Connection) -> str:
+            row = conn.execute(
+                "SELECT release_group_mbid, release_mbid FROM download_tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("The acquisition task no longer exists")
+            if (
+                not row["release_group_mbid"]
+                or str(row["release_group_mbid"]).casefold()
+                != release_group_mbid.casefold()
+            ):
+                raise ValueError("The acquisition task changed before edition pinning")
+            existing = row["release_mbid"]
+            if existing:
+                if str(existing).casefold() != release_mbid.casefold():
+                    raise ValueError(
+                        "The acquisition task already pins another edition"
+                    )
+                return str(existing)
+            conn.execute(
+                "UPDATE download_tasks SET release_mbid = ?, updated_at = ? WHERE id = ?",
+                (release_mbid, time.time(), task_id),
+            )
+            return release_mbid
+
+        return await self._write(operation)
+
+    async def get_parked_task_for_search_job(
+        self, search_job_id: str
+    ) -> DownloadTask | None:
         """The orchestrator task PARKED on this search job awaiting review: linked to
         the job, no candidate picked, still queued. ``pick_candidate`` RESUMES it - a
         fresh task would drop the threaded single-track identity (search_jobs carries
@@ -598,6 +692,7 @@ class DownloadStore(PersistenceBase):
         poller uses this so one new album is enqueued at most once across all of
         its followers (DD5). Case-insensitive so a casing mismatch never lets a
         duplicate slip through."""
+
         def operation(conn: sqlite3.Connection) -> DownloadTask | None:
             row = conn.execute(
                 f"""SELECT * FROM download_tasks
@@ -768,6 +863,9 @@ class DownloadStore(PersistenceBase):
         bytes_downloaded: int,
         files_completed: int,
         progress_percent: int,
+        queue_position_start: int | None = None,
+        queue_position_end: int | None = None,
+        remote_queued: bool = False,
     ) -> None:
         now = time.time()
 
@@ -775,12 +873,20 @@ class DownloadStore(PersistenceBase):
             conn.execute(
                 """UPDATE download_tasks
                    SET downloaded_bytes = ?, files_completed = ?, progress_percent = ?,
+                       queue_position_start = ?, queue_position_end = ?,
+                       remote_queued = ?,
+                       preferred_quality_fallback_at = CASE
+                           WHEN ? > 0 THEN NULL ELSE preferred_quality_fallback_at END,
                        last_polled_at = ?, updated_at = ?
                    WHERE id = ?""",
                 (
                     bytes_downloaded,
                     files_completed,
                     progress_percent,
+                    queue_position_start,
+                    queue_position_end,
+                    int(remote_queued),
+                    bytes_downloaded,
                     now,
                     now,
                     task_id,
@@ -1060,7 +1166,9 @@ class DownloadStore(PersistenceBase):
 
         def operation(conn: sqlite3.Connection) -> list[str]:
             conn.execute(
-                "UPDATE download_tasks SET status='cancelled',cancelled_at=?,updated_at=? "
+                "UPDATE download_tasks SET status='cancelled',cancelled_at=?,updated_at=?,"
+                "queue_position_start=NULL,queue_position_end=NULL,remote_queued=0,"
+                "preferred_quality_fallback_at=NULL,has_next_source=0 "
                 "WHERE id=?",
                 (now, now, task_id),
             )
@@ -1431,7 +1539,9 @@ class DownloadStore(PersistenceBase):
 
     async def delete_quarantine(self, quarantine_id: int) -> None:
         def operation(conn: sqlite3.Connection) -> None:
-            conn.execute("DELETE FROM download_quarantine WHERE id = ?", (quarantine_id,))
+            conn.execute(
+                "DELETE FROM download_quarantine WHERE id = ?", (quarantine_id,)
+            )
 
         await self._write(operation)
 
@@ -1449,7 +1559,9 @@ class DownloadStore(PersistenceBase):
 
         return await self._write(operation)
 
-    async def list_quarantine(self, page: int = 1, page_size: int = 50) -> list[dict[str, Any]]:
+    async def list_quarantine(
+        self, page: int = 1, page_size: int = 50
+    ) -> list[dict[str, Any]]:
         offset = max(0, (page - 1) * page_size)
 
         def operation(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1488,7 +1600,11 @@ class DownloadStore(PersistenceBase):
         evidence_artist: str | None,
         evidence_score: float | None,
         naming_template: str | None,
+        release_track_mbid: str | None = None,
+        reason_detail: str | None = None,
         origin: str = "user",
+        management_retry_count: int = 0,
+        management_next_retry_at: float | None = None,
     ) -> int | None:
         """Hold a verify-rejected file for review. De-duped on (album, disc, track): if that
         track is already held, returns None so the caller can drop its extra copy instead of
@@ -1498,34 +1614,169 @@ class DownloadStore(PersistenceBase):
 
         def operation(conn: sqlite3.Connection) -> int | None:
             if track_number is not None:
-                dupe = conn.execute(
-                    """SELECT id FROM held_imports
-                       WHERE user_id = ? AND release_group_mbid IS ? AND disc_number IS ?
-                         AND track_number = ? AND status = 'held' LIMIT 1""",
-                    (user_id, release_group_mbid, disc_number, track_number),
-                ).fetchone()
+                if reason.startswith("management:"):
+                    # Management holds are complete acquisition units. An older hold
+                    # for the same album must not steal one track from this task and
+                    # leave an apparently complete unit that cannot be retried.
+                    dupe = conn.execute(
+                        """SELECT id FROM held_imports
+                           WHERE user_id = ? AND source_task_id IS ? AND disc_number IS ?
+                             AND track_number = ? AND status = 'held' LIMIT 1""",
+                        (user_id, source_task_id, disc_number, track_number),
+                    ).fetchone()
+                else:
+                    dupe = conn.execute(
+                        """SELECT id FROM held_imports
+                           WHERE user_id = ? AND release_group_mbid IS ? AND disc_number IS ?
+                             AND track_number = ? AND status = 'held' LIMIT 1""",
+                        (user_id, release_group_mbid, disc_number, track_number),
+                    ).fetchone()
                 if dupe is not None:
                     return None
             cur = conn.execute(
                 """INSERT INTO held_imports
-                   (user_id, release_group_mbid, release_mbid, recording_mbid, track_number,
+                   (user_id, release_group_mbid, release_mbid, release_track_mbid,
+                    recording_mbid, track_number,
                     disc_number, track_title, artist_name, artist_mbid, album_title, year,
                     held_path, original_filename, file_format, duration_seconds, reason,
+                    reason_detail,
                     evidence_title, evidence_artist, evidence_score, source, source_task_id,
-                    origin, naming_template, status, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'held',?)""",
-                (user_id, release_group_mbid, release_mbid, recording_mbid, track_number,
-                 disc_number, track_title, artist_name, artist_mbid, album_title, year,
-                 held_path, original_filename, file_format, duration_seconds, reason,
-                 evidence_title, evidence_artist, evidence_score, source, source_task_id,
-                 origin, naming_template, now),
+                    origin, naming_template, management_retry_count,
+                    management_next_retry_at, status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'held',?)""",
+                (
+                    user_id,
+                    release_group_mbid,
+                    release_mbid,
+                    release_track_mbid,
+                    recording_mbid,
+                    track_number,
+                    disc_number,
+                    track_title,
+                    artist_name,
+                    artist_mbid,
+                    album_title,
+                    year,
+                    held_path,
+                    original_filename,
+                    file_format,
+                    duration_seconds,
+                    reason,
+                    reason_detail,
+                    evidence_title,
+                    evidence_artist,
+                    evidence_score,
+                    source,
+                    source_task_id,
+                    origin,
+                    naming_template,
+                    management_retry_count,
+                    management_next_retry_at,
+                    now,
+                ),
             )
             return cur.lastrowid
 
         return await self._write(operation)
 
+    async def replace_management_hold_bundle(
+        self, held_files: list[HeldImport]
+    ) -> tuple[list[int], list[str]]:
+        """Replace one task's management hold in a single SQLite transaction.
+
+        The caller copies every file before entering this transaction and compensates
+        those filesystem copies if this write fails. Existing rows are retained in the
+        audit trail as discarded; their obsolete paths are returned for best-effort
+        cleanup after the new complete unit commits.
+        """
+
+        if not held_files:
+            raise ValueError("A management hold bundle cannot be empty")
+        ownership = {(value.user_id, value.source_task_id) for value in held_files}
+        if len(ownership) != 1 or next(iter(ownership))[1] is None:
+            raise ValueError("A management hold bundle must belong to one task")
+        if any(not value.reason.startswith("management:") for value in held_files):
+            raise ValueError("A management hold bundle requires management reasons")
+        positions = {(value.disc_number, value.track_number) for value in held_files}
+        if None in {position for pair in positions for position in pair}:
+            raise ValueError("A management hold bundle requires exact track positions")
+        if len(positions) != len(held_files):
+            raise ValueError("A management hold bundle contains duplicate positions")
+
+        user_id, source_task_id = next(iter(ownership))
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> tuple[list[int], list[str]]:
+            existing = conn.execute(
+                """SELECT id, held_path FROM held_imports
+                   WHERE user_id = ? AND source_task_id = ? AND status = 'held'
+                     AND reason LIKE 'management:%'""",
+                (user_id, source_task_id),
+            ).fetchall()
+            if existing:
+                existing_ids = [row["id"] for row in existing]
+                placeholders = ",".join("?" for _value in existing_ids)
+                conn.execute(
+                    f"UPDATE held_imports SET status = 'discarded', resolved_at = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (now, *existing_ids),
+                )
+
+            inserted: list[int] = []
+            for value in held_files:
+                cur = conn.execute(
+                    """INSERT INTO held_imports
+                       (user_id, release_group_mbid, release_mbid, release_track_mbid,
+                        recording_mbid,
+                        track_number, disc_number, track_title, artist_name, artist_mbid,
+                        album_title, year, held_path, original_filename, file_format,
+                        duration_seconds, reason, reason_detail, evidence_title,
+                        evidence_artist, evidence_score, source, source_task_id, origin,
+                        naming_template, management_retry_count,
+                        management_next_retry_at, status, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'held',?)""",
+                    (
+                        value.user_id,
+                        value.release_group_mbid,
+                        value.release_mbid,
+                        value.release_track_mbid,
+                        value.recording_mbid,
+                        value.track_number,
+                        value.disc_number,
+                        value.track_title,
+                        value.artist_name,
+                        value.artist_mbid,
+                        value.album_title,
+                        value.year,
+                        value.held_path,
+                        value.original_filename,
+                        value.file_format,
+                        value.duration_seconds,
+                        value.reason,
+                        value.reason_detail,
+                        value.evidence_title,
+                        value.evidence_artist,
+                        value.evidence_score,
+                        value.source,
+                        value.source_task_id,
+                        value.origin,
+                        value.naming_template,
+                        value.management_retry_count,
+                        value.management_next_retry_at,
+                        now,
+                    ),
+                )
+                inserted.append(cur.lastrowid)
+            return inserted, [str(row["held_path"]) for row in existing]
+
+        return await self._write(operation)
+
     async def list_held_imports(
-        self, user_id: str, user_role: str, release_group_mbid: str | None = None
+        self,
+        user_id: str,
+        user_role: str,
+        release_group_mbid: str | None = None,
+        source_task_id: str | None = None,
     ) -> list[HeldImport]:
         def operation(conn: sqlite3.Connection) -> list[HeldImport]:
             sql = "SELECT * FROM held_imports WHERE status = 'held'"
@@ -1536,6 +1787,9 @@ class DownloadStore(PersistenceBase):
             if release_group_mbid:
                 sql += " AND release_group_mbid = ?"
                 params.append(release_group_mbid)
+            if source_task_id:
+                sql += " AND source_task_id = ?"
+                params.append(source_task_id)
             sql += " ORDER BY created_at DESC"
             return [_row_to_held(dict(r)) for r in conn.execute(sql, params).fetchall()]
 
@@ -1545,7 +1799,9 @@ class DownloadStore(PersistenceBase):
         self, held_id: int, user_id: str, user_role: str
     ) -> HeldImport | None:
         def operation(conn: sqlite3.Connection) -> HeldImport | None:
-            row = conn.execute("SELECT * FROM held_imports WHERE id = ?", (held_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM held_imports WHERE id = ?", (held_id,)
+            ).fetchone()
             if row is None:
                 return None
             held = _row_to_held(dict(row))
@@ -1554,6 +1810,35 @@ class DownloadStore(PersistenceBase):
             return held
 
         return await self._read(operation)
+
+    async def list_pending_discard_file_cleanups(
+        self, *, limit: int = 100
+    ) -> list[HeldImport]:
+        def operation(conn: sqlite3.Connection) -> list[HeldImport]:
+            rows = conn.execute(
+                "SELECT * FROM held_imports WHERE status = 'discarded' "
+                "AND file_cleanup_completed_at IS NULL "
+                "ORDER BY resolved_at, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [_row_to_held(dict(row)) for row in rows]
+
+        return await self._read(operation)
+
+    async def complete_held_file_cleanup(self, held_ids: list[int]) -> None:
+        if not held_ids:
+            return
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> None:
+            placeholders = ",".join("?" for _value in held_ids)
+            conn.execute(
+                f"UPDATE held_imports SET file_cleanup_completed_at = ? "
+                f"WHERE id IN ({placeholders}) AND status = 'discarded'",
+                (now, *held_ids),
+            )
+
+        await self._write(operation)
 
     async def resolve_held_import(self, held_id: int, status: str) -> None:
         """Mark a held row imported/discarded (keeps the row for audit; the file itself is
@@ -1568,6 +1853,203 @@ class DownloadStore(PersistenceBase):
 
         await self._write(operation)
 
+    async def resolve_held_imports(self, held_ids: list[int], status: str) -> None:
+        """Resolve one acquisition unit in a single SQLite transaction."""
+
+        if not held_ids:
+            return
+        now = time.time()
+
+        def operation(conn: sqlite3.Connection) -> None:
+            placeholders = ",".join("?" for _value in held_ids)
+            conn.execute(
+                f"UPDATE held_imports SET status = ?, resolved_at = ? "
+                f"WHERE id IN ({placeholders}) AND status = 'held'",
+                (status, now, *held_ids),
+            )
+
+        await self._write(operation)
+
+    async def update_held_import_reason(
+        self, held_ids: list[int], *, reason: str, reason_detail: str | None
+    ) -> None:
+        """Refresh the actionable reason after an album-level management retry."""
+
+        if not held_ids:
+            return
+
+        def operation(conn: sqlite3.Connection) -> None:
+            placeholders = ",".join("?" for _value in held_ids)
+            conn.execute(
+                f"UPDATE held_imports SET reason = ?, reason_detail = ? "
+                f"WHERE id IN ({placeholders}) AND status = 'held'",
+                (reason, reason_detail, *held_ids),
+            )
+
+        await self._write(operation)
+
+    async def schedule_management_hold_retry(
+        self,
+        held_ids: list[int],
+        *,
+        retry_count: int,
+        next_retry_at: float | None,
+    ) -> None:
+        if not held_ids:
+            return
+
+        def operation(conn: sqlite3.Connection) -> None:
+            placeholders = ",".join("?" for _value in held_ids)
+            conn.execute(
+                f"UPDATE held_imports SET management_retry_count = ?, "
+                f"management_next_retry_at = ? WHERE id IN ({placeholders}) "
+                "AND status = 'held' AND reason LIKE 'management:%'",
+                (retry_count, next_retry_at, *held_ids),
+            )
+
+        await self._write(operation)
+
+    async def list_due_management_hold_units(
+        self, now: float, *, limit: int = 2
+    ) -> list[tuple[str, str]]:
+        def operation(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+            rows = conn.execute(
+                """SELECT source_task_id, user_id
+                   FROM held_imports
+                   WHERE status = 'held' AND source_task_id IS NOT NULL
+                     AND reason LIKE 'management:%'
+                     AND management_next_retry_at IS NOT NULL
+                     AND management_next_retry_at <= ?
+                   GROUP BY source_task_id, user_id
+                   ORDER BY MIN(management_next_retry_at), MIN(id)
+                   LIMIT ?""",
+                (now, limit),
+            ).fetchall()
+            return [(str(row["source_task_id"]), str(row["user_id"])) for row in rows]
+
+        return await self._read(operation)
+
+    async def repair_management_hold_identity(
+        self,
+        source_task_id: str,
+        release_mbid: str,
+        mappings: list[tuple[int, int, int, str, str]],
+        *,
+        task_release_track_mbid: str | None = None,
+    ) -> None:
+        """Persist one provider-proven legacy hold repair atomically.
+
+        Each mapping is ``(held_id, disc, position, recording_mbid,
+        release_track_mbid)``. The transaction rechecks the complete held unit and
+        its task before changing either table, so a stale, partial, duplicate, or
+        conflicting projection performs zero updates.
+        """
+
+        if not mappings:
+            raise ValueError("A held identity repair cannot be empty")
+        held_ids = [value[0] for value in mappings]
+        positions = {(value[1], value[2]) for value in mappings}
+        release_track_mbids = {value[4].casefold() for value in mappings if value[4]}
+        if (
+            len(set(held_ids)) != len(mappings)
+            or len(positions) != len(mappings)
+            or len(release_track_mbids) != len(mappings)
+            or any(not value[3] or not value[4] for value in mappings)
+            or any(value[1] < 1 or value[2] < 1 for value in mappings)
+        ):
+            raise ValueError(
+                "A held identity repair must contain unique complete mappings"
+            )
+
+        def operation(conn: sqlite3.Connection) -> None:
+            conn.execute("BEGIN IMMEDIATE")
+            task = conn.execute(
+                """SELECT release_mbid, release_track_mbid, download_type
+                   FROM download_tasks WHERE id = ?""",
+                (source_task_id,),
+            ).fetchone()
+            if task is None:
+                raise ValueError("The acquisition task changed before identity repair")
+            if (task["download_type"] == "track") != bool(task_release_track_mbid):
+                raise ValueError(
+                    "The acquisition task has an incomplete identity scope"
+                )
+            if (
+                task["release_mbid"]
+                and str(task["release_mbid"]).casefold() != release_mbid.casefold()
+            ):
+                raise ValueError("The acquisition task has a conflicting exact edition")
+            if (
+                task["release_track_mbid"]
+                and task_release_track_mbid
+                and str(task["release_track_mbid"]).casefold()
+                != task_release_track_mbid.casefold()
+            ):
+                raise ValueError("The acquisition task has a conflicting release track")
+
+            rows = conn.execute(
+                """SELECT id, release_mbid, release_track_mbid, recording_mbid,
+                          disc_number, track_number
+                   FROM held_imports
+                   WHERE source_task_id = ? AND status = 'held'
+                     AND reason LIKE 'management:%'""",
+                (source_task_id,),
+            ).fetchall()
+            if len(rows) != len(mappings) or {int(row["id"]) for row in rows} != set(
+                held_ids
+            ):
+                raise ValueError(
+                    "The held acquisition unit changed before identity repair"
+                )
+
+            expected = {value[0]: value for value in mappings}
+            for row in rows:
+                _held_id, disc, position, recording_mbid, release_track_mbid = expected[
+                    int(row["id"])
+                ]
+                if (
+                    row["disc_number"] != disc
+                    or row["track_number"] != position
+                    or not row["recording_mbid"]
+                    or str(row["recording_mbid"]).casefold()
+                    != recording_mbid.casefold()
+                    or (
+                        row["release_mbid"]
+                        and str(row["release_mbid"]).casefold()
+                        != release_mbid.casefold()
+                    )
+                    or (
+                        row["release_track_mbid"]
+                        and str(row["release_track_mbid"]).casefold()
+                        != release_track_mbid.casefold()
+                    )
+                ):
+                    raise ValueError(
+                        "The held acquisition identity is stale or conflicting"
+                    )
+
+            conn.execute(
+                """UPDATE download_tasks
+                   SET release_mbid = ?, release_track_mbid = ?, updated_at = ?
+                   WHERE id = ?""",
+                (release_mbid, task_release_track_mbid, time.time(), source_task_id),
+            )
+            for (
+                held_id,
+                _disc,
+                _position,
+                _recording_mbid,
+                release_track_mbid,
+            ) in mappings:
+                conn.execute(
+                    """UPDATE held_imports
+                       SET release_mbid = ?, release_track_mbid = ?
+                       WHERE id = ? AND status = 'held'""",
+                    (release_mbid, release_track_mbid, held_id),
+                )
+
+        await self._write(operation)
+
     async def has_unresolved_held_for_task(self, source_task_id: str) -> bool:
         def operation(conn: sqlite3.Connection) -> bool:
             row = conn.execute(
@@ -1578,7 +2060,9 @@ class DownloadStore(PersistenceBase):
 
         return await self._read(operation)
 
-    async def task_ids_with_unresolved_held(self, user_id: str, user_role: str) -> set[str]:
+    async def task_ids_with_unresolved_held(
+        self, user_id: str, user_role: str
+    ) -> set[str]:
         """The set of task ids that still have a held track under review - used to pause
         those tasks' auto-retry (they wait for the human, not another download)."""
 
@@ -1652,7 +2136,9 @@ class DownloadStore(PersistenceBase):
         self, job_id: str, status: str, error: str | None = None
     ) -> None:
         now = time.time()
-        completed = now if status in ("matched", "completed", "failed", "cancelled") else None
+        completed = (
+            now if status in ("matched", "completed", "failed", "cancelled") else None
+        )
 
         def operation(conn: sqlite3.Connection) -> None:
             conn.execute(
@@ -1705,12 +2191,16 @@ class DownloadStore(PersistenceBase):
         cutoff = time.time() - max_age_seconds
 
         def operation(conn: sqlite3.Connection) -> int:
-            cursor = conn.execute("DELETE FROM search_jobs WHERE created_at < ?", (cutoff,))
+            cursor = conn.execute(
+                "DELETE FROM search_jobs WHERE created_at < ?", (cutoff,)
+            )
             return cursor.rowcount
 
         return await self._write(operation)
 
-    async def count_user_track_requests_since(self, user_id: str, since_epoch: float) -> int:
+    async def count_user_track_requests_since(
+        self, user_id: str, since_epoch: float
+    ) -> int:
         """Track asks in the rolling request-quota window (D20). Tracks bypass the
         approval queue and have no request_history row, so their download task IS
         the ask - counted only for origin='user' (retries/upgrades aren't new asks).
@@ -1739,9 +2229,7 @@ class DownloadStore(PersistenceBase):
 
         return await self._read(operation)
 
-    async def list_retryable_tasks(
-        self, max_retry_count: int
-    ) -> list[DownloadTask]:
+    async def list_retryable_tasks(self, max_retry_count: int) -> list[DownloadTask]:
         """The newest task per target (album, or track + user) when that newest task
         is a terminal ``failed``/``partial`` under the ``retry_count`` ceiling.
 
@@ -1752,6 +2240,7 @@ class DownloadStore(PersistenceBase):
         again. Does NOT filter by age - the caller applies per-task exponential
         backoff (which depends on each task's own ``retry_count``). Ordered
         oldest-first so the most overdue retry goes first."""
+
         def operation(conn: sqlite3.Connection) -> list[DownloadTask]:
             # origin='upgrade' is excluded on BOTH sides (D18): outer, so a failed
             # upgrade never auto-retries; inner, so a newer upgrade task can't
@@ -1824,7 +2313,9 @@ class DownloadStore(PersistenceBase):
         where = " AND ".join(clauses)
 
         def operation(conn: sqlite3.Connection) -> int:
-            cur = conn.execute(f"DELETE FROM download_tasks WHERE {where}", tuple(params))
+            cur = conn.execute(
+                f"DELETE FROM download_tasks WHERE {where}", tuple(params)
+            )
             return cur.rowcount
 
         return await self._write(operation)
@@ -1869,7 +2360,8 @@ class DownloadStore(PersistenceBase):
                 ).fetchall()
             ]
             conn.execute(
-                "DELETE FROM held_imports WHERE release_group_mbid = ?", (release_group_mbid,)
+                "DELETE FROM held_imports WHERE release_group_mbid = ?",
+                (release_group_mbid,),
             )
             conn.execute(
                 "DELETE FROM download_quarantine WHERE release_group_mbid = ?",
@@ -1976,7 +2468,7 @@ def _quarantine_row_to_admin(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _row_to_held(row: dict[str, Any]) -> HeldImport:
-    # column names mirror HeldImport's fields exactly
+    row.pop("file_cleanup_completed_at", None)
     return HeldImport(**row)
 
 

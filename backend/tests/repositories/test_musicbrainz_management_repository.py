@@ -80,6 +80,20 @@ def test_partial_provider_document_uses_tolerant_defaults() -> None:
     assert release.label_info[0].label is None
 
 
+def test_work_type_identifier_may_be_explicitly_null() -> None:
+    release = msgspec.json.decode(
+        b'{"id":"release-id","media":[{"tracks":[{"recording":{"relations":['
+        b'{"type":"performance","work":{"id":"work-id","type":null,'
+        b'"type-id":null}}]}}]}]}',
+        type=MbManagementRelease,
+    )
+
+    work = release.media[0].tracks[0].recording.relations[0].work
+    assert work is not None
+    assert work.type is None
+    assert work.type_id is None
+
+
 @pytest.mark.asyncio
 async def test_fetch_uses_sorted_includes_priority_and_projection_cache_inputs(
     monkeypatch,
