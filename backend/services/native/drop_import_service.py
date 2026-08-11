@@ -278,6 +278,7 @@ class DropImportService:
             assert refreshed is not None
             return refreshed
         await self._finish_item(job, item.id, ident, result, unreadable, staged=entries)
+        await asyncio.to_thread(self._remove_empty_dirs, Path(job.staging_dir))
         await self._publish_job(job)
         refreshed = await self._store.get_item(item.id)
         assert refreshed is not None
@@ -301,6 +302,7 @@ class DropImportService:
         await self._store.update_item(
             item.id, status=ItemStatus.DISCARDED, staging_paths=[], detail="Discarded"
         )
+        await asyncio.to_thread(self._remove_empty_dirs, Path(job.staging_dir))
         await self._publish_job(job)
         refreshed = await self._store.get_item(item.id)
         assert refreshed is not None

@@ -314,6 +314,191 @@ describe('LibraryManagementPreviewPage', () => {
 			.toBeVisible();
 	});
 
+	it('counts only real tag changes and explains exact and rejected lyrics evidence', async () => {
+		const exactItem = {
+			...collisionItem,
+			source_relative_path: 'Artist/Album/01 Exact Match.flac',
+			destination_relative_path: 'Artist/Album/01 Exact Match.flac',
+			eligibility: 'eligible',
+			reason_code: null,
+			collisions: [],
+			desired_document: {
+				fields: [
+					{ name: 'title', value: 'Exact Match' },
+					{ name: 'artist', value: ['Artist'] },
+					{ name: 'album_artist', value: ['Artist'] },
+					{ name: 'album', value: 'Album' },
+					{ name: 'lyrics_plain', value: 'Pinned lyrics' }
+				]
+			},
+			diff: {
+				requires_write: true,
+				tags_changed: true,
+				path_changed: false,
+				field_mutations: [
+					{
+						name: 'title',
+						operation: 'unchanged',
+						before: 'Exact Match',
+						after: 'Exact Match',
+						representation_loss: null
+					},
+					{
+						name: 'lyrics_plain',
+						operation: 'set',
+						before: null,
+						after: 'Pinned lyrics',
+						representation_loss: null
+					}
+				],
+				lyrics_projection: {
+					status: 'available',
+					provider_id: 101,
+					provider_revision: 'lyrics-1',
+					reason: null,
+					plain_available: true,
+					synced_available: true,
+					plain_selected: true,
+					synced_selected: true,
+					preserve_existing: true
+				}
+			}
+		};
+		const mismatchItem = {
+			...exactItem,
+			ordinal: 1,
+			local_track_id: 'track-2',
+			source_relative_path: 'Artist/Album/02 Existing Lyrics.flac',
+			destination_relative_path: 'Artist/Album/02 Existing Lyrics.flac',
+			eligibility: 'warning',
+			reason_code: 'OPTIONAL_ENRICHMENT_DEFERRED',
+			desired_document: {
+				fields: [
+					{ name: 'title', value: 'Existing Lyrics' },
+					{ name: 'artist', value: ['Artist'] },
+					{ name: 'album_artist', value: ['Artist'] },
+					{ name: 'album', value: 'Album' }
+				]
+			},
+			diff: {
+				requires_write: false,
+				tags_changed: false,
+				path_changed: false,
+				field_mutations: [
+					{
+						name: 'title',
+						operation: 'unchanged',
+						before: 'Existing Lyrics',
+						after: 'Existing Lyrics',
+						representation_loss: null
+					},
+					{
+						name: 'artist',
+						operation: 'preserve',
+						before: ['Artist'],
+						after: ['Artist'],
+						representation_loss: null
+					}
+				],
+				lyrics_projection: {
+					status: 'mismatch',
+					provider_id: 102,
+					provider_revision: 'lyrics-2',
+					reason: 'LRCLIB returned a different recording signature.',
+					plain_available: false,
+					synced_available: false,
+					plain_selected: true,
+					synced_selected: false,
+					preserve_existing: false
+				}
+			}
+		};
+		h.preview = {
+			data: detail({
+				summary: {
+					...(detail().summary as Record<string, unknown>),
+					item_count: 2,
+					eligible_count: 1,
+					warning_count: 1,
+					blocked_count: 0,
+					tag_change_count: 1,
+					path_change_count: 0,
+					reasons: { OPTIONAL_ENRICHMENT_DEFERRED: 1 }
+				}
+			}),
+			isLoading: false,
+			isError: false
+		};
+		h.items = {
+			...h.items,
+			data: {
+				pages: [{ items: [exactItem, mismatchItem], has_more: false, next_after_ordinal: null }]
+			}
+		};
+
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect.element(page.getByText('1 tags', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('2 tags', { exact: true })).not.toBeInTheDocument();
+		await expect.element(page.getByText('Exact match pinned')).toBeVisible();
+		await expect.element(page.getByText(/LRCLIB matched the exact title/)).toBeVisible();
+		await expect.element(page.getByText('Will be written')).toBeVisible();
+		await expect.element(page.getByText('Existing lyrics preserved')).toBeVisible();
+
+		await page.getByRole('button', { name: 'Inspect exact diff for Existing Lyrics' }).click();
+		await expect.element(page.getByText('Signature mismatch')).toBeVisible();
+		await expect
+			.element(page.getByText('LRCLIB returned a different recording signature.'))
+			.toBeVisible();
+		await expect
+			.element(page.getByText(/Any lyrics already in this file remain untouched/))
+			.toBeVisible();
+	});
+
+	it('discloses native tags selected for explicit scrub', async () => {
+		h.items = {
+			...h.items,
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								...collisionItem,
+								eligibility: 'eligible',
+								reason_code: null,
+								collisions: [],
+								diff: {
+									...collisionItem.diff,
+									path_changed: false,
+									scrubbed_raw_tags: [
+										{
+											key: 'droppedneedle_acceptance_marker',
+											value_kind: 'text',
+											values: ['scrub-me-2026-08-07'],
+											value_count: 1,
+											truncated: false,
+											sha256: 'a'.repeat(64)
+										}
+									]
+								}
+							}
+						],
+						has_more: false,
+						next_after_ordinal: null
+					}
+				]
+			}
+		};
+
+		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await page.getByRole('button', { name: 'Inspect exact diff for Track' }).click();
+		await expect.element(page.getByText('Unmanaged tags to remove')).toBeVisible();
+		await expect.element(page.getByText('droppedneedle_acceptance_marker')).toBeVisible();
+		await expect.element(page.getByText('scrub-me-2026-08-07')).toBeVisible();
+		await expect.element(page.getByText('Remove', { exact: true })).toBeVisible();
+	});
+
 	it('shows exact diffs and requires the private token plus typed apply confirmation', async () => {
 		h.items = {
 			...h.items,
@@ -378,9 +563,9 @@ describe('LibraryManagementPreviewPage', () => {
 			.element(page.getByRole('heading', { name: 'Apply this exact preview?' }))
 			.toHaveFocus();
 		await expect.element(page.getByRole('button', { name: 'Apply exact preview' })).toBeDisabled();
-		await page
-			.getByRole('textbox', { name: /APPLY LIBRARY MANAGEMENT/ })
-			.fill('APPLY LIBRARY MANAGEMENT');
+		await page.getByRole('textbox', { name: /CONFIRM/ }).fill('APPLY LIBRARY MANAGEMENT');
+		await expect.element(page.getByRole('button', { name: 'Apply exact preview' })).toBeDisabled();
+		await page.getByRole('textbox', { name: /CONFIRM/ }).fill('CONFIRM');
 		await page.getByRole('button', { name: 'Apply exact preview' }).click();
 
 		expect(h.apply).toHaveBeenCalledWith({
@@ -392,6 +577,29 @@ describe('LibraryManagementPreviewPage', () => {
 			})
 		});
 		expect(h.goto).toHaveBeenCalledWith('/library/management/operations/preview-1');
+	});
+
+	it('uses the new token when navigation reuses the page for another preview', async () => {
+		sessionStorage.setItem(
+			'droppedneedle:library-management:preview-token:preview-1',
+			'source-token'
+		);
+		sessionStorage.setItem(
+			'droppedneedle:library-management:preview-token:resolution-1',
+			'resolution-token'
+		);
+		const view = render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
+
+		await expect.element(page.getByText('Read-only plan · no files changed')).toBeVisible();
+		await view.rerender({ jobId: 'resolution-1' });
+		await page.getByRole('button', { name: /Write tags and organize 1 file/ }).click();
+		await page.getByRole('textbox', { name: /CONFIRM/ }).fill('CONFIRM');
+		await page.getByRole('button', { name: 'Apply exact preview' }).click();
+
+		expect(h.apply).toHaveBeenCalledWith({
+			jobId: 'resolution-1',
+			request: expect.objectContaining({ preview_token: 'resolution-token' })
+		});
 	});
 
 	it('shows the sealed metadata, artwork, and file-attribute state for recovery previews', async () => {
@@ -407,6 +615,15 @@ describe('LibraryManagementPreviewPage', () => {
 								eligibility: 'eligible',
 								reason_code: null,
 								collisions: [],
+								desired_document: {
+									fields: [
+										...collisionItem.desired_document.fields,
+										{
+											name: 'musicbrainz_release_group_id',
+											value: '4b6276da-e7c7-36df-8771-34b92f774d3b'
+										}
+									]
+								},
 								capability: { audio_format: 'flac', restoration: true, album_artwork_version: 7 },
 								artwork_choices: [
 									{
@@ -531,6 +748,15 @@ describe('LibraryManagementPreviewPage', () => {
 								eligibility: 'eligible',
 								reason_code: null,
 								collisions: [],
+								desired_document: {
+									fields: [
+										...collisionItem.desired_document.fields,
+										{
+											name: 'musicbrainz_release_group_id',
+											value: '4b6276da-e7c7-36df-8771-34b92f774d3b'
+										}
+									]
+								},
 								artwork_choices: [],
 								capability: {
 									audio_format: 'mp3',
@@ -728,7 +954,6 @@ describe('LibraryManagementPreviewPage', () => {
 			button: 'Undo this operation for 1 file',
 			title: 'Undo this operation from this exact preview?',
 			confirm: 'Undo operation',
-			phrase: 'UNDO OPERATION',
 			detail: /does not restore the broader first-management baseline/
 		},
 		{
@@ -736,7 +961,6 @@ describe('LibraryManagementPreviewPage', () => {
 			button: 'Restore first-management state for 1 file',
 			title: 'Restore these first-management baselines?',
 			confirm: 'Restore first-management state',
-			phrase: 'RESTORE FIRST-MANAGEMENT STATE',
 			detail: /broader than Undo and leaves those files unmanaged/
 		},
 		{
@@ -744,7 +968,6 @@ describe('LibraryManagementPreviewPage', () => {
 			button: 'Apply collision resolution for 1 file',
 			title: 'Apply this exact collision resolution?',
 			confirm: 'Apply collision resolution',
-			phrase: 'APPLY COLLISION RESOLUTION',
 			detail: /No destination is overwritten and no duplicate is deleted automatically/
 		}
 	])('uses consequence-specific confirmation copy for $mode', async (example) => {
@@ -758,9 +981,7 @@ describe('LibraryManagementPreviewPage', () => {
 		await page.getByRole('button', { name: example.button }).click();
 		await expect.element(page.getByRole('heading', { name: example.title })).toHaveFocus();
 		await expect.element(page.getByText(example.detail)).toBeVisible();
-		await expect
-			.element(page.getByRole('textbox', { name: `Type ${example.phrase}` }))
-			.toBeVisible();
+		await expect.element(page.getByRole('textbox', { name: 'Type CONFIRM' })).toBeVisible();
 		await expect
 			.element(page.getByRole('button', { name: example.confirm, exact: true }))
 			.toBeDisabled();

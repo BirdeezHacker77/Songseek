@@ -203,6 +203,29 @@ def test_ordinary_writes_preserve_all_raw_tags_and_scrub_is_explicit() -> None:
     assert scrub_art.desired_artwork == ()
 
 
+def test_scrub_keeps_selected_managed_fields_that_already_match() -> None:
+    engine = AudioMetadataEngine()
+    current = engine.read(FIXTURES / "management_full.flac")
+    desired = DesiredAudioDocument(
+        fields=(
+            DesiredAudioField(name="title", action="unchanged"),
+            DesiredAudioField(name="album", action="unchanged"),
+        )
+    )
+
+    plan = engine.plan(
+        current,
+        desired,
+        AudioWritePolicy(scrub_unmanaged_tags=True),
+    )
+
+    preserved = {key.casefold() for key in plan.preserved_raw_keys}
+    scrubbed = {key.casefold() for key in plan.scrubbed_raw_keys}
+    assert "title" in preserved
+    assert "album" in preserved
+    assert "custom_keep" in scrubbed
+
+
 def test_id3v23_loss_is_blocked_by_default_or_explicitly_warned() -> None:
     engine = AudioMetadataEngine()
     current = engine.read(FIXTURES / "management_full.mp3")

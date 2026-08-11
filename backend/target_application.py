@@ -289,10 +289,10 @@ def create_isolated_target_application(
         search.router,
         requests.router,
         requests_page.router,
+        library_scan_target.router,
         library_operations_target.router,
         library_target.router,
         library_contributions.router,
-        library_scan_target.router,
         status.router,
         covers.router,
         library_policies_target.router,
@@ -379,10 +379,10 @@ def _include_complete_target_routes(app: FastAPI) -> None:
     for router in (
         search.router,
         requests.router,
+        library_scan_target.router,
         library_operations_target.router,
         library_target.router,
         library_contributions.router,
-        library_scan_target.router,
         status.router,
         covers.router,
     ):

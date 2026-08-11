@@ -25,6 +25,7 @@ from models.library_management import (
     LibraryManagementImportBundle,
     LibraryManagementImportFile,
 )
+from models.library_management_artwork import ArtworkProjection
 from models.library_management_enrichment import (
     ReplayGainAnalysis,
     ReplayGainTrackResult,
@@ -163,6 +164,37 @@ async def test_acquisition_toggle_pins_full_projection_but_drop_toggle_is_indepe
     assert msgspec.to_builtins(drop) == msgspec.to_builtins(
         _bundle(tmp_path, source, policy_revision, origin="drop_import")
     )
+
+
+@pytest.mark.asyncio
+async def test_automatic_import_preserves_embedded_artwork_without_replacement(
+    tmp_path: Path,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    current = preferences.get_library_management_settings()
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    profile.artwork.embedded_enabled = True
+    profile.artwork.external_enabled = False
+    preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=current.settings_revision
+    )
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(tmp_path, preferences, store)
+    service._artwork.project = AsyncMock(
+        return_value=ArtworkProjection(preserved_existing=True)
+    )
+    bundle = _bundle(tmp_path, source, policy_revision)
+    existing = AudioMetadataEngine().read(Path(bundle.files[0].input_path)).artwork
+
+    prepared = await service.prepare(bundle)
+
+    assert prepared.files[0].desired_document is not None
+    assert prepared.files[0].desired_document.artwork == existing
 
 
 @pytest.mark.asyncio

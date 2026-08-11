@@ -57,6 +57,7 @@ from models.library_management import (
     ManagementBlobKind,
 )
 from models.library_management_planning import PinnedLibraryManagementProfile
+from services.native.artwork_projection_service import merge_embedded_artwork
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.file_revision import revision_from_stat
 from services.native.library_filesystem_coordinator import (
@@ -949,7 +950,7 @@ class LibraryManagementPublisher:
                 if artifact.destination.is_relative_to(root)
             )
             if artifact.source is None:
-                blob = await self._blobs.add_file(
+                blob_sha256 = await self._capture_snapshot_file(
                     artifact.temporary,
                     kind="image",
                     created_at=self._clock(),
@@ -963,7 +964,7 @@ class LibraryManagementPublisher:
                         "after_relative_path": artifact.destination.relative_to(
                             destination_root
                         ).as_posix(),
-                        "after_blob_sha256": blob.sha256,
+                        "after_blob_sha256": blob_sha256,
                     }
                 )
             else:
@@ -982,7 +983,7 @@ class LibraryManagementPublisher:
                     )
                     continue
                 else:
-                    blob = await self._blobs.add_file(
+                    blob_sha256 = await self._capture_snapshot_file(
                         artifact.source,
                         kind="sidecar_manifest",
                         created_at=self._clock(),
@@ -1002,13 +1003,13 @@ class LibraryManagementPublisher:
                             "after_relative_path": artifact.destination.relative_to(
                                 destination_root
                             ).as_posix(),
-                            "blob_sha256": blob.sha256,
+                            "blob_sha256": blob_sha256,
                             "after_blob_sha256": artifact.fingerprint,
                         }
                     )
             await self._store.add_management_blob_reference(
                 LibraryManagementBlobReference(
-                    blob_sha256=blob.sha256,
+                    blob_sha256=blob_sha256,
                     reference_kind="operation_snapshot",
                     reference_id=reference_id,
                     created_at=self._clock(),
@@ -1929,7 +1930,7 @@ class LibraryManagementPublisher:
         if source_fingerprint != item.expected_file_fingerprint:
             raise StaleRevisionError("A managed file changed after preview.")
         current = await asyncio.to_thread(self._audio.read, source)
-        desired = await self._desired_document(item)
+        desired = await self._desired_document(item, current.artwork)
         identity_values = await self._validate_subject_revision(item, desired)
         diff = json.loads(item.diff_json)
         restore_blob_sha256 = diff.get("restore_snapshot_blob_sha256")
@@ -2308,10 +2309,13 @@ class LibraryManagementPublisher:
         created_at: float,
     ) -> str:
         fingerprint = await asyncio.to_thread(self._hash_file, path)
-        existing = await self._store.get_management_blob(fingerprint)
-        if existing is not None:
-            await self._blobs.read_bytes(fingerprint)
-            return fingerprint
+        registered = await self._blobs.register_existing(
+            fingerprint,
+            kind=kind,
+            created_at=created_at,
+        )
+        if registered is not None:
+            return registered.sha256
         blob = await self._blobs.add_file(path, kind=kind, created_at=created_at)
         return blob.sha256
 
@@ -2535,7 +2539,9 @@ class LibraryManagementPublisher:
         return release_mbid, recording_mbid, release_track_mbid
 
     async def _desired_document(
-        self, item: LibraryManagementPlanItem
+        self,
+        item: LibraryManagementPlanItem,
+        existing_artwork: tuple[EmbeddedArtworkDescriptor, ...],
     ) -> DesiredAudioDocument:
         desired = msgspec.json.decode(
             item.desired_document_json.encode(), type=DesiredAudioDocument
@@ -2561,7 +2567,12 @@ class LibraryManagementPublisher:
                 )
             )
         return msgspec.structs.replace(
-            desired, artwork=tuple(embedded) if embedded else desired.artwork
+            desired,
+            artwork=(
+                merge_embedded_artwork(existing_artwork, embedded)
+                if embedded
+                else desired.artwork
+            ),
         )
 
     @staticmethod
@@ -2974,7 +2985,9 @@ class LibraryManagementPublisher:
                 )
                 and (value.backup.exists() or value.backup.is_symlink())
             ):
-                raise ConflictError("A management backup path is occupied.")
+                raise LibraryManagementDestinationConflictError(
+                    "A management backup path is occupied."
+                )
             if self._hash_file(value.temporary) != value.staged_fingerprint:
                 raise StaleRevisionError("A staged output changed before publication.")
             if value.source is not None and value.source != value.destination:
@@ -2986,24 +2999,28 @@ class LibraryManagementPublisher:
                     and (value.destination.exists() or value.destination.is_symlink())
                     and value.destination not in recycled_sources
                 ):
-                    raise ConflictError("A destination was created after preview.")
+                    raise LibraryManagementDestinationConflictError(
+                        "A destination was created after preview."
+                    )
             elif value.source is not None:
                 if self._hash_file(value.source) != value.source_fingerprint:
                     raise StaleRevisionError("External artwork changed after preview.")
                 if value.recycle_move and (
                     value.destination.exists() or value.destination.is_symlink()
                 ):
-                    raise ConflictError(
+                    raise LibraryManagementDestinationConflictError(
                         "A recycle destination was created after preview."
                     )
             elif value.destination.exists() or value.destination.is_symlink():
-                raise ConflictError("An artwork destination was created after preview.")
+                raise LibraryManagementDestinationConflictError(
+                    "An artwork destination was created after preview."
+                )
             if value.destination != value.source and value.destination.parent.is_dir():
                 wanted = unicodedata.normalize("NFC", value.destination.name).casefold()
                 with os.scandir(value.destination.parent) as entries:
                     for index, entry in enumerate(entries, start=1):
                         if index > _MAX_DIRECTORY_COLLISION_ENTRIES:
-                            raise ConflictError(
+                            raise LibraryManagementDestinationConflictError(
                                 "A destination directory exceeds the collision limit."
                             )
                         if entry.name != value.destination.name and (
@@ -3013,7 +3030,7 @@ class LibraryManagementPublisher:
                             sibling = value.destination.parent / entry.name
                             if sibling in recycled_sources:
                                 continue
-                            raise ConflictError(
+                            raise LibraryManagementDestinationConflictError(
                                 "A normalized destination was created after preview."
                             )
 

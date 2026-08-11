@@ -26,7 +26,7 @@ from core.exceptions import ScriptValidationError
 from infrastructure.msgspec_fastapi import AppStruct
 
 LIBRARY_MANAGEMENT_SCHEMA_VERSION = 1
-PICARD_ORGANIZER_PRESET_VERSION = 1
+PICARD_ORGANIZER_PRESET_VERSION = 2
 
 PICARD_ORGANIZER_PROFILE_ID = "c2741223-da7c-5231-bcf5-7cead27b07d9"
 PICARD_ORGANIZER_NAMING_SCRIPT_ID = "f66f6409-ba0c-5b9a-9258-8fb91eefcb0b"
@@ -356,7 +356,8 @@ class LyricsManagementSettings(AppStruct):
     enabled: bool = False
     provider: Literal["lrclib"] = "lrclib"
     write_plain: bool = True
-    write_synced: bool = False
+    write_synced: bool = True
+    preserve_existing: bool = False
     required: bool = False
 
 
@@ -533,8 +534,22 @@ def _revision_without(value: object, field: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _remove_default_lyrics_preservation(profile: dict[str, object]) -> None:
+    enrichment = profile.get("enrichment")
+    if not isinstance(enrichment, dict):
+        return
+    lyrics = enrichment.get("lyrics")
+    if isinstance(lyrics, dict) and lyrics.get("preserve_existing") is False:
+        lyrics.pop("preserve_existing")
+
+
 def profile_revision(profile: LibraryManagementProfile) -> str:
-    return _revision_without(profile, "revision")
+    payload = msgspec.to_builtins(profile)
+    if not isinstance(payload, dict):
+        raise TypeError("Profile revision input must be a struct object.")
+    payload.pop("revision", None)
+    _remove_default_lyrics_preservation(payload)
+    return _stable_hash(payload)
 
 
 def naming_script_revision(script: NamingScriptSettings) -> str:
@@ -546,7 +561,15 @@ def tagging_script_revision(script: TaggingScriptSettings) -> str:
 
 
 def settings_revision(settings: LibraryManagementSettings) -> str:
-    return _stable_hash(settings)
+    payload = msgspec.to_builtins(settings)
+    if not isinstance(payload, dict):
+        raise TypeError("Settings revision input must be a struct object.")
+    profiles = payload.get("profiles")
+    if isinstance(profiles, list):
+        for profile in profiles:
+            if isinstance(profile, dict):
+                _remove_default_lyrics_preservation(profile)
+    return _stable_hash(payload)
 
 
 def _validate_uuid(value: str, label: str) -> None:

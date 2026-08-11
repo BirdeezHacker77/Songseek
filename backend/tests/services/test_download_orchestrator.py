@@ -446,6 +446,23 @@ async def test_process_task_autopicks_and_completes(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_completed_task_clears_error_from_failed_source(tmp_path: Path):
+    store, orch, *_ = _build(tmp_path, imported_rows=[{"file_path": "a"}])
+    task = await _new_task(store)
+    await store.update_status(
+        task.id,
+        DownloadStatus.FAILED,
+        error_message="No working source found on Soulseek",
+    )
+
+    await orch._finalize(task, DownloadStatus.COMPLETED)
+
+    final = await store.get_task(task.id)
+    assert final.status == DownloadStatus.COMPLETED
+    assert final.error_message is None
+
+
+@pytest.mark.asyncio
 async def test_process_task_uses_later_auto_candidate_when_first_needs_review(
     tmp_path: Path,
 ):

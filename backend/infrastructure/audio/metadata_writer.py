@@ -133,6 +133,7 @@ _VORBIS_TEXT_KEYS: dict[str, tuple[str, ...]] = {
     "acoustid_fingerprint": ("ACOUSTID_FINGERPRINT",),
     "genre": ("GENRE",),
     "lyrics_plain": ("LYRICS",),
+    "lyrics_synced": ("SYNCEDLYRICS",),
     "replaygain_track_gain": ("REPLAYGAIN_TRACK_GAIN",),
     "replaygain_album_gain": ("REPLAYGAIN_ALBUM_GAIN",),
     "replaygain_track_peak": ("REPLAYGAIN_TRACK_PEAK",),

@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 import msgspec
 import pytest
 
@@ -50,7 +53,8 @@ def test_picard_preset_is_available_but_no_root_is_activated() -> None:
     assert organizer.organization.move_sidecars is True
     assert organizer.enrichment.lyrics.enabled is False
     assert organizer.enrichment.lyrics.write_plain is True
-    assert organizer.enrichment.lyrics.write_synced is False
+    assert organizer.enrichment.lyrics.write_synced is True
+    assert organizer.enrichment.lyrics.preserve_existing is False
     assert organizer.enrichment.replaygain.enabled is False
 
 
@@ -99,6 +103,51 @@ def test_profile_revision_changes_when_a_capability_changes() -> None:
     profile.revision = profile_revision(profile)
 
     assert profile.revision != previous
+
+
+def test_default_lyrics_preservation_keeps_pre_field_profile_revision() -> None:
+    settings = build_initial_library_management_settings()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    legacy_payload = msgspec.to_builtins(profile)
+    legacy_payload.pop("revision")
+    legacy_payload["enrichment"]["lyrics"].pop("preserve_existing")
+    legacy_revision = hashlib.sha256(
+        json.dumps(
+            legacy_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+    assert profile_revision(profile) == legacy_revision
+
+    profile.enrichment.lyrics.preserve_existing = True
+
+    assert profile_revision(profile) != legacy_revision
+
+
+def test_default_lyrics_preservation_keeps_pre_field_settings_revision() -> None:
+    settings = build_initial_library_management_settings()
+    legacy_payload = msgspec.to_builtins(settings)
+    for profile in legacy_payload["profiles"]:
+        profile["enrichment"]["lyrics"].pop("preserve_existing")
+    legacy_revision = hashlib.sha256(
+        json.dumps(
+            legacy_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+    assert settings_revision(settings) == legacy_revision
+
+    settings.profiles[0].enrichment.lyrics.preserve_existing = True
+
+    assert settings_revision(settings) != legacy_revision
 
 
 @pytest.mark.parametrize(

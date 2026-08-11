@@ -8148,10 +8148,15 @@ class NativeLibraryStore(PersistenceBase):
         new_state: str,
         now: float,
         terminal_code: str | None = None,
+        stage_management_candidates: bool = False,
     ) -> ScanRun:
         if new_state not in _SCAN_TRANSITIONS.get(expected_state, set()):
             raise StaleRevisionError(
                 f"Scan state cannot move from {expected_state} to {new_state}."
+            )
+        if stage_management_candidates and new_state != "completed":
+            raise ValidationError(
+                "Scan management candidates can be staged only at completion."
             )
 
         def operation(connection: sqlite3.Connection) -> ScanRun:
@@ -8237,6 +8242,8 @@ class NativeLibraryStore(PersistenceBase):
                 raise StaleRevisionError(
                     "The scan run changed before the transition was applied."
                 )
+            if stage_management_candidates:
+                self._stage_scan_management_candidates_tx(connection, run_id, now=now)
             if new_state == "paused":
                 connection.execute(
                     "UPDATE library_scan_runs SET control_latency_ms = "
@@ -8478,6 +8485,91 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._read(operation)
 
+    @staticmethod
+    def _stage_scan_management_candidates_tx(
+        connection: sqlite3.Connection, run_id: str, *, now: float
+    ) -> int:
+        staged = connection.execute(
+            "SELECT 1 FROM library_scan_management_staging WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if staged is not None:
+            return 0
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO library_scan_management_candidates "
+            "(run_id,local_album_id,state,attempt_count,next_attempt_at) "
+            "SELECT inventory.run_id,track.local_album_id,'pending',0,? "
+            "FROM library_scan_inventory inventory "
+            "JOIN local_tracks track ON track.id=inventory.local_track_id "
+            "WHERE inventory.run_id=? "
+            "AND inventory.processing_state='indexed' "
+            "AND inventory.comparison_result IN ('new','changed') "
+            "AND track.availability='indexed' "
+            "GROUP BY inventory.run_id,track.local_album_id",
+            (now, run_id),
+        )
+        connection.execute(
+            "INSERT INTO library_scan_management_staging(run_id,staged_at) "
+            "VALUES (?,?)",
+            (run_id, now),
+        )
+        return int(cursor.rowcount)
+
+    async def get_due_scan_management_candidates(
+        self, *, now: float, limit: int = 256
+    ) -> list[dict[str, Any]]:
+        if limit < 1 or limit > 1_000:
+            raise ValidationError("Scan album page size must be between 1 and 1000.")
+
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT candidate.run_id,candidate.local_album_id,"
+                    "candidate.attempt_count,candidate.next_attempt_at "
+                    "FROM library_scan_management_candidates candidate "
+                    "JOIN library_scan_runs scan ON scan.id=candidate.run_id "
+                    "WHERE candidate.state='pending' "
+                    "AND candidate.next_attempt_at<=? AND scan.state='completed' "
+                    "ORDER BY candidate.next_attempt_at,candidate.run_id,"
+                    "candidate.local_album_id LIMIT ?",
+                    (now, limit),
+                ).fetchall()
+            ]
+
+        return await self._read(operation)
+
+    async def complete_scan_management_candidate(
+        self, run_id: str, local_album_id: str, *, completed_at: float
+    ) -> None:
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE library_scan_management_candidates "
+                "SET state='completed',last_attempt_at=?,completed_at=? "
+                "WHERE run_id=? AND local_album_id=? AND state='pending'",
+                (completed_at, completed_at, run_id, local_album_id),
+            )
+
+        await super()._background_write(operation)
+
+    async def defer_scan_management_candidate(
+        self,
+        run_id: str,
+        local_album_id: str,
+        *,
+        attempted_at: float,
+        next_attempt_at: float,
+    ) -> None:
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE library_scan_management_candidates "
+                "SET attempt_count=attempt_count+1,last_attempt_at=?,next_attempt_at=? "
+                "WHERE run_id=? AND local_album_id=? AND state='pending'",
+                (attempted_at, next_attempt_at, run_id, local_album_id),
+            )
+
+        await super()._background_write(operation)
+
     async def mark_scan_inventory_batch(
         self,
         run_id: str,
@@ -8621,7 +8713,11 @@ class NativeLibraryStore(PersistenceBase):
                 connection.execute(
                     "DELETE FROM library_scan_runs WHERE id IN ("
                     "SELECT id FROM library_scan_runs WHERE terminal_at IS NOT NULL "
-                    "AND inventory_cleanup_pending = 0 ORDER BY terminal_at DESC, id DESC "
+                    "AND inventory_cleanup_pending = 0 "
+                    "AND (state!='completed' OR NOT EXISTS (SELECT 1 "
+                    "FROM library_scan_management_candidates "
+                    "WHERE run_id=library_scan_runs.id AND state='pending')) "
+                    "ORDER BY terminal_at DESC, id DESC "
                     "LIMIT -1 OFFSET 50)"
                 )
                 return None, 0, True
@@ -8668,7 +8764,11 @@ class NativeLibraryStore(PersistenceBase):
                 connection.execute(
                     "DELETE FROM library_scan_runs WHERE id IN ("
                     "SELECT id FROM library_scan_runs WHERE terminal_at IS NOT NULL "
-                    "AND inventory_cleanup_pending = 0 ORDER BY terminal_at DESC, id DESC "
+                    "AND inventory_cleanup_pending = 0 "
+                    "AND (state!='completed' OR NOT EXISTS (SELECT 1 "
+                    "FROM library_scan_management_candidates "
+                    "WHERE run_id=library_scan_runs.id AND state='pending')) "
+                    "ORDER BY terminal_at DESC, id DESC "
                     "LIMIT -1 OFFSET 50)"
                 )
             return run_id, deleted, done
@@ -16007,22 +16107,34 @@ class NativeLibraryStore(PersistenceBase):
             ).fetchone()
             if row is None:
                 raise ConflictError("The management blob could not be registered.")
-            immutable = (
-                str(row["kind"]),
-                int(row["byte_length"]),
-                str(row["relative_path"]),
-                str(row["media_metadata_json"]),
-            )
-            supplied = (
-                blob.kind,
-                blob.byte_length,
-                blob.relative_path,
-                blob.media_metadata_json,
-            )
+            # One verified byte sequence can serve several snapshot/reference roles.
+            immutable = (int(row["byte_length"]), str(row["relative_path"]))
+            supplied = (blob.byte_length, blob.relative_path)
             if immutable != supplied:
                 raise ConflictError(
                     "The content hash is already registered with different metadata."
                 )
+            promotes_image = blob.kind == "image" and str(row["kind"]) != "image"
+            enriches_image = (
+                blob.kind == "image"
+                and str(row["kind"]) == "image"
+                and str(row["media_metadata_json"]) == "{}"
+                and blob.media_metadata_json != "{}"
+            )
+            if promotes_image or enriches_image:
+                if int(row["row_revision"]) >= MAX_REVISION:
+                    raise RevisionOverflowError(
+                        "The management blob revision reached its maximum value."
+                    )
+                promoted = connection.execute(
+                    "UPDATE library_management_blobs SET kind='image',"
+                    "media_metadata_json=?,row_revision=row_revision+1 "
+                    "WHERE sha256=? RETURNING *",
+                    (blob.media_metadata_json, blob.sha256),
+                ).fetchone()
+                if promoted is None:
+                    raise ConflictError("The management blob could not be promoted.")
+                row = promoted
             return msgspec.convert(dict(row), type=LibraryManagementBlob, strict=False)
 
         return await self._write(operation)
@@ -16247,7 +16359,7 @@ class NativeLibraryStore(PersistenceBase):
             ).fetchone()
 
             parameters: list[object] = [local_album_id]
-            selection_sql = ""
+            selection_sql = " AND track.availability = 'indexed'"
             if local_track_ids is not None:
                 placeholders = ",".join("?" for _ in local_track_ids)
                 selection_sql = f" AND track.id IN ({placeholders})"
@@ -17787,7 +17899,10 @@ class NativeLibraryStore(PersistenceBase):
             raise ValidationError("Management selection page size is out of range.")
 
         def operation(connection: sqlite3.Connection) -> LibraryManagementSelectionPage:
-            clauses = ["album.retired_into_album_id IS NULL"]
+            clauses = [
+                "album.retired_into_album_id IS NULL",
+                "track.availability = 'indexed'",
+            ]
             parameters: list[Any] = []
             ids_json = json.dumps(selection.ids)
             if selection.kind == "roots":
@@ -17845,6 +17960,7 @@ class NativeLibraryStore(PersistenceBase):
                 ).replace("album.", "selected_album.")
                 clauses = [
                     "album.retired_into_album_id IS NULL",
+                    "track.availability = 'indexed'",
                     "album.id IN (SELECT DISTINCT selected_track.local_album_id "
                     "FROM local_tracks selected_track JOIN local_albums selected_album "
                     "ON selected_album.id = selected_track.local_album_id WHERE "
@@ -18078,6 +18194,10 @@ class NativeLibraryStore(PersistenceBase):
                 raise StaleRevisionError(
                     "The management preview changed while sealing."
                 )
+            if str(job["control_request"]) != "none":
+                raise StaleRevisionError(
+                    "The management preview has a pending control request."
+                )
             catalog_revision = int(
                 connection.execute(
                     "SELECT value FROM library_catalog_revision WHERE singleton = 1"
@@ -18255,7 +18375,7 @@ class NativeLibraryStore(PersistenceBase):
                 "expected_work_count = ?, lease_owner = NULL, lease_expires_at = NULL, "
                 "heartbeat_at = NULL, updated_at = ?, row_revision = row_revision + 1, "
                 "event_revision = event_revision + 1 WHERE id = ? AND state = 'running' "
-                "AND lease_owner = ? RETURNING id",
+                "AND lease_owner = ? AND control_request = 'none' RETURNING id",
                 (summary["bundle_count"], now, job_id, worker_id),
             ).fetchone()
             if operation_job is None:
@@ -18845,6 +18965,32 @@ class NativeLibraryStore(PersistenceBase):
             return msgspec.convert(
                 dict(row), type=LibraryFileMutationJournal, strict=False
             )
+
+        return await self._read(operation)
+
+    async def get_latest_completed_management_audio_result(
+        self, local_track_id: str
+    ) -> dict | None:
+        def operation(connection: sqlite3.Connection) -> dict | None:
+            row = connection.execute(
+                "SELECT journal.job_id,journal.destination_root_id,"
+                "journal.destination_relative_path,journal.staged_fingerprint,"
+                "snapshot.mode operation_mode,item.diff_json "
+                "FROM library_file_mutation_journal journal "
+                "JOIN library_operation_jobs job ON job.id=journal.job_id "
+                "JOIN library_management_job_snapshots snapshot "
+                "ON snapshot.job_id=journal.job_id "
+                "JOIN library_management_plan_items item "
+                "ON item.job_id=journal.job_id "
+                "AND item.ordinal=journal.plan_item_ordinal "
+                "WHERE journal.subject_kind='audio' "
+                "AND journal.local_track_id=? AND journal.state='completed' "
+                "AND job.state='succeeded' "
+                "ORDER BY COALESCE(job.terminal_at,job.updated_at) DESC,"
+                "journal.updated_at DESC,journal.id DESC LIMIT 1",
+                (local_track_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
 
         return await self._read(operation)
 

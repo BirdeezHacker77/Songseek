@@ -1284,6 +1284,22 @@ CREATE TABLE IF NOT EXISTS library_scan_inventory (
     PRIMARY KEY(run_id, root_id, relative_path)
 );
 
+CREATE TABLE IF NOT EXISTS library_scan_management_candidates (
+    run_id TEXT NOT NULL REFERENCES library_scan_runs(id) ON DELETE CASCADE,
+    local_album_id TEXT NOT NULL REFERENCES local_albums(id) ON DELETE CASCADE,
+    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','completed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+    next_attempt_at REAL NOT NULL,
+    last_attempt_at REAL,
+    completed_at REAL,
+    PRIMARY KEY(run_id, local_album_id)
+);
+
+CREATE TABLE IF NOT EXISTS library_scan_management_staging (
+    run_id TEXT PRIMARY KEY REFERENCES library_scan_runs(id) ON DELETE CASCADE,
+    staged_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS library_scan_grouping_contexts (
     run_id TEXT NOT NULL REFERENCES library_scan_runs(id) ON DELETE CASCADE,
     root_id TEXT NOT NULL,
@@ -1679,6 +1695,8 @@ WHERE state IN ('discovering','indexing','reconciling','pausing','paused','stopp
 CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_runs_single_queued
 ON library_scan_runs((1)) WHERE state = 'queued';
 CREATE INDEX IF NOT EXISTS idx_scan_inventory_processing ON library_scan_inventory(run_id, processing_state, root_id, relative_path);
+CREATE INDEX IF NOT EXISTS idx_scan_inventory_management_candidates ON library_scan_inventory(run_id, processing_state, comparison_result, local_track_id);
+CREATE INDEX IF NOT EXISTS idx_scan_management_candidates_due ON library_scan_management_candidates(state, next_attempt_at, run_id, local_album_id);
 CREATE INDEX IF NOT EXISTS idx_scan_grouping_pending ON library_scan_grouping_contexts(run_id, state, root_id, relative_directory);
 CREATE INDEX IF NOT EXISTS idx_scan_grouping_evidence_token ON library_scan_grouping_evidence(run_id, root_id, relative_directory, grouping_token, local_track_id);
 CREATE INDEX IF NOT EXISTS idx_scan_grouping_evidence_preliminary ON library_scan_grouping_evidence(run_id, root_id, relative_directory, preliminary_key, local_track_id);

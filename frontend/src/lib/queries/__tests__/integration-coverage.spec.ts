@@ -76,6 +76,7 @@ const COVERAGE: Array<[string, string, string]> = [
 	['library stats', API.library.stats(), '/api/v1/library/stats'],
 	['library provider IDs', API.library.mbids(), '/api/v1/library/mbids'],
 	['library membership', API.library.membership(), '/api/v1/library/membership'],
+	['local track lyrics', API.local.lyrics('T1'), '/api/v1/local/tracks/T1/lyrics'],
 	['recently added albums', API.library.recentlyAdded(), '/api/v1/library/recently-added?limit=20'],
 	['local album detail', API.library.albumDetail('A1'), '/api/v1/library/albums/A1'],
 	['local album copies', API.library.albumCopies('A1'), '/api/v1/library/albums/A1/copies'],

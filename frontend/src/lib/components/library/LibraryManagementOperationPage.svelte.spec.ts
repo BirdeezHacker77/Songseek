@@ -99,6 +99,28 @@ beforeEach(() => {
 });
 
 describe('LibraryManagementOperationPage', () => {
+	it('redirects a completed planning preview to the read-only preview page', async () => {
+		h.operation = {
+			data: operation({
+				state: 'ready',
+				phase: 'ready',
+				mode: 'preview',
+				ready_for_confirmation: true,
+				expected_work_count: 214,
+				completed_count: 0
+			}),
+			isLoading: false,
+			isError: false
+		};
+
+		render(LibraryManagementOperationPage, { jobId: 'job-1' });
+
+		expect(h.goto).toHaveBeenCalledWith('/library/management/previews/job-1', {
+			replaceState: true
+		});
+		await expect.element(page.getByText('File-writing operation')).not.toBeInTheDocument();
+	});
+
 	it('shows truthful indeterminate progress while a preview total is still being discovered', async () => {
 		h.operation = {
 			data: operation({
@@ -357,12 +379,41 @@ describe('LibraryManagementOperationPage', () => {
 						{ name: 'artist', value: ['Anthony Green'] },
 						{ name: 'album_artist', value: ['Anthony Green'] },
 						{ name: 'album', value: 'Avalon' },
+						{
+							name: 'musicbrainz_release_group_id',
+							value: '4b6276da-e7c7-36df-8771-34b92f774d3b'
+						},
 						{ name: 'track_number', value: ordinal + 1 }
 					]
 				},
 				artwork_choices: [],
-				diff: {},
-				capability: { audio_format: 'flac', album_artwork_version: 7 },
+				diff:
+					ordinal === 1
+						? {
+								tags_changed: true,
+								field_mutations: [
+									{
+										name: 'lyrics_plain',
+										operation: 'set',
+										before: null,
+										after: 'Pinned lyrics',
+										representation_loss: null
+									}
+								],
+								lyrics_projection: {
+									status: 'available',
+									provider_id: 101,
+									provider_revision: 'lyrics-1',
+									reason: null,
+									plain_available: true,
+									synced_available: false,
+									plain_selected: true,
+									synced_selected: false,
+									preserve_existing: false
+								}
+							}
+						: {},
+				capability: { audio_format: 'flac' },
 				collisions: []
 			},
 			work_state: 'succeeded',
@@ -392,9 +443,15 @@ describe('LibraryManagementOperationPage', () => {
 		await expect.element(page.getByText('2 files')).toBeVisible();
 		await expect
 			.element(page.getByTestId('management-dossier-artwork'))
-			.toHaveAttribute('data-src', '/api/v1/library/albums/album-1/artwork/cached?v=7');
+			.toHaveAttribute(
+				'data-src',
+				'/api/v1/covers/release-group/4b6276da-e7c7-36df-8771-34b92f774d3b?size=500'
+			);
 		await page.getByRole('button', { name: 'Inspect result evidence for Dear Child' }).click();
 		await expect.element(page.getByRole('heading', { name: 'Dear Child' })).toBeVisible();
+		await expect.element(page.getByText('Exact match pinned')).toBeVisible();
+		await expect.element(page.getByText('Written', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('Will be written')).not.toBeInTheDocument();
 		await expect.element(page.getByText('Planned', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('Validated', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('Checksum Verified: true')).toBeVisible();

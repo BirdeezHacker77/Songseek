@@ -655,6 +655,18 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
             value, "description", "Changed after automatic preparation"
         ),
     )
+    artwork_blob = await blobs.add_bytes(
+        artwork_content,
+        kind="image",
+        created_at=109.0,
+        media_metadata_json='{"height":534,"mime_type":"image/jpeg","width":599}',
+    )
+    sidecar_blob = await blobs.add_bytes(
+        incoming_sidecar.read_bytes(),
+        kind="sidecar_manifest",
+        created_at=109.0,
+        media_metadata_json='{"source":"existing-snapshot"}',
+    )
 
     result = await service.publish_import_bundle(bundle)
 
@@ -680,6 +692,12 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
     assert (root / "Managed Artist/Managed Album/album.cue").read_text() == (
         "FILE original.flac WAVE"
     )
+    assert (
+        await store.get_management_blob(artwork_blob.sha256)
+    ).media_metadata_json == artwork_blob.media_metadata_json
+    assert (
+        await store.get_management_blob(sidecar_blob.sha256)
+    ).media_metadata_json == sidecar_blob.media_metadata_json
     assert not incoming_sidecar.exists()
     assert state is not None and state.applied_projection_hash == "c" * 64
     assert identity is not None

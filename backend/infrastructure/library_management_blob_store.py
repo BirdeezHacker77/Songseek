@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
@@ -19,6 +20,24 @@ from models.library_management import (
 )
 
 _COPY_CHUNK_SIZE = 1024 * 1024
+_IMAGE_HEADER_BYTES = 12
+
+
+def _image_metadata_json(content: bytes) -> str:
+    mime_type: str | None = None
+    if content.startswith(b"\xff\xd8\xff"):
+        mime_type = "image/jpeg"
+    elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime_type = "image/png"
+    elif content.startswith((b"GIF87a", b"GIF89a")):
+        mime_type = "image/gif"
+    elif len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        mime_type = "image/webp"
+    return (
+        json.dumps({"mime_type": mime_type}, separators=(",", ":"), sort_keys=True)
+        if mime_type is not None
+        else "{}"
+    )
 
 
 class _Digest(Protocol):
@@ -55,6 +74,8 @@ class LibraryManagementBlobStore:
         media_metadata_json: str = "{}",
     ) -> LibraryManagementBlob:
         sha256 = hashlib.sha256(content).hexdigest()
+        if kind == "image" and media_metadata_json == "{}":
+            media_metadata_json = _image_metadata_json(content)
         async with self._operation_lock:
             byte_length = await asyncio.to_thread(self._publish_bytes, content, sha256)
             return await self._register(
@@ -74,15 +95,44 @@ class LibraryManagementBlobStore:
         media_metadata_json: str = "{}",
     ) -> LibraryManagementBlob:
         async with self._operation_lock:
-            sha256, byte_length = await asyncio.to_thread(
+            sha256, byte_length, header = await asyncio.to_thread(
                 self._publish_source_file, Path(source)
             )
+            if kind == "image" and media_metadata_json == "{}":
+                media_metadata_json = _image_metadata_json(header)
             return await self._register(
                 sha256=sha256,
                 kind=kind,
                 byte_length=byte_length,
                 media_metadata_json=media_metadata_json,
                 created_at=created_at,
+            )
+
+    async def register_existing(
+        self,
+        sha256: str,
+        *,
+        kind: ManagementBlobKind,
+        created_at: float,
+        media_metadata_json: str = "{}",
+    ) -> LibraryManagementBlob | None:
+        async with self._operation_lock:
+            existing = await self._ledger.get_management_blob(sha256)
+            if existing is None:
+                return None
+            content = await asyncio.to_thread(self._read_verified, existing)
+            if kind == "image" and media_metadata_json == "{}":
+                media_metadata_json = _image_metadata_json(content)
+            return await self._ledger.register_management_blob(
+                LibraryManagementBlob(
+                    sha256=existing.sha256,
+                    kind=kind,
+                    byte_length=existing.byte_length,
+                    relative_path=existing.relative_path,
+                    media_metadata_json=media_metadata_json,
+                    created_at=created_at,
+                    row_revision=existing.row_revision,
+                )
             )
 
     async def read_bytes(self, sha256: str) -> bytes:
@@ -166,31 +216,37 @@ class LibraryManagementBlobStore:
         finally:
             self._remove_temporary(temporary_path)
 
-    def _publish_source_file(self, source: Path) -> tuple[str, int]:
+    def _publish_source_file(self, source: Path) -> tuple[str, int, bytes]:
         if not source.is_file() or source.is_symlink():
             raise ValidationError("The blob source must be a regular file.")
         temporary_path = self._new_temporary_path()
         digest = hashlib.sha256()
         byte_length = 0
+        header = b""
         try:
             with source.open("rb") as input_file, temporary_path.open("wb") as output:
-                byte_length = self._copy_and_hash(input_file, output, digest)
+                byte_length, header = self._copy_and_hash(input_file, output, digest)
                 output.flush()
                 os.fsync(output.fileno())
             sha256 = digest.hexdigest()
             self._publish_temporary(temporary_path, sha256, byte_length)
-            return sha256, byte_length
+            return sha256, byte_length, header
         finally:
             self._remove_temporary(temporary_path)
 
     @staticmethod
-    def _copy_and_hash(input_file: BinaryIO, output: BinaryIO, digest: _Digest) -> int:
+    def _copy_and_hash(
+        input_file: BinaryIO, output: BinaryIO, digest: _Digest
+    ) -> tuple[int, bytes]:
         byte_length = 0
+        header = b""
         while chunk := input_file.read(_COPY_CHUNK_SIZE):
             output.write(chunk)
             digest.update(chunk)
             byte_length += len(chunk)
-        return byte_length
+            if len(header) < _IMAGE_HEADER_BYTES:
+                header += chunk[: _IMAGE_HEADER_BYTES - len(header)]
+        return byte_length, header
 
     def _publish_temporary(
         self, temporary_path: Path, sha256: str, byte_length: int

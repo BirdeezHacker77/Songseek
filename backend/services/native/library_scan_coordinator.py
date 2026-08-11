@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from core.exceptions import StaleRevisionError, ValidationError
@@ -27,6 +27,9 @@ from services.native.library_scan_events import LibraryScanEventPublisher
 from services.native.background_workload_gate import BackgroundWorkloadGate
 
 PolicyResolverGetter = Callable[[], LibraryPolicyResolver]
+IndexedAlbumCallback = Callable[[str], Awaitable[object]]
+INDEXED_ALBUM_CALLBACK_BATCH_SIZE = 16
+INDEXED_ALBUM_CALLBACK_RETRY_MAX_SECONDS = 300.0
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +46,7 @@ class LibraryScanCoordinator:
         clock: Callable[[], float] = time.time,
         workload_gate: BackgroundWorkloadGate | None = None,
         filesystem_coordinator: LibraryFilesystemCoordinator | None = None,
+        on_indexed_album: IndexedAlbumCallback | None = None,
     ) -> None:
         self._store = store
         self._inventory = inventory
@@ -53,6 +57,7 @@ class LibraryScanCoordinator:
         self._clock = clock
         self._workload_gate = workload_gate
         self._filesystem = filesystem_coordinator
+        self._on_indexed_album = on_indexed_album
         self._last_progress_log: dict[str, float] = {}
         self._pending_control_run_ids: set[str] = set()
 
@@ -258,6 +263,7 @@ class LibraryScanCoordinator:
         if run is None:
             run = await self._store.claim_next_scan_run(now=self._clock())
         if run is None:
+            await self._schedule_pending_indexed_albums()
             return None
         if newly_claimed and self._events is not None:
             await self._events.publish(run, event="scan.transition")
@@ -381,6 +387,7 @@ class LibraryScanCoordinator:
             expected_revision=run.row_revision,
             new_state="completed",
             now=self._clock(),
+            stage_management_candidates=self._on_indexed_album is not None,
         )
         if self._events is not None:
             await self._events.publish(run, event="scan.transition")
@@ -390,3 +397,38 @@ class LibraryScanCoordinator:
         if self._filesystem is not None:
             self._filesystem.forget_scan(run.id)
         return run
+
+    async def _schedule_pending_indexed_albums(self) -> None:
+        if self._on_indexed_album is None:
+            return
+        now = self._clock()
+        candidates = await self._store.get_due_scan_management_candidates(
+            now=now,
+            limit=INDEXED_ALBUM_CALLBACK_BATCH_SIZE,
+        )
+        for candidate in candidates:
+            run_id = str(candidate["run_id"])
+            album_id = str(candidate["local_album_id"])
+            try:
+                await self._on_indexed_album(album_id)
+            except Exception:  # noqa: BLE001 - durable retry isolates scan from management
+                retry_seconds = min(
+                    INDEXED_ALBUM_CALLBACK_RETRY_MAX_SECONDS,
+                    2.0 ** min(int(candidate["attempt_count"]), 9),
+                )
+                await self._store.defer_scan_management_candidate(
+                    run_id,
+                    album_id,
+                    attempted_at=now,
+                    next_attempt_at=now + retry_seconds,
+                )
+                logger.warning(
+                    "Post-scan album scheduling failed for %s; retrying in %.0fs",
+                    album_id,
+                    retry_seconds,
+                    exc_info=True,
+                )
+            else:
+                await self._store.complete_scan_management_candidate(
+                    run_id, album_id, completed_at=now
+                )

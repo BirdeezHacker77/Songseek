@@ -148,6 +148,54 @@
 			field.field.toLowerCase().includes(fieldFilter.trim().toLowerCase())
 		)
 	);
+	const managedFieldCount = $derived(
+		draft.metadata.fields.filter((field) => field.mode !== 'disabled').length
+	);
+	const enrichmentEnabled = $derived(
+		draft.enrichment.lyrics.enabled || draft.enrichment.replaygain.enabled
+	);
+	const lyricsOutputs = $derived.by(() => {
+		if (!draft.enrichment.lyrics.enabled) return 'Lyrics off';
+		const outputs: string[] = [];
+		if (draft.enrichment.lyrics.write_synced) outputs.push('synced');
+		if (draft.enrichment.lyrics.write_plain) outputs.push('plain');
+		return outputs.length > 0 ? `Lyrics · ${outputs.join(' + ')}` : 'Lyrics · no output';
+	});
+	const replayGainSummary = $derived(
+		draft.enrichment.replaygain.enabled
+			? `ReplayGain · ${draft.enrichment.replaygain.mode.replace('_', ' ')}`
+			: 'ReplayGain off'
+	);
+	const creditsAndGenresEnabled = $derived(draft.metadata.enabled || draft.genres.enabled);
+	const artistCreditSummary = $derived(
+		draft.metadata.enabled
+			? `Credits · ${draft.metadata.artist_credits.standardization}`
+			: 'Credits inactive'
+	);
+	const relationshipSummary = $derived(
+		draft.metadata.enabled && draft.metadata.relationships.enabled
+			? `Relationships · ${draft.metadata.relationships.types.length}`
+			: 'Relationships off'
+	);
+	const genreSummary = $derived(
+		draft.genres.enabled ? `Genres · ${draft.genres.mode.replace('_', ' ')}` : 'Genres off'
+	);
+	const artworkEnabled = $derived(draft.artwork.embedded_enabled || draft.artwork.external_enabled);
+	const organizationEnabled = $derived(
+		draft.organization.rename_enabled ||
+			draft.organization.move_enabled ||
+			draft.organization.move_sidecars
+	);
+	const enabledSafeguardCount = $derived(
+		[
+			draft.file_behavior.preserve_timestamps,
+			draft.file_behavior.preserve_permissions,
+			draft.file_behavior.strict_capability_gate,
+			draft.file_behavior.reject_symlinks,
+			draft.file_behavior.validate_written_metadata,
+			draft.file_behavior.validate_technical_audio
+		].filter(Boolean).length
+	);
 
 	onMount(() => {
 		dialog.showModal();
@@ -346,12 +394,23 @@
 					</div>{/if}
 			</section>
 
-			<details class="management-editor-section" open>
+			<details class="management-editor-section" data-active={draft.metadata.enabled}>
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><Tags class="h-4 w-4" /></span>
-					<span><strong>Metadata fields</strong><small>Choose authority field by field</small></span
+					<span class="management-editor-summary__copy"
+						><strong>Metadata fields</strong><small>Choose authority field by field</small></span
 					>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-overview">
+						<span class="management-editor-state" data-active={draft.metadata.enabled}
+							>{draft.metadata.enabled ? 'On' : 'Off'}</span
+						>
+						<span class="management-editor-chip"
+							>{draft.metadata.enabled
+								? `${managedFieldCount} managed ${managedFieldCount === 1 ? 'field' : 'fields'}`
+								: 'Saved choices retained'}</span
+						>
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4 space-y-4">
 					<label class="management-master-toggle">
@@ -400,15 +459,26 @@
 				</div>
 			</details>
 
-			<details class="management-editor-section">
+			<details class="management-editor-section" data-active={enrichmentEnabled}>
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><AudioWaveform class="h-4 w-4" /></span>
-					<span
+					<span class="management-editor-summary__copy"
 						><strong>Lyrics and loudness</strong><small
 							>Optional LRCLIB lyrics and ReplayGain analysis</small
 						></span
 					>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-overview">
+						<span class="management-editor-state" data-active={enrichmentEnabled}
+							>{enrichmentEnabled ? 'On' : 'Off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.enrichment.lyrics.enabled}
+							>{lyricsOutputs}</span
+						>
+						<span class="management-editor-chip" data-active={draft.enrichment.replaygain.enabled}
+							>{replayGainSummary}</span
+						>
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4 grid gap-4 lg:grid-cols-2">
 					<section class="rounded-xl border border-base-content/10 bg-base-100/35 p-4">
@@ -445,22 +515,46 @@
 								/>
 								<span
 									><strong>Write synchronized lyrics</strong><small
-										>ID3 and ASF only; previews block unsupported formats.</small
+										>Preferred when safely supported; plain lyrics remain the fallback.</small
 									></span
 								>
 							</label>
-							<label class="management-master-toggle">
-								<input
-									type="checkbox"
-									class="checkbox checkbox-sm"
-									bind:checked={draft.enrichment.lyrics.required}
-								/>
-								<span
-									><strong>Require lyrics</strong><small
-										>Hold the whole unit when no exact selected output is available.</small
-									></span
-								>
-							</label>
+							<details class="management-editor-advanced">
+								<summary>
+									<span
+										><strong>Advanced lyrics behavior</strong><small
+											>Preservation and safety gates</small
+										></span
+									>
+									<ChevronRight class="h-4 w-4" />
+								</summary>
+								<div class="mt-3 grid gap-3">
+									<label class="management-master-toggle">
+										<input
+											type="checkbox"
+											class="checkbox checkbox-sm"
+											bind:checked={draft.enrichment.lyrics.preserve_existing}
+										/>
+										<span
+											><strong>Preserve existing lyrics</strong><small
+												>Fill only empty selected lyrics fields instead of replacing them.</small
+											></span
+										>
+									</label>
+									<label class="management-master-toggle">
+										<input
+											type="checkbox"
+											class="checkbox checkbox-sm"
+											bind:checked={draft.enrichment.lyrics.required}
+										/>
+										<span
+											><strong>Require lyrics</strong><small
+												>Hold the release when no selected lyrics format has an exact match.</small
+											></span
+										>
+									</label>
+								</div>
+							</details>
 						</fieldset>
 					</section>
 
@@ -489,44 +583,71 @@
 									<option value="replace">Replace</option>
 								</select>
 							</label>
-							<label class="management-master-toggle">
-								<input
-									type="checkbox"
-									class="checkbox checkbox-sm"
-									bind:checked={draft.enrichment.replaygain.album_aware}
-								/>
-								<span
-									><strong>Album-aware analysis</strong><small
-										>Calculate coherent track and album gain/peak values.</small
-									></span
-								>
-							</label>
-							<label class="management-master-toggle">
-								<input
-									type="checkbox"
-									class="checkbox checkbox-sm"
-									bind:checked={draft.enrichment.replaygain.required}
-								/>
-								<span
-									><strong>Require ReplayGain</strong><small
-										>Hold the whole unit when the selected values are unavailable.</small
-									></span
-								>
-							</label>
+							<details class="management-editor-advanced">
+								<summary>
+									<span
+										><strong>Advanced analysis behavior</strong><small
+											>Album coherence and safety gates</small
+										></span
+									>
+									<ChevronRight class="h-4 w-4" />
+								</summary>
+								<div class="mt-3 grid gap-3">
+									<label class="management-master-toggle">
+										<input
+											type="checkbox"
+											class="checkbox checkbox-sm"
+											bind:checked={draft.enrichment.replaygain.album_aware}
+										/>
+										<span
+											><strong>Album-aware analysis</strong><small
+												>Calculate coherent track and album gain/peak values.</small
+											></span
+										>
+									</label>
+									<label class="management-master-toggle">
+										<input
+											type="checkbox"
+											class="checkbox checkbox-sm"
+											bind:checked={draft.enrichment.replaygain.required}
+										/>
+										<span
+											><strong>Require ReplayGain</strong><small
+												>Hold the whole unit when the selected values are unavailable.</small
+											></span
+										>
+									</label>
+								</div>
+							</details>
 						</fieldset>
 					</section>
 				</div>
 			</details>
 
-			<details class="management-editor-section">
+			<details
+				class="management-editor-section"
+				data-active={draft.metadata.tagging_script_ids.length > 0}
+			>
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><Braces class="h-4 w-4" /></span>
-					<span
+					<span class="management-editor-summary__copy"
 						><strong>Tag transformations</strong><small
 							>Ordered metadata scripts, separate from file naming</small
 						></span
 					>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-overview">
+						<span
+							class="management-editor-state"
+							data-active={draft.metadata.tagging_script_ids.length > 0}
+							>{draft.metadata.tagging_script_ids.length > 0 ? 'On' : 'Off'}</span
+						>
+						<span class="management-editor-chip">
+							{draft.metadata.tagging_script_ids.length > 0
+								? `${draft.metadata.tagging_script_ids.length} attached ${draft.metadata.tagging_script_ids.length === 1 ? 'script' : 'scripts'}`
+								: 'No scripts attached'}
+						</span>
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4">
 					<LibraryManagementScriptEditor
@@ -538,15 +659,31 @@
 				</div>
 			</details>
 
-			<details class="management-editor-section">
+			<details class="management-editor-section" data-active={creditsAndGenresEnabled}>
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><UsersRound class="h-4 w-4" /></span>
-					<span
+					<span class="management-editor-summary__copy"
 						><strong>Credits and genres</strong><small
 							>Artist naming, relationships, translations, and genre sources</small
 						></span
 					>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-overview">
+						<span class="management-editor-state" data-active={creditsAndGenresEnabled}
+							>{creditsAndGenresEnabled ? 'On' : 'Off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.metadata.enabled}
+							>{artistCreditSummary}</span
+						>
+						<span
+							class="management-editor-chip"
+							data-active={draft.metadata.enabled && draft.metadata.relationships.enabled}
+							>{relationshipSummary}</span
+						>
+						<span class="management-editor-chip" data-active={draft.genres.enabled}
+							>{genreSummary}</span
+						>
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4 grid gap-4 sm:grid-cols-2">
 					<label class="grid gap-1.5 text-sm">
@@ -560,31 +697,43 @@
 							<option value="canonical">Canonical names</option>
 						</select>
 					</label>
-					<label class="management-master-toggle sm:mt-6">
-						<input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.metadata.artist_credits.translate_names}
-						/>
-						<span
-							><strong>Translate artist names</strong><small
-								>Use preferred locales when MusicBrainz supplies aliases.</small
-							></span
-						>
-					</label>
-					<label class="grid gap-1.5 text-sm sm:col-span-2">
-						<span>Preferred artist locales</span>
-						<input
-							class="input input-bordered bg-base-100"
-							value={draft.metadata.artist_credits.preferred_locales.join(', ')}
-							oninput={(event) =>
-								(draft.metadata.artist_credits.preferred_locales = event.currentTarget.value
-									.split(',')
-									.map((item) => item.trim())
-									.filter(Boolean))}
-							placeholder="en, en-GB, ja"
-						/>
-					</label>
+					<details class="management-editor-advanced sm:col-span-2">
+						<summary>
+							<span
+								><strong>Artist name preferences</strong><small
+									>Translations and preferred locales</small
+								></span
+							>
+							<ChevronRight class="h-4 w-4" />
+						</summary>
+						<div class="mt-3 grid gap-3 sm:grid-cols-2">
+							<label class="management-master-toggle sm:col-span-2">
+								<input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.metadata.artist_credits.translate_names}
+								/>
+								<span
+									><strong>Translate artist names</strong><small
+										>Use preferred locales when MusicBrainz supplies aliases.</small
+									></span
+								>
+							</label>
+							<label class="grid gap-1.5 text-sm sm:col-span-2">
+								<span>Preferred artist locales</span>
+								<input
+									class="input input-bordered bg-base-100"
+									value={draft.metadata.artist_credits.preferred_locales.join(', ')}
+									oninput={(event) =>
+										(draft.metadata.artist_credits.preferred_locales = event.currentTarget.value
+											.split(',')
+											.map((item) => item.trim())
+											.filter(Boolean))}
+									placeholder="en, en-GB, ja"
+								/>
+							</label>
+						</div>
+					</details>
 					<label class="management-master-toggle sm:col-span-2">
 						<input
 							type="checkbox"
@@ -598,27 +747,34 @@
 						>
 					</label>
 					{#if draft.metadata.relationships.enabled}
-						<div
-							class="management-choice-grid sm:col-span-2"
-							aria-label="Relationship credit types"
-						>
-							{#each relationshipTypes as relationship (relationship.value)}
-								<label>
-									<input
-										type="checkbox"
-										class="checkbox checkbox-xs"
-										checked={draft.metadata.relationships.types.includes(relationship.value)}
-										onchange={(event) =>
-											(draft.metadata.relationships.types = toggled(
-												draft.metadata.relationships.types,
-												relationship.value,
-												event.currentTarget.checked
-											))}
-									/>
-									<span>{relationship.label}</span>
-								</label>
-							{/each}
-						</div>
+						<details class="management-editor-advanced sm:col-span-2">
+							<summary>
+								<span
+									><strong>Relationship roles</strong><small
+										>{draft.metadata.relationships.types.length} selected</small
+									></span
+								>
+								<ChevronRight class="h-4 w-4" />
+							</summary>
+							<div class="management-choice-grid mt-3" aria-label="Relationship credit types">
+								{#each relationshipTypes as relationship (relationship.value)}
+									<label>
+										<input
+											type="checkbox"
+											class="checkbox checkbox-xs"
+											checked={draft.metadata.relationships.types.includes(relationship.value)}
+											onchange={(event) =>
+												(draft.metadata.relationships.types = toggled(
+													draft.metadata.relationships.types,
+													relationship.value,
+													event.currentTarget.checked
+												))}
+										/>
+										<span>{relationship.label}</span>
+									</label>
+								{/each}
+							</div>
+						</details>
 					{/if}
 					<label class="management-master-toggle sm:col-span-2">
 						<input type="checkbox" class="toggle toggle-sm" bind:checked={draft.genres.enabled} />
@@ -665,148 +821,173 @@
 								bind:value={draft.genres.maximum_count}
 							/>
 						</label>
-						<label class="grid gap-1.5 text-sm">
-							<span>MusicBrainz minimum votes</span>
-							<input
-								type="number"
-								min="0"
-								class="input input-bordered bg-base-100"
-								bind:value={draft.genres.musicbrainz_minimum_count}
-							/>
-						</label>
-						<label class="grid gap-1.5 text-sm">
-							<span>ListenBrainz minimum votes</span>
-							<input
-								type="number"
-								min="0"
-								class="input input-bordered bg-base-100"
-								bind:value={draft.genres.listenbrainz_minimum_count}
-							/>
-						</label>
-						<label class="grid gap-1.5 text-sm">
-							<span>Last.fm minimum weight</span>
-							<input
-								type="number"
-								min="0"
-								class="input input-bordered bg-base-100"
-								bind:value={draft.genres.lastfm_minimum_weight}
-							/>
-						</label>
-						<label class="grid gap-1.5 text-sm">
-							<span>Maximum ancestry depth</span>
-							<input
-								type="number"
-								min="0"
-								max="20"
-								class="input input-bordered bg-base-100"
-								bind:value={draft.genres.maximum_ancestry_depth}
-							/>
-						</label>
-						<label class="management-master-toggle"
-							><input
-								type="checkbox"
-								class="toggle toggle-sm"
-								bind:checked={draft.genres.listenbrainz_curated_only}
-							/><span
-								><strong>Curated ListenBrainz tags only</strong><small
-									>Reject uncurated community tags.</small
-								></span
-							></label
-						>
-						<label class="management-master-toggle"
-							><input
-								type="checkbox"
-								class="toggle toggle-sm"
-								bind:checked={draft.genres.lastfm_whitelist_only}
-							/><span
-								><strong>Allowlisted Last.fm tags only</strong><small
-									>Require a configured accepted genre.</small
-								></span
-							></label
-						>
-						<label class="management-master-toggle"
-							><input
-								type="checkbox"
-								class="toggle toggle-sm"
-								bind:checked={draft.genres.canonicalize}
-							/><span
-								><strong>Canonicalize genres</strong><small>Apply aliases and ancestry.</small
-								></span
-							></label
-						>
-						<label class="management-master-toggle"
-							><input
-								type="checkbox"
-								class="toggle toggle-sm"
-								bind:checked={draft.genres.write_primary_only_for_constrained_formats}
-							/><span
-								><strong>Primary genre on constrained formats</strong><small
-									>Use one value where multi-values are lossy.</small
-								></span
-							></label
-						>
-						<label class="grid gap-1.5 text-sm"
-							><span>Genre allowlist (one per line)</span><textarea
-								class="textarea textarea-bordered min-h-24 bg-base-100"
-								value={draft.genres.allowlist.join('\n')}
-								oninput={(event) => (draft.genres.allowlist = lines(event.currentTarget.value))}
-							></textarea></label
-						>
-						<label class="grid gap-1.5 text-sm"
-							><span>Genre denylist (one per line)</span><textarea
-								class="textarea textarea-bordered min-h-24 bg-base-100"
-								value={draft.genres.denylist.join('\n')}
-								oninput={(event) => (draft.genres.denylist = lines(event.currentTarget.value))}
-							></textarea></label
-						>
-						<label class="grid gap-1.5 text-sm sm:col-span-2"
-							><span>Preferred casing (one per line)</span><textarea
-								class="textarea textarea-bordered min-h-20 bg-base-100"
-								value={draft.genres.preferred_casing.join('\n')}
-								oninput={(event) =>
-									(draft.genres.preferred_casing = lines(event.currentTarget.value))}
-							></textarea></label
-						>
-						<div class="space-y-2 sm:col-span-2">
-							<div class="flex items-center justify-between">
-								<strong class="text-sm">Genre aliases</strong><button
-									class="btn btn-ghost btn-xs"
-									onclick={addGenreAlias}><Plus class="h-3.5 w-3.5" /> Add alias</button
+						<details class="management-editor-advanced sm:col-span-2">
+							<summary>
+								<span
+									><strong>Advanced genre rules</strong><small
+										>Thresholds, filtering, casing, and aliases</small
+									></span
 								>
-							</div>
-							{#each draft.genres.aliases as alias, index (`${index}:${alias.source}`)}
-								<div class="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2">
+								<ChevronRight class="h-4 w-4" />
+							</summary>
+							<div class="mt-3 grid gap-3 sm:grid-cols-2">
+								<label class="grid gap-1.5 text-sm">
+									<span>MusicBrainz minimum votes</span>
 									<input
-										class="input input-bordered input-sm bg-base-100"
-										bind:value={alias.source}
-										aria-label={`Genre alias source ${index + 1}`}
+										type="number"
+										min="0"
+										class="input input-bordered bg-base-100"
+										bind:value={draft.genres.musicbrainz_minimum_count}
 									/>
-									<span aria-hidden="true">→</span>
+								</label>
+								<label class="grid gap-1.5 text-sm">
+									<span>ListenBrainz minimum votes</span>
 									<input
-										class="input input-bordered input-sm bg-base-100"
-										bind:value={alias.target}
-										aria-label={`Genre alias target ${index + 1}`}
+										type="number"
+										min="0"
+										class="input input-bordered bg-base-100"
+										bind:value={draft.genres.listenbrainz_minimum_count}
 									/>
-									<button
-										class="btn btn-ghost btn-xs btn-square text-error"
-										aria-label={`Remove genre alias ${index + 1}`}
-										onclick={() =>
-											(draft.genres.aliases = draft.genres.aliases.filter(
-												(_, valueIndex) => valueIndex !== index
-											))}><Trash2 class="h-3.5 w-3.5" /></button
-									>
+								</label>
+								<label class="grid gap-1.5 text-sm">
+									<span>Last.fm minimum weight</span>
+									<input
+										type="number"
+										min="0"
+										class="input input-bordered bg-base-100"
+										bind:value={draft.genres.lastfm_minimum_weight}
+									/>
+								</label>
+								<label class="grid gap-1.5 text-sm">
+									<span>Maximum ancestry depth</span>
+									<input
+										type="number"
+										min="0"
+										max="20"
+										class="input input-bordered bg-base-100"
+										bind:value={draft.genres.maximum_ancestry_depth}
+									/>
+								</label>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.genres.listenbrainz_curated_only}
+									/><span
+										><strong>Curated ListenBrainz tags only</strong><small
+											>Reject uncurated community tags.</small
+										></span
+									></label
+								>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.genres.lastfm_whitelist_only}
+									/><span
+										><strong>Allowlisted Last.fm tags only</strong><small
+											>Require a configured accepted genre.</small
+										></span
+									></label
+								>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.genres.canonicalize}
+									/><span
+										><strong>Canonicalize genres</strong><small>Apply aliases and ancestry.</small
+										></span
+									></label
+								>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.genres.write_primary_only_for_constrained_formats}
+									/><span
+										><strong>Primary genre on constrained formats</strong><small
+											>Use one value where multi-values are lossy.</small
+										></span
+									></label
+								>
+								<label class="grid gap-1.5 text-sm"
+									><span>Genre allowlist (one per line)</span><textarea
+										class="textarea textarea-bordered min-h-24 bg-base-100"
+										value={draft.genres.allowlist.join('\n')}
+										oninput={(event) => (draft.genres.allowlist = lines(event.currentTarget.value))}
+									></textarea></label
+								>
+								<label class="grid gap-1.5 text-sm"
+									><span>Genre denylist (one per line)</span><textarea
+										class="textarea textarea-bordered min-h-24 bg-base-100"
+										value={draft.genres.denylist.join('\n')}
+										oninput={(event) => (draft.genres.denylist = lines(event.currentTarget.value))}
+									></textarea></label
+								>
+								<label class="grid gap-1.5 text-sm sm:col-span-2"
+									><span>Preferred casing (one per line)</span><textarea
+										class="textarea textarea-bordered min-h-20 bg-base-100"
+										value={draft.genres.preferred_casing.join('\n')}
+										oninput={(event) =>
+											(draft.genres.preferred_casing = lines(event.currentTarget.value))}
+									></textarea></label
+								>
+								<div class="space-y-2 sm:col-span-2">
+									<div class="flex items-center justify-between">
+										<strong class="text-sm">Genre aliases</strong><button
+											class="btn btn-ghost btn-xs"
+											onclick={addGenreAlias}><Plus class="h-3.5 w-3.5" /> Add alias</button
+										>
+									</div>
+									{#each draft.genres.aliases as alias, index (`${index}:${alias.source}`)}
+										<div class="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-2">
+											<input
+												class="input input-bordered input-sm bg-base-100"
+												bind:value={alias.source}
+												aria-label={`Genre alias source ${index + 1}`}
+											/>
+											<span aria-hidden="true">→</span>
+											<input
+												class="input input-bordered input-sm bg-base-100"
+												bind:value={alias.target}
+												aria-label={`Genre alias target ${index + 1}`}
+											/>
+											<button
+												class="btn btn-ghost btn-xs btn-square text-error"
+												aria-label={`Remove genre alias ${index + 1}`}
+												onclick={() =>
+													(draft.genres.aliases = draft.genres.aliases.filter(
+														(_, valueIndex) => valueIndex !== index
+													))}><Trash2 class="h-3.5 w-3.5" /></button
+											>
+										</div>
+									{/each}
 								</div>
-							{/each}
-						</div>
+							</div>
+						</details>
 					{/if}
 				</div>
 			</details>
 
-			<details class="management-editor-section">
+			<details class="management-editor-section" data-active={artworkEnabled}>
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><Image class="h-4 w-4" /></span>
-					<span><strong>Artwork</strong><small>Embedded and external cover decisions</small></span>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-summary__copy"
+						><strong>Artwork</strong><small>Embedded and external cover decisions</small></span
+					>
+					<span class="management-editor-overview">
+						<span class="management-editor-state" data-active={artworkEnabled}
+							>{artworkEnabled ? 'On' : 'Off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.artwork.embedded_enabled}
+							>{draft.artwork.embedded_enabled ? 'Embedded on' : 'Embedded off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.artwork.external_enabled}
+							>{draft.artwork.external_enabled ? 'External on' : 'External off'}</span
+						>
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4 grid gap-3 sm:grid-cols-2">
 					<label class="management-master-toggle">
@@ -867,167 +1048,192 @@
 							>
 						{/each}
 					</div>
-					<label class="grid gap-1.5 text-sm">
-						<span>Minimum width</span>
-						<input
-							type="number"
-							min="0"
-							class="input input-bordered bg-base-100"
-							bind:value={draft.artwork.minimum_width}
-						/>
-					</label>
-					<label class="grid gap-1.5 text-sm">
-						<span>Download size</span>
-						<select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.artwork.download_size}
-						>
-							<option value="full">Full</option><option value="1200">1200 px</option><option
-								value="500">500 px</option
-							><option value="250">250 px</option>
-						</select>
-					</label>
-					<label class="grid gap-1.5 text-sm"
-						><span>Minimum height</span><input
-							type="number"
-							min="0"
-							class="input input-bordered bg-base-100"
-							bind:value={draft.artwork.minimum_height}
-						/></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.artwork.approved_only}
-						/><span
-							><strong>Approved cover art only</strong><small
-								>Require provider approval where available.</small
-							></span
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>Embedded maximum size</span><input
-							type="number"
-							min="0"
-							class="input input-bordered bg-base-100"
-							bind:value={draft.artwork.embedded_maximum_size}
-						/></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>Embedded format</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.artwork.embedded_format}
-							><option value="original">Original</option><option value="jpeg">JPEG</option><option
-								value="png">PNG</option
-							><option value="webp">WebP</option></select
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>External maximum size</span><input
-							type="number"
-							min="0"
-							class="input input-bordered bg-base-100"
-							bind:value={draft.artwork.external_maximum_size}
-						/></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>External format</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.artwork.external_format}
-							><option value="original">Original</option><option value="jpeg">JPEG</option><option
-								value="png">PNG</option
-							><option value="webp">WebP</option></select
-						></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.artwork.embedded_front_only}
-						/><span
-							><strong>Embed front art only</strong><small
-								>Do not embed additional image types.</small
-							></span
-						></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.artwork.external_front_only}
-						/><span
-							><strong>External front art only</strong><small
-								>Do not create other image types.</small
-							></span
-						></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.artwork.never_replace_with_smaller}
-						/><span
-							><strong>Never replace with smaller</strong><small
-								>Compare image dimensions per file and type.</small
-							></span
-						></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.artwork.overwrite_external_files}
-						/><span
-							><strong>Overwrite external artwork</strong><small
-								>Otherwise existing files become collisions.</small
-							></span
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>Local file patterns (one per line)</span><textarea
-							class="textarea textarea-bordered min-h-24 bg-base-100"
-							value={draft.artwork.local_file_patterns.join('\n')}
-							oninput={(event) =>
-								(draft.artwork.local_file_patterns = lines(event.currentTarget.value))}
-						></textarea></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>Preserve image types (one per line)</span><select
-							multiple
-							class="select select-bordered min-h-28 bg-base-100"
-							value={draft.artwork.preserve_existing_types}
-							onchange={(event) =>
-								(draft.artwork.preserve_existing_types = Array.from(
-									event.currentTarget.selectedOptions,
-									(option) => option.value as ArtworkImageType
-								))}
-							>{#each artworkTypes as imageType (imageType)}<option value={imageType}
-									>{imageType}</option
-								>{/each}</select
-						></label
-					>
-					<label class="grid gap-1.5 text-sm sm:col-span-2"
-						><span>External artwork naming script</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.artwork.external_naming_script_id}
-							><option value={null}>No external naming script</option
-							>{#each scripts as script (script.id)}<option value={script.id}>{script.name}</option
-								>{/each}</select
-						></label
-					>
+					<details class="management-editor-advanced sm:col-span-2">
+						<summary>
+							<span
+								><strong>Advanced artwork rules</strong><small
+									>Dimensions, formats, replacement, and naming</small
+								></span
+							>
+							<ChevronRight class="h-4 w-4" />
+						</summary>
+						<div class="mt-3 grid gap-3 sm:grid-cols-2">
+							<label class="grid gap-1.5 text-sm">
+								<span>Minimum width</span>
+								<input
+									type="number"
+									min="0"
+									class="input input-bordered bg-base-100"
+									bind:value={draft.artwork.minimum_width}
+								/>
+							</label>
+							<label class="grid gap-1.5 text-sm">
+								<span>Download size</span>
+								<select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.artwork.download_size}
+								>
+									<option value="full">Full</option><option value="1200">1200 px</option><option
+										value="500">500 px</option
+									><option value="250">250 px</option>
+								</select>
+							</label>
+							<label class="grid gap-1.5 text-sm"
+								><span>Minimum height</span><input
+									type="number"
+									min="0"
+									class="input input-bordered bg-base-100"
+									bind:value={draft.artwork.minimum_height}
+								/></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.artwork.approved_only}
+								/><span
+									><strong>Approved cover art only</strong><small
+										>Require provider approval where available.</small
+									></span
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>Embedded maximum size</span><input
+									type="number"
+									min="0"
+									class="input input-bordered bg-base-100"
+									bind:value={draft.artwork.embedded_maximum_size}
+								/></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>Embedded format</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.artwork.embedded_format}
+									><option value="original">Original</option><option value="jpeg">JPEG</option
+									><option value="png">PNG</option><option value="webp">WebP</option></select
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>External maximum size</span><input
+									type="number"
+									min="0"
+									class="input input-bordered bg-base-100"
+									bind:value={draft.artwork.external_maximum_size}
+								/></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>External format</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.artwork.external_format}
+									><option value="original">Original</option><option value="jpeg">JPEG</option
+									><option value="png">PNG</option><option value="webp">WebP</option></select
+								></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.artwork.embedded_front_only}
+								/><span
+									><strong>Embed front art only</strong><small
+										>Do not embed additional image types.</small
+									></span
+								></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.artwork.external_front_only}
+								/><span
+									><strong>External front art only</strong><small
+										>Do not create other image types.</small
+									></span
+								></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.artwork.never_replace_with_smaller}
+								/><span
+									><strong>Never replace with smaller</strong><small
+										>Compare image dimensions per file and type.</small
+									></span
+								></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.artwork.overwrite_external_files}
+								/><span
+									><strong>Overwrite external artwork</strong><small
+										>Otherwise existing files become collisions.</small
+									></span
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>Local file patterns (one per line)</span><textarea
+									class="textarea textarea-bordered min-h-24 bg-base-100"
+									value={draft.artwork.local_file_patterns.join('\n')}
+									oninput={(event) =>
+										(draft.artwork.local_file_patterns = lines(event.currentTarget.value))}
+								></textarea></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>Preserve image types (one per line)</span><select
+									multiple
+									class="select select-bordered min-h-28 bg-base-100"
+									value={draft.artwork.preserve_existing_types}
+									onchange={(event) =>
+										(draft.artwork.preserve_existing_types = Array.from(
+											event.currentTarget.selectedOptions,
+											(option) => option.value as ArtworkImageType
+										))}
+									>{#each artworkTypes as imageType (imageType)}<option value={imageType}
+											>{imageType}</option
+										>{/each}</select
+								></label
+							>
+							<label class="grid gap-1.5 text-sm sm:col-span-2"
+								><span>External artwork naming script</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.artwork.external_naming_script_id}
+									><option value={null}>No external naming script</option
+									>{#each scripts as script (script.id)}<option value={script.id}
+											>{script.name}</option
+										>{/each}</select
+								></label
+							>
+						</div>
+					</details>
 				</div>
 			</details>
 
-			<details class="management-editor-section" open>
+			<details class="management-editor-section" data-active={organizationEnabled}>
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><FolderCog class="h-4 w-4" /></span>
-					<span
+					<span class="management-editor-summary__copy"
 						><strong>File naming and organization</strong><small
 							>Paths, sidecars, and source cleanup</small
 						></span
 					>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-overview">
+						<span class="management-editor-state" data-active={organizationEnabled}
+							>{organizationEnabled ? 'On' : 'Off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.organization.rename_enabled}
+							>{draft.organization.rename_enabled ? 'Rename on' : 'Rename off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.organization.move_enabled}
+							>{draft.organization.move_enabled ? 'Move on' : 'Move off'}</span
+						>
+						<span class="management-editor-chip" data-active={draft.organization.move_sidecars}
+							>{draft.organization.move_sidecars ? 'Sidecars on' : 'Sidecars off'}</span
+						>
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4 space-y-4">
 					<div class="grid gap-3 sm:grid-cols-3">
@@ -1060,8 +1266,15 @@
 						selectedIds={[draft.organization.naming_script_id]}
 						onchange={updateNamingScripts}
 					/>
-					<details class="rounded-xl border border-base-content/10 p-3">
-						<summary class="cursor-pointer text-sm font-semibold">Path compatibility</summary>
+					<details class="management-editor-advanced">
+						<summary>
+							<span
+								><strong>Path compatibility</strong><small
+									>Platform-safe names and path limits</small
+								></span
+							>
+							<ChevronRight class="h-4 w-4" />
+						</summary>
 						<div class="mt-3 grid gap-3 sm:grid-cols-2">
 							<label class="management-master-toggle"
 								><input
@@ -1146,48 +1359,71 @@
 							>
 						</div>
 					</details>
-					<label class="grid gap-1.5 text-sm">
-						<span>Sidecar patterns (one per line)</span>
-						<textarea
-							class="textarea textarea-bordered min-h-24 bg-base-100 font-mono text-xs"
-							value={draft.organization.sidecar_patterns.join('\n')}
-							oninput={(event) =>
-								(draft.organization.sidecar_patterns = lines(event.currentTarget.value))}
-						></textarea>
-					</label>
-					<div class="grid gap-3 sm:grid-cols-2">
-						<label class="grid gap-1.5 text-sm"
-							><span>Source after confirmed move</span><select
-								class="select select-bordered bg-base-100"
-								bind:value={draft.organization.source_cleanup}
-								><option value="keep">Keep source</option><option
-									value="remove_after_confirmed_move">Remove verified source</option
-								></select
-							></label
-						>
-						<label class="management-master-toggle sm:mt-6"
-							><input
-								type="checkbox"
-								class="toggle toggle-sm"
-								bind:checked={draft.organization.remove_empty_directories}
-							/><span
-								><strong>Remove empty directories</strong><small>Only after verified cleanup.</small
+					<details class="management-editor-advanced">
+						<summary>
+							<span
+								><strong>Sidecars and source cleanup</strong><small
+									>Matched files and verified post-move cleanup</small
 								></span
-							></label
-						>
-					</div>
+							>
+							<ChevronRight class="h-4 w-4" />
+						</summary>
+						<div class="mt-3 grid gap-3 sm:grid-cols-2">
+							<label class="grid gap-1.5 text-sm sm:col-span-2">
+								<span>Sidecar patterns (one per line)</span>
+								<textarea
+									class="textarea textarea-bordered min-h-24 bg-base-100 font-mono text-xs"
+									value={draft.organization.sidecar_patterns.join('\n')}
+									oninput={(event) =>
+										(draft.organization.sidecar_patterns = lines(event.currentTarget.value))}
+								></textarea>
+							</label>
+							<label class="grid gap-1.5 text-sm"
+								><span>Source after confirmed move</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.organization.source_cleanup}
+									><option value="keep">Keep source</option><option
+										value="remove_after_confirmed_move">Remove verified source</option
+									></select
+								></label
+							>
+							<label class="management-master-toggle sm:mt-6"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.organization.remove_empty_directories}
+								/><span
+									><strong>Remove empty directories</strong><small
+										>Only after verified cleanup.</small
+									></span
+								></label
+							>
+						</div>
+					</details>
 				</div>
 			</details>
 
-			<details class="management-editor-section">
+			<details class="management-editor-section" data-active="true">
 				<summary class="management-editor-summary">
 					<span class="management-editor-icon"><ShieldCheck class="h-4 w-4" /></span>
-					<span
+					<span class="management-editor-summary__copy"
 						><strong>Preservation and format safety</strong><small
 							>Compatibility, scrub, validation, and notifications</small
 						></span
 					>
-					<ChevronRight class="ml-auto h-4 w-4 management-editor-chevron" />
+					<span class="management-editor-overview">
+						<span class="management-editor-state" data-active="true">Protected</span>
+						<span class="management-editor-chip" data-active={enabledSafeguardCount > 0}
+							>{enabledSafeguardCount} safeguards</span
+						>
+						<span class="management-editor-chip"
+							>ID3v{draft.metadata.format_compatibility.id3_version}</span
+						>
+						{#if draft.notification.refresh_external_servers}
+							<span class="management-editor-chip" data-active="true">Media refresh on</span>
+						{/if}
+					</span>
+					<ChevronRight class="h-4 w-4 management-editor-chevron" />
 				</summary>
 				<div class="mt-4 grid gap-3 sm:grid-cols-2">
 					<label class="management-master-toggle"
@@ -1233,82 +1469,93 @@
 							></span
 						></label
 					>
-					<label class="grid gap-1.5 text-sm"
-						><span>ID3 version</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.metadata.format_compatibility.id3_version}
-							><option value="2.4">ID3v2.4</option><option value="2.3">ID3v2.3</option></select
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>ID3v2.3 list delimiter</span><input
-							class="input input-bordered bg-base-100"
-							bind:value={draft.metadata.format_compatibility.id3v23_join_delimiter}
-						/></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>ID3 text encoding</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.metadata.format_compatibility.id3_text_encoding}
-							><option value="utf8">UTF-8</option><option value="utf16">UTF-16</option></select
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>MP3 APEv2 tags</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.metadata.format_compatibility.mp3_apev2_policy}
-							><option value="preserve">Preserve</option><option value="remove">Remove</option
-							></select
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>Raw AAC tags</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.metadata.format_compatibility.raw_aac_tag_policy}
-							><option value="save_apev2">Save APEv2</option><option value="do_not_write"
-								>Do not write</option
-							><option value="remove_apev2">Remove APEv2</option></select
-						></label
-					>
-					<label class="grid gap-1.5 text-sm"
-						><span>WAV tags</span><select
-							class="select select-bordered bg-base-100"
-							bind:value={draft.metadata.format_compatibility.wav_tag_policy}
-							><option value="id3">ID3</option><option value="riff_info">RIFF INFO</option><option
-								value="preserve_existing">Preserve existing format</option
-							></select
-						></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.metadata.format_compatibility.remove_id3_from_flac}
-						/><span
-							><strong>Remove stray ID3 from FLAC</strong><small
-								>Explicit compatibility cleanup.</small
-							></span
-						></label
-					>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.metadata.format_compatibility.constrained_genres_primary_only}
-						/><span
-							><strong>Primary genre for constrained tags</strong><small
-								>Avoid lossy list flattening.</small
-							></span
-						></label
-					>
-					<label class="grid gap-1.5 text-sm sm:col-span-2"
-						><span>Always preserve fields (one per line)</span><textarea
-							class="textarea textarea-bordered min-h-20 bg-base-100 font-mono text-xs"
-							value={draft.metadata.preserve_fields.join('\n')}
-							oninput={(event) =>
-								(draft.metadata.preserve_fields = lines(event.currentTarget.value))}
-						></textarea></label
-					>
+					<details class="management-editor-advanced sm:col-span-2">
+						<summary>
+							<span
+								><strong>Format compatibility</strong><small
+									>ID3, constrained formats, and preserved fields</small
+								></span
+							>
+							<ChevronRight class="h-4 w-4" />
+						</summary>
+						<div class="mt-3 grid gap-3 sm:grid-cols-2">
+							<label class="grid gap-1.5 text-sm"
+								><span>ID3 version</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.metadata.format_compatibility.id3_version}
+									><option value="2.4">ID3v2.4</option><option value="2.3">ID3v2.3</option></select
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>ID3v2.3 list delimiter</span><input
+									class="input input-bordered bg-base-100"
+									bind:value={draft.metadata.format_compatibility.id3v23_join_delimiter}
+								/></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>ID3 text encoding</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.metadata.format_compatibility.id3_text_encoding}
+									><option value="utf8">UTF-8</option><option value="utf16">UTF-16</option></select
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>MP3 APEv2 tags</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.metadata.format_compatibility.mp3_apev2_policy}
+									><option value="preserve">Preserve</option><option value="remove">Remove</option
+									></select
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>Raw AAC tags</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.metadata.format_compatibility.raw_aac_tag_policy}
+									><option value="save_apev2">Save APEv2</option><option value="do_not_write"
+										>Do not write</option
+									><option value="remove_apev2">Remove APEv2</option></select
+								></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>WAV tags</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.metadata.format_compatibility.wav_tag_policy}
+									><option value="id3">ID3</option><option value="riff_info">RIFF INFO</option
+									><option value="preserve_existing">Preserve existing format</option></select
+								></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.metadata.format_compatibility.remove_id3_from_flac}
+								/><span
+									><strong>Remove stray ID3 from FLAC</strong><small
+										>Explicit compatibility cleanup.</small
+									></span
+								></label
+							>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.metadata.format_compatibility.constrained_genres_primary_only}
+								/><span
+									><strong>Primary genre for constrained tags</strong><small
+										>Avoid lossy list flattening.</small
+									></span
+								></label
+							>
+							<label class="grid gap-1.5 text-sm sm:col-span-2"
+								><span>Always preserve fields (one per line)</span><textarea
+									class="textarea textarea-bordered min-h-20 bg-base-100 font-mono text-xs"
+									value={draft.metadata.preserve_fields.join('\n')}
+									oninput={(event) =>
+										(draft.metadata.preserve_fields = lines(event.currentTarget.value))}
+								></textarea></label
+							>
+						</div>
+					</details>
 					<label class="management-master-toggle"
 						><input
 							type="checkbox"
@@ -1353,25 +1600,37 @@
 							></span
 						></label
 					>
-					<div class="management-master-toggle">
-						<Check class="h-4 w-4 shrink-0 text-success" />
-						<span
-							><strong>DroppedNeedle catalog updates immediately</strong><small
-								>Committed tags and paths are updated as part of every successful operation.</small
-							></span
-						>
-					</div>
-					<label class="management-master-toggle"
-						><input
-							type="checkbox"
-							class="toggle toggle-sm"
-							bind:checked={draft.notification.refresh_external_servers}
-						/><span
-							><strong>Refresh media servers</strong><small
-								>Notify enabled servers after commit.</small
-							></span
-						></label
-					>
+					<details class="management-editor-advanced sm:col-span-2">
+						<summary>
+							<span
+								><strong>Post-write notifications</strong><small
+									>Catalog and external media server refresh</small
+								></span
+							>
+							<ChevronRight class="h-4 w-4" />
+						</summary>
+						<div class="mt-3 grid gap-3 sm:grid-cols-2">
+							<div class="management-master-toggle">
+								<Check class="h-4 w-4 shrink-0 text-success" />
+								<span
+									><strong>DroppedNeedle catalog updates immediately</strong><small
+										>Committed tags and paths are updated as part of every successful operation.</small
+									></span
+								>
+							</div>
+							<label class="management-master-toggle"
+								><input
+									type="checkbox"
+									class="toggle toggle-sm"
+									bind:checked={draft.notification.refresh_external_servers}
+								/><span
+									><strong>Refresh media servers</strong><small
+										>Notify enabled servers after commit.</small
+									></span
+								></label
+							>
+						</div>
+					</details>
 				</div>
 			</details>
 
@@ -1379,16 +1638,23 @@
 		</div>
 
 		<footer class="management-profile-editor__footer">
-			<p class="text-xs text-base-content/45">
-				Saving validates the whole profile before any active root can adopt broader write access.
-			</p>
+			<div class="flex min-w-0 items-center gap-2">
+				<span class="management-editor-state" data-active={dirty}
+					>{dirty ? 'Unsaved' : 'Saved'}</span
+				>
+				<p class="text-xs text-base-content/45">
+					{dirty
+						? 'Saving validates the full profile. If it expands write access, active roots need a new dry run.'
+						: 'This profile has no unsaved changes.'}
+				</p>
+			</div>
 			<div class="flex gap-2">
 				<button
 					class="btn btn-ghost"
 					onclick={(event) => requestClose(event.currentTarget)}
 					disabled={saving}>Cancel</button
 				>
-				<button class="btn management-btn" onclick={() => void save()} disabled={saving}>
+				<button class="btn management-btn" onclick={() => void save()} disabled={saving || !dirty}>
 					{#if saving}<span class="loading loading-spinner loading-sm"></span>{/if}
 					Save profile
 				</button>

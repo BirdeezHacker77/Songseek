@@ -34,7 +34,6 @@ from models.audio_metadata import (
     AudioSemanticField,
     DesiredAudioDocument,
     DesiredAudioField,
-    EmbeddedArtworkDescriptor,
 )
 from models.library_management import (
     FIELD_UNSUPPORTED_BY_FORMAT,
@@ -59,7 +58,10 @@ from models.library_management_enrichment import (
     ReplayGainTrackResult,
 )
 from models.library_management_canonical import IncomingTrackManagementMapping
-from services.native.artwork_projection_service import ArtworkProjectionService
+from services.native.artwork_projection_service import (
+    ArtworkProjectionService,
+    desired_embedded_artwork,
+)
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.canonical_release_metadata_service import (
     CanonicalReleaseMetadataService,
@@ -71,6 +73,11 @@ from services.native.genre_projection_service import GenreProjectionService
 from services.native.library_management_planner import LibraryManagementPlanner
 from services.native.library_management_profile_service import (
     LibraryManagementProfileService,
+)
+from services.native.lyrics_management_policy import (
+    planned_lyrics_outputs,
+    required_lyrics_outputs_available,
+    synchronized_lyrics_supported,
 )
 from services.native.lyrics_projection_service import LyricsProjectionService
 from services.native.managed_field_registry import canonical_track_values
@@ -404,24 +411,19 @@ class AutomaticImportManagementService:
             )
         else:
             lyrics_projection = LyricsProjection(status="disabled")
-        selected_lyrics = tuple(
-            value
-            for enabled, value in (
-                (
-                    profile.enrichment.lyrics.write_plain,
-                    lyrics_projection.plain_lyrics,
-                ),
-                (
-                    profile.enrichment.lyrics.write_synced,
-                    lyrics_projection.synced_lyrics,
-                ),
-            )
-            if enabled and value
+        synced_lyrics_supported = synchronized_lyrics_supported(
+            current.probe.detected_format,
+            wav_tag_policy=profile.metadata.format_compatibility.wav_tag_policy,
         )
         if (
             profile.enrichment.lyrics.enabled
             and profile.enrichment.lyrics.required
-            and (lyrics_projection.status != "available" or not selected_lyrics)
+            and not required_lyrics_outputs_available(
+                profile.enrichment.lyrics,
+                lyrics_projection,
+                existing,
+                synchronized_supported=synced_lyrics_supported,
+            )
         ):
             raise AutomaticManagementHoldError(
                 METADATA_UNAVAILABLE,
@@ -522,23 +524,15 @@ class AutomaticImportManagementService:
         desired_fields = list(
             self._desired_fields(profile, current.metadata, desired_metadata)
         )
-        if lyrics_projection.status == "available":
-            for name, enabled, value in (
-                (
-                    "lyrics_plain",
-                    profile.enrichment.lyrics.write_plain,
-                    lyrics_projection.plain_lyrics,
-                ),
-                (
-                    "lyrics_synced",
-                    profile.enrichment.lyrics.write_synced,
-                    lyrics_projection.synced_lyrics,
-                ),
-            ):
-                if enabled and value:
-                    desired_fields.append(
-                        DesiredAudioField(name=name, action="set", value=value)
-                    )
+        for name, value in planned_lyrics_outputs(
+            profile.enrichment.lyrics,
+            lyrics_projection,
+            existing,
+            synchronized_supported=synced_lyrics_supported,
+        ):
+            desired_fields.append(
+                DesiredAudioField(name=name, action="set", value=value)
+            )
         if replaygain_settings.enabled and replaygain_settings.mode != "preserve":
             for name, value in replaygain_values:
                 if value is None or (
@@ -557,7 +551,7 @@ class AutomaticImportManagementService:
             fields=tuple(desired_fields),
             custom_tags=self._tagging.desired_custom_tags(current_custom, transformed),
             artwork=(
-                tuple(self._embedded_descriptor(value) for value in artwork.embedded)
+                desired_embedded_artwork(current.artwork, artwork.embedded)
                 if profile.artwork.embedded_enabled
                 else None
             ),
@@ -854,20 +848,6 @@ class AutomaticImportManagementService:
             )
             fields.append(DesiredAudioField(name=name, action=action, value=after))
         return tuple(fields)
-
-    @staticmethod
-    def _embedded_descriptor(output: ArtworkOutput) -> EmbeddedArtworkDescriptor:
-        return EmbeddedArtworkDescriptor(
-            image_type=output.image_type,
-            mime_type=output.mime_type,
-            description=output.description,
-            width=output.width,
-            height=output.height,
-            byte_size=output.byte_size,
-            sha256=output.sha256,
-            content=output.content,
-            format_supported=True,
-        )
 
     @staticmethod
     def _synthetic_track_id(

@@ -19,3 +19,9 @@ Verified against `https://lrclib.net` on 2026-07-22.
 The recorded live payload is represented by the independent fixture under
 `tests/fixtures/lrclib/`. Lyrics text is intentionally omitted from the fixture; the
 shape, nullable fields, and length-independent behavior are what the adapter tests.
+
+Reverified on 2026-08-05 for *Boom. Done.* by Anthony Green. Exact `/api/get` calls
+for `I Don’t Want to Die Tonight` (197 seconds) and `Don’t Dance` (133 seconds)
+returned the same artist, album, and durations, but LRCLIB normalized the typographic
+apostrophe in each title to ASCII `'`. DroppedNeedle treats those apostrophe forms as
+the same exact signature; it does not relax any other text or duration gate.

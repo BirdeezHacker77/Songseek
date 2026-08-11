@@ -601,6 +601,8 @@ async def test_schema_is_idempotent_and_contains_complete_target_surface(
         "library_policy_transitions",
         "library_scan_runs",
         "library_scan_inventory",
+        "library_scan_management_candidates",
+        "library_scan_management_staging",
         "library_scan_grouping_contexts",
         "library_migration_provenance",
         "library_reference_tombstones",
@@ -619,6 +621,85 @@ async def test_schema_is_idempotent_and_contains_complete_target_surface(
     assert await first.get_catalog_revision() == 0
     assert await first.get_stream_revision("scan") == 0
     assert _scalar(db_path, "SELECT COUNT(*) FROM local_artists") == 2
+
+
+def test_scan_management_candidate_schema_upgrade_is_idempotent(
+    db_path: Path,
+) -> None:
+    lock = threading.Lock()
+    NativeLibraryStore(db_path, lock)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TABLE library_scan_management_candidates")
+        connection.execute("DROP TABLE library_scan_management_staging")
+        connection.execute("DROP INDEX idx_scan_inventory_management_candidates")
+
+    NativeLibraryStore(db_path, lock)
+    NativeLibraryStore(db_path, lock)
+
+    with sqlite3.connect(db_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+    assert "library_scan_management_candidates" in tables
+    assert "library_scan_management_staging" in tables
+    assert {
+        "idx_scan_inventory_management_candidates",
+        "idx_scan_management_candidates_due",
+    } <= indexes
+
+
+@pytest.mark.asyncio
+async def test_scan_management_candidates_follow_album_and_run_lifetimes(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await store.create_scan_run(
+        ScanRun(id="scan-candidate", kind="incremental", trigger="manual", queued_at=1)
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO local_albums "
+            "(id,root_id,grouping_key,title,title_folded,album_artist_id,"
+            "grouping_source,created_at,updated_at) "
+            "VALUES ('album-candidate','root-1','candidate','Candidate','candidate',"
+            "?,'automatic',1,1)",
+            (UNKNOWN_ARTIST_ID,),
+        )
+        connection.execute(
+            "INSERT INTO library_scan_management_candidates "
+            "(run_id,local_album_id,next_attempt_at) "
+            "VALUES ('scan-candidate','album-candidate',1)"
+        )
+        connection.execute(
+            "INSERT INTO library_scan_management_staging(run_id,staged_at) "
+            "VALUES ('scan-candidate',1)"
+        )
+
+        connection.execute("DELETE FROM local_albums WHERE id='album-candidate'")
+        candidates_after_album = connection.execute(
+            "SELECT COUNT(*) FROM library_scan_management_candidates"
+        ).fetchone()[0]
+        staging_after_album = connection.execute(
+            "SELECT COUNT(*) FROM library_scan_management_staging"
+        ).fetchone()[0]
+
+        connection.execute("DELETE FROM library_scan_runs WHERE id='scan-candidate'")
+        staging_after_run = connection.execute(
+            "SELECT COUNT(*) FROM library_scan_management_staging"
+        ).fetchone()[0]
+
+    assert candidates_after_album == 0
+    assert staging_after_album == 1
+    assert staging_after_run == 0
 
 
 def test_bulk_preview_staging_columns_upgrade_idempotently(db_path: Path) -> None:

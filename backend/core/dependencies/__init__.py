@@ -313,6 +313,7 @@ from .type_aliases import (  # noqa: F401
     RequestsPageServiceDep,
     JellyfinPlaybackServiceDep,
     LocalFilesServiceDep,
+    NativeLyricsServiceDep,
     JellyfinLibraryServiceDep,
     LastFmRepositoryDep,
     LastFmAuthServiceDep,

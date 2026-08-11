@@ -4,6 +4,7 @@ import asyncio
 import os
 import sqlite3
 import threading
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import get_args
@@ -109,6 +110,8 @@ def _coordinator(
     *,
     tag_read_timeout_seconds: float = 30.0,
     max_detached_tag_reads: int = 4,
+    on_indexed_album: Callable[[str], Awaitable[object]] | None = None,
+    clock: Callable[[], float] = lambda: 1_800_000_000.0,
 ) -> LibraryScanCoordinator:
     reader = tag_reader or _TagReader()
     scanner = (
@@ -127,7 +130,8 @@ def _coordinator(
         ),
         LibraryReconciler(store),
         lambda: resolver,
-        clock=lambda: 1_800_000_000.0,
+        clock=clock,
+        on_indexed_album=on_indexed_album,
     )
 
 
@@ -622,6 +626,10 @@ async def test_one_walk_incremental_tag_revisions_and_no_repeat(
     reader = _TagReader()
     real_walk = os.walk
     walk_count = 0
+    scheduled_album_ids: list[str] = []
+
+    async def schedule_album(album_id: str) -> None:
+        scheduled_album_ids.append(album_id)
 
     def counted_walk(*args, **kwargs):
         nonlocal walk_count
@@ -629,7 +637,11 @@ async def test_one_walk_incremental_tag_revisions_and_no_repeat(
         return real_walk(*args, **kwargs)
 
     coordinator = _coordinator(
-        target_store, resolver, reader, directory_walker=counted_walk
+        target_store,
+        resolver,
+        reader,
+        directory_walker=counted_walk,
+        on_indexed_album=schedule_album,
     )
     await coordinator.request_run(_request(resolver))
     completed = await coordinator.run_once({"root-a": root})
@@ -638,6 +650,9 @@ async def test_one_walk_incremental_tag_revisions_and_no_repeat(
     assert completed.counters["changed_count"] == 0
     assert walk_count == 1
     assert len(reader.calls) == 2
+    assert scheduled_album_ids == []
+    assert await coordinator.run_once({"root-a": root}) is None
+    assert len(scheduled_album_ids) == 1
     assert INVENTORY_QUEUE_SIZE == 256
     assert INVENTORY_BATCH_SIZE == 256
 
@@ -648,6 +663,7 @@ async def test_one_walk_incremental_tag_revisions_and_no_repeat(
     assert repeated.counters["changed_count"] == 0
     assert walk_count == 2
     assert len(reader.calls) == 2
+    assert len(scheduled_album_ids) == 1
 
     await coordinator.request_run(_request(resolver, kind="rescan_files"))
     rescanned = await coordinator.run_once({"root-a": root})
@@ -656,6 +672,7 @@ async def test_one_walk_incremental_tag_revisions_and_no_repeat(
     assert rescanned.counters["changed_count"] == 0
     assert walk_count == 3
     assert len(reader.calls) == 4
+    assert len(scheduled_album_ids) == 1
 
     first.write_bytes(b"one changed")
     await coordinator.request_run(_request(resolver))
@@ -665,8 +682,183 @@ async def test_one_walk_incremental_tag_revisions_and_no_repeat(
     assert changed.counters["changed_count"] == 1
     assert walk_count == 4
     assert len(reader.calls) == 5
+    assert len(scheduled_album_ids) == 1
+    assert await coordinator.run_once({"root-a": root}) is None
     tracks = await target_store.search_local_tracks("Track")
     assert len(tracks) == 2
+    assert scheduled_album_ids == [
+        str(tracks[0]["local_album_id"]),
+        str(tracks[0]["local_album_id"]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_queued_scan_is_completed_before_staged_management_callbacks(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    (root / "track-1.flac").write_bytes(b"audio")
+    resolver = _resolver(root)
+    callback_states: list[str] = []
+
+    async def schedule_album(_album_id: str) -> None:
+        latest = (await target_store.list_scan_history(limit=1))[0]
+        callback_states.append(latest.state)
+
+    coordinator = _coordinator(target_store, resolver, on_indexed_album=schedule_album)
+    await coordinator.request_run(_request(resolver))
+    first = await coordinator.run_once({"root-a": root})
+    assert first is not None and first.state == "completed"
+    assert callback_states == []
+
+    await coordinator.request_run(_request(resolver, kind="rescan_files"))
+    second = await coordinator.run_once({"root-a": root})
+    assert second is not None and second.state == "completed"
+    assert callback_states == []
+
+    assert await coordinator.run_once({"root-a": root}) is None
+    assert callback_states == ["completed"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_staging_failure_rolls_back_before_terminal_transition(
+    target_store: NativeLibraryStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    (root / "track-1.flac").write_bytes(b"audio")
+    resolver = _resolver(root)
+
+    async def schedule_album(_album_id: str) -> None:
+        return None
+
+    original_stage = target_store._stage_scan_management_candidates_tx  # noqa: SLF001
+
+    def fail_after_staging(
+        connection: sqlite3.Connection, run_id: str, *, now: float
+    ) -> int:
+        original_stage(connection, run_id, now=now)
+        raise RuntimeError("injected failure after candidate staging")
+
+    monkeypatch.setattr(
+        target_store, "_stage_scan_management_candidates_tx", fail_after_staging
+    )
+    coordinator = _coordinator(target_store, resolver, on_indexed_album=schedule_album)
+    requested = await coordinator.request_run(_request(resolver))
+
+    with pytest.raises(RuntimeError, match="failure after candidate staging"):
+        await coordinator.run_once({"root-a": root})
+
+    failed, _, _ = await target_store.get_scan_run(requested.run_id)
+    assert failed.state == "failed"
+    assert failed.terminal_code == "UNEXPECTED_WORKER_FAILURE"
+    with sqlite3.connect(tmp_path / "target.db") as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM library_scan_management_candidates"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM library_scan_management_staging"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_scan_management_callback_retries_durably_after_restart(
+    target_store: NativeLibraryStore, tmp_path: Path
+) -> None:
+    root = tmp_path / "music"
+    root.mkdir()
+    (root / "track-1.flac").write_bytes(b"audio")
+    resolver = _resolver(root)
+    now = 1_800_000_000.0
+    attempts: list[str] = []
+
+    async def schedule_album(album_id: str) -> None:
+        attempts.append(album_id)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary management scheduling failure")
+
+    coordinator = _coordinator(
+        target_store,
+        resolver,
+        on_indexed_album=schedule_album,
+        clock=lambda: now,
+    )
+    await coordinator.request_run(_request(resolver))
+    completed = await coordinator.run_once({"root-a": root})
+
+    assert completed is not None and completed.state == "completed"
+    assert attempts == []
+    with pytest.raises(StaleRevisionError):
+        await target_store.transition_scan_run(
+            completed.id,
+            expected_state="reconciling",
+            expected_revision=completed.row_revision - 1,
+            new_state="completed",
+            now=now + 100,
+            stage_management_candidates=True,
+        )
+    with sqlite3.connect(tmp_path / "target.db") as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM library_scan_management_candidates"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM library_scan_management_staging"
+            ).fetchone()[0]
+            == 1
+        )
+    assert await coordinator.run_once({"root-a": root}) is None
+    assert len(attempts) == 1
+    with sqlite3.connect(tmp_path / "target.db") as connection:
+        pending = connection.execute(
+            "SELECT state,attempt_count,next_attempt_at "
+            "FROM library_scan_management_candidates"
+        ).fetchone()
+        staged_at = connection.execute(
+            "SELECT staged_at FROM library_scan_management_staging"
+        ).fetchone()[0]
+    assert pending == ("pending", 1, now + 1)
+    assert staged_at == now
+
+    restarted_store = NativeLibraryStore(
+        db_path=tmp_path / "target.db", write_lock=threading.Lock()
+    )
+    now += 2
+    restarted = _coordinator(
+        restarted_store,
+        resolver,
+        on_indexed_album=schedule_album,
+        clock=lambda: now,
+    )
+    assert await restarted.run_once({"root-a": root}) is None
+    assert len(attempts) == 2
+    for _ in range(10):
+        assert await restarted.run_once({"root-a": root}) is None
+    with sqlite3.connect(tmp_path / "target.db") as connection:
+        completed_candidate = connection.execute(
+            "SELECT state,attempt_count,completed_at "
+            "FROM library_scan_management_candidates"
+        ).fetchone()
+        remaining_inventory = connection.execute(
+            "SELECT COUNT(*) FROM library_scan_inventory"
+        ).fetchone()[0]
+    assert completed_candidate == ("completed", 1, now)
+    assert remaining_inventory == 0
+
+    assert await restarted.run_once({"root-a": root}) is None
+    assert len(attempts) == 2
 
 
 @pytest.mark.asyncio

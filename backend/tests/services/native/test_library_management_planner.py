@@ -27,7 +27,8 @@ from infrastructure.library_management_blob_store import LibraryManagementBlobSt
 from infrastructure.persistence.download_store import DownloadStore
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from repositories.musicbrainz_management_models import MbManagementRelease
-from models.library_management_artwork import ArtworkCandidate
+from models.library_management import LibraryManagementPlanItem
+from models.library_management_artwork import ArtworkCandidate, ArtworkProjection
 from models.library_management_enrichment import (
     LyricsProjection,
     ReplayGainAnalysis,
@@ -298,6 +299,59 @@ def _add_second_track(
         )
 
 
+def _add_unidentified_album(
+    database: Path,
+    source: Path,
+    *,
+    album_number: int,
+) -> None:
+    metadata = source.stat()
+    album_id = f"album-{album_number}"
+    track_id = f"track-{album_number}"
+    relative_path = source.name
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO local_albums "
+            "(id, root_id, grouping_key, title, title_folded, album_artist_name, "
+            "album_artist_name_folded, album_artist_id, grouping_source, created_at, "
+            "updated_at) VALUES (?, 'root-1', ?, ?, ?, 'Alpha', 'alpha', "
+            "'artist-1', 'automatic', 1, 1)",
+            (
+                album_id,
+                f"group-{album_number}",
+                f"Album {album_number}",
+                f"album {album_number}",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO local_tracks "
+            "(id, local_album_id, root_id, file_path, relative_path, path_hash, "
+            "file_size_bytes, file_mtime_ns, stat_revision, stat_revision_kind, "
+            "tag_revision, title, title_folded, artist_name, artist_name_folded, "
+            "album_title, album_title_folded, album_artist_name, "
+            "album_artist_name_folded, disc_number, track_number, year, genre, "
+            "genre_folded, file_format, ingest_source, imported_at, membership_source) "
+            "VALUES (?, ?, 'root-1', ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?, "
+            "'Alpha', 'alpha', ?, ?, 'Alpha', 'alpha', 1, 1, 2024, "
+            "'Electronic', 'electronic', 'flac', 'scan', 1, 'automatic')",
+            (
+                track_id,
+                album_id,
+                str(source),
+                relative_path,
+                hashlib.sha256(relative_path.encode()).hexdigest(),
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                f"{metadata.st_size}:{metadata.st_mtime_ns}",
+                f"tag-{album_number}",
+                f"Track {album_number}",
+                f"track {album_number}",
+                f"Album {album_number}",
+                f"album {album_number}",
+            ),
+        )
+
+
 def _configured(tmp_path: Path, source_setup=None):  # noqa: ANN001
     root = tmp_path / "music"
     root.mkdir()
@@ -338,6 +392,13 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
         settings_revision,
         policy_revision,
     ) = _configured(tmp_path)
+    with sqlite3.connect(tmp_path / "library.db") as connection:
+        connection.execute(
+            "INSERT INTO local_album_artwork "
+            "(local_album_id, cover_url, source, source_locator, version, "
+            "updated_at, row_revision) VALUES "
+            "('album-1', NULL, 'provider', 'release-group-1', 7, 1, 1)"
+        )
     planner = _planner(tmp_path, store, preferences)
     before = source.read_bytes()
     handle = await planner.create_preview(
@@ -373,6 +434,7 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
     assert len(plan) == 1
     assert plan[0].eligibility in {"eligible", "warning"}
     assert plan[0].expected_file_fingerprint == hashlib.sha256(before).hexdigest()
+    assert json.loads(plan[0].capability_json)["album_artwork_version"] == 7
     assert plan[0].destination_relative_path == (
         "Johann Sebastian Bach; Glenn Gould/"
         "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
@@ -404,7 +466,468 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
 
 
 @pytest.mark.asyncio
-async def test_preview_pins_exact_plain_lyrics_without_mutating_source(
+async def test_root_preview_honors_pause_between_album_bundles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        root,
+        source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    second = root / "second.flac"
+    shutil.copy2(source, second)
+    second_stat = second.stat()
+    with sqlite3.connect(tmp_path / "library.db") as connection:
+        connection.execute(
+            "INSERT INTO local_albums "
+            "(id, root_id, grouping_key, title, title_folded, album_artist_name, "
+            "album_artist_name_folded, album_artist_id, grouping_source, created_at, "
+            "updated_at) VALUES ('album-2', 'root-1', 'group-2', "
+            "'Second Album', 'second album', 'Alpha', 'alpha', 'artist-1', "
+            "'automatic', 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO local_tracks "
+            "(id, local_album_id, root_id, file_path, relative_path, path_hash, "
+            "file_size_bytes, file_mtime_ns, stat_revision, stat_revision_kind, "
+            "tag_revision, title, title_folded, artist_name, artist_name_folded, "
+            "album_title, album_title_folded, album_artist_name, "
+            "album_artist_name_folded, disc_number, track_number, year, genre, "
+            "genre_folded, file_format, ingest_source, imported_at, membership_source) "
+            "VALUES ('track-2', 'album-2', 'root-1', ?, 'second.flac', ?, ?, ?, ?, "
+            "'exact', 'tag-2', 'Second Track', 'second track', 'Alpha', 'alpha', "
+            "'Second Album', 'second album', 'Alpha', 'alpha', 1, 1, 2024, "
+            "'Electronic', 'electronic', 'flac', 'scan', 1, 'automatic')",
+            (
+                str(second),
+                hashlib.sha256(b"second.flac").hexdigest(),
+                second_stat.st_size,
+                second_stat.st_mtime_ns,
+                f"{second_stat.st_size}:{second_stat.st_mtime_ns}",
+            ),
+        )
+    planner = _planner(tmp_path, store, preferences)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="pause-between-albums",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    calls = 0
+
+    async def plan_album(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        operation = await store.get_operation_job(handle.job_id)
+        assert operation is not None
+        if calls == 1:
+            await store.request_operation_control(
+                handle.job_id,
+                control="pause",
+                expected_row_revision=int(operation["row_revision"]),
+                idempotency_key="pause-after-first-album",
+                now=100,
+            )
+        return [], []
+
+    monkeypatch.setattr(planner, "_plan_album_page_with_lease", plan_album)
+
+    snapshot = await planner.run_claimed_preview(claimed, "worker-1")
+    operation = await store.get_operation_job(handle.job_id)
+
+    assert calls == 1
+    assert snapshot.phase == "planning"
+    assert operation is not None
+    assert operation["state"] == "paused"
+    assert operation["control_request"] == "none"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control", ["pause", "stop"])
+async def test_root_preview_honors_control_requested_during_final_album(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control: str,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key=f"{control}-during-final-album",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+    original_plan_album = planner._plan_album_page_with_lease  # noqa: SLF001
+
+    async def request_control_after_planning(*args, **kwargs):  # noqa: ANN002, ANN003
+        result = await original_plan_album(*args, **kwargs)
+        operation = await store.get_operation_job(handle.job_id)
+        assert operation is not None
+        await store.request_operation_control(
+            handle.job_id,
+            control=control,
+            expected_row_revision=int(operation["row_revision"]),
+            idempotency_key=f"{control}-after-final-album",
+            now=100,
+        )
+        return result
+
+    monkeypatch.setattr(
+        planner,
+        "_plan_album_page_with_lease",
+        request_control_after_planning,
+    )
+
+    controlled = await planner.run_claimed_preview(claimed, "worker-1")
+    operation = await store.get_operation_job(handle.job_id)
+    staged = await store.list_library_management_plan_items(handle.job_id)
+
+    assert controlled.phase == "planning"
+    assert operation is not None and operation["state"] == (
+        "paused" if control == "pause" else "stopped"
+    )
+    assert operation["control_request"] == "none"
+    assert len(staged) == 1
+    assert json.loads(str(controlled.staging_cursor))["next_ordinal"] == 1
+
+
+@pytest.mark.asyncio
+async def test_root_preview_honors_control_arriving_during_seal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="pause-during-seal",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+    original_finalize = store.finalize_library_management_preview
+
+    async def request_control_before_finalize(*args, **kwargs):  # noqa: ANN002, ANN003
+        operation = await store.get_operation_job(handle.job_id)
+        assert operation is not None
+        await store.request_operation_control(
+            handle.job_id,
+            control="pause",
+            expected_row_revision=int(operation["row_revision"]),
+            idempotency_key="pause-at-seal-transaction",
+            now=100,
+        )
+        return await original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        store,
+        "finalize_library_management_preview",
+        request_control_before_finalize,
+    )
+
+    controlled = await planner.run_claimed_preview(claimed, "worker-1")
+    operation = await store.get_operation_job(handle.job_id)
+
+    assert controlled.phase == "planning"
+    assert operation is not None and operation["state"] == "paused"
+    assert operation["control_request"] == "none"
+    assert len(await store.list_library_management_plan_items(handle.job_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_root_preview_persists_slow_planning_progress_between_page_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        root,
+        source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    for album_number in (2, 3):
+        album_source = root / f"album-{album_number}.flac"
+        shutil.copy2(source, album_source)
+        _add_unidentified_album(
+            tmp_path / "library.db",
+            album_source,
+            album_number=album_number,
+        )
+    planner = _planner(tmp_path, store, preferences)
+    timestamps = iter((0.0, 31.0, 31.0, 31.0, 31.0, 31.0))
+    planner._monotonic_clock = lambda: next(timestamps)  # noqa: SLF001
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="persist-slow-progress",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+    original_append = store.append_library_management_plan_items
+    batches: list[tuple[int, dict[str, object]]] = []
+
+    async def record_append(
+        job_id: str,
+        items: list[LibraryManagementPlanItem],
+        *,
+        expected_snapshot_revision: int,
+        staging_cursor: str | None = None,
+    ) -> int:
+        assert staging_cursor is not None
+        batches.append((len(items), json.loads(staging_cursor)))
+        return await original_append(
+            job_id,
+            items,
+            expected_snapshot_revision=expected_snapshot_revision,
+            staging_cursor=staging_cursor,
+        )
+
+    monkeypatch.setattr(store, "append_library_management_plan_items", record_append)
+
+    snapshot = await planner.run_claimed_preview(claimed, "worker-1")
+
+    assert snapshot.phase == "ready"
+    assert [size for size, _cursor in batches] == [1, 2]
+    assert batches[0][1]["album_id"] == "album-1"
+    assert batches[0][1]["bundle_ordinal"] == 0
+    assert batches[0][1]["next_ordinal"] == 1
+    assert batches[0][1]["track_id"] == "track-1"
+    assert batches[1][1]["album_id"] == "album-3"
+    assert batches[1][1]["next_ordinal"] == 3
+    assert len(await store.list_library_management_plan_items(handle.job_id)) == 3
+
+
+@pytest.mark.asyncio
+async def test_root_preview_yields_when_scan_starts_mid_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        root,
+        source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    second = root / "album-2.flac"
+    shutil.copy2(source, second)
+    _add_unidentified_album(
+        tmp_path / "library.db",
+        second,
+        album_number=2,
+    )
+    gate = BackgroundWorkloadGate()
+    planner = _planner(tmp_path, store, preferences, gate)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="roots", ids=("root-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="scan-starts-mid-page",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+    original_plan_album = planner._plan_album_page_with_lease  # noqa: SLF001
+    calls = 0
+
+    async def activate_scan_after_first_album(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal calls
+        result = await original_plan_album(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            gate.set_scan_active(True)
+        return result
+
+    monkeypatch.setattr(
+        planner,
+        "_plan_album_page_with_lease",
+        activate_scan_after_first_album,
+    )
+
+    deferred = await planner.run_claimed_preview(claimed, "worker-1")
+    operation = await store.get_operation_job(handle.job_id)
+    staged = await store.list_library_management_plan_items(handle.job_id)
+
+    assert calls == 1
+    assert deferred.phase == "planning"
+    assert operation is not None and operation["state"] == "queued"
+    assert len(staged) == 1
+    assert staged[0].local_album_id == "album-1"
+    assert json.loads(str(deferred.staging_cursor))["next_ordinal"] == 1
+
+    gate.set_scan_active(False)
+    resumed = await store.claim_operation_job(
+        "worker-2", now=101, lease_seconds=60, kind="library_management"
+    )
+    assert resumed is not None
+
+    completed = await planner.run_claimed_preview(resumed, "worker-2")
+
+    assert completed.phase == "ready"
+    assert calls == 2
+    assert len(await store.list_library_management_plan_items(handle.job_id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_preview_restart_after_final_progress_checkpoint_does_not_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="restart-after-final-checkpoint",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    async def crash_before_seal(*_args, **_kwargs):
+        raise RuntimeError("simulated process exit after durable progress")
+
+    monkeypatch.setattr(planner, "_seal_preview", crash_before_seal)
+    with pytest.raises(RuntimeError, match="simulated process exit"):
+        await planner.run_claimed_preview(claimed, "worker-1")
+
+    staged = await store.get_library_management_job_snapshot(handle.job_id)
+    assert staged is not None
+    assert staged.phase == "planning"
+    assert json.loads(str(staged.staging_cursor))["next_ordinal"] == 1
+    assert len(await store.list_library_management_plan_items(handle.job_id)) == 1
+
+    resumed_planner = _planner(tmp_path, store, preferences)
+    completed = await resumed_planner.run_claimed_preview(claimed, "worker-1")
+
+    assert completed.phase == "ready"
+    assert len(await store.list_library_management_plan_items(handle.job_id)) == 1
+
+
+def test_scrubbed_raw_tag_evidence_includes_values_and_fingerprint() -> None:
+    document = AudioMetadataEngine().read(FIXTURES / "library" / "management_full.flac")
+    evidence = planner_module._scrubbed_raw_tag_evidence(  # noqa: SLF001
+        document, ("custom_keep",)
+    )
+
+    marker = evidence[0]
+    assert marker == {
+        "key": "custom_keep",
+        "value_kind": "text",
+        "values": ["opaque local value"],
+        "value_count": 1,
+        "truncated": False,
+        "sha256": hashlib.sha256(
+            msgspec.json.encode(("opaque local value",))
+        ).hexdigest(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_preview_preserves_embedded_artwork_without_replacement(
+    tmp_path: Path,
+) -> None:
+    (
+        _root,
+        source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    profile.artwork.embedded_enabled = True
+    saved = preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=settings_revision
+    )
+    planner = _planner(tmp_path, store, preferences)
+    planner._artwork.project = AsyncMock(
+        return_value=ArtworkProjection(preserved_existing=True)
+    )
+    existing = planner._audio.read(source).artwork
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=saved.settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="preserved-artwork-preview",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    await planner.run_claimed_preview(claimed, "worker-1")
+
+    item = (await store.list_library_management_plan_items(handle.job_id))[0]
+    assert existing
+    assert json.loads(item.diff_json)["artwork_changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_preview_pins_exact_plain_and_synced_lyrics_without_mutating_source(
     tmp_path: Path,
 ) -> None:
     (
@@ -420,7 +943,6 @@ async def test_preview_pins_exact_plain_lyrics_without_mutating_source(
         value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
     profile.enrichment.lyrics.enabled = True
-    profile.enrichment.lyrics.write_synced = False
     saved = preferences.save_library_management_settings_if_current(
         settings, expected_settings_revision=settings_revision
     )
@@ -456,7 +978,11 @@ async def test_preview_pins_exact_plain_lyrics_without_mutating_source(
         value["name"] == "lyrics_plain" and value["value"] == "Pinned lyrics"
         for value in desired["fields"]
     )
-    assert all(value["name"] != "lyrics_synced" for value in desired["fields"])
+    assert any(
+        value["name"] == "lyrics_synced"
+        and value["value"] == "[00:01.000]Pinned lyrics"
+        for value in desired["fields"]
+    )
     assert diff["lyrics_projection"] == {
         "status": "available",
         "provider_id": 42,
@@ -464,8 +990,96 @@ async def test_preview_pins_exact_plain_lyrics_without_mutating_source(
         "reason": None,
         "plain_available": True,
         "synced_available": True,
+        "plain_selected": True,
+        "synced_selected": True,
+        "synced_supported": True,
+        "preserve_existing": False,
     }
     assert source.read_bytes() == before
+
+
+@pytest.mark.parametrize("audio_format", ("m4a", "aac"))
+@pytest.mark.asyncio
+async def test_preview_falls_back_to_plain_lyrics_when_synced_is_unsupported(
+    tmp_path: Path, audio_format: str
+) -> None:
+    (
+        root,
+        source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    replacement = root / f"source.{audio_format}"
+    shutil.copy2(FIXTURES / "library" / f"management_full.{audio_format}", replacement)
+    source.unlink()
+    metadata = replacement.stat()
+    with sqlite3.connect(tmp_path / "library.db") as connection:
+        connection.execute(
+            "UPDATE local_tracks SET file_path = ?, relative_path = ?, path_hash = ?, "
+            "file_size_bytes = ?, file_mtime_ns = ?, stat_revision = ?, "
+            "file_format = ? WHERE id = 'track-1'",
+            (
+                str(replacement),
+                replacement.name,
+                hashlib.sha256(replacement.name.encode()).hexdigest(),
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                f"{metadata.st_size}:{metadata.st_mtime_ns}",
+                audio_format,
+            ),
+        )
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    profile.enrichment.lyrics.enabled = True
+    saved = preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=settings_revision
+    )
+    lyrics = AsyncMock()
+    lyrics.project.return_value = LyricsProjection(
+        status="available",
+        plain_lyrics="Pinned lyrics",
+        synced_lyrics="[00:01.000]Pinned lyrics",
+        provider_id=42,
+        provider_revision="lrclib-revision",
+    )
+    planner = _planner(tmp_path, store, preferences, lyrics=lyrics)
+    before = replacement.read_bytes()
+
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=saved.settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key=f"lyrics-{audio_format}-fallback-preview",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    await planner.run_claimed_preview(claimed, "worker-1")
+    item = (await store.list_library_management_plan_items(handle.job_id))[0]
+    desired = json.loads(item.desired_document_json)
+    diff = json.loads(item.diff_json)
+    capability = json.loads(item.capability_json)
+
+    assert any(
+        value["name"] == "lyrics_plain" and value["value"] == "Pinned lyrics"
+        for value in desired["fields"]
+    )
+    assert not any(value["name"] == "lyrics_synced" for value in desired["fields"])
+    assert diff["lyrics_projection"]["synced_supported"] is False
+    expected_blockers = (
+        ["performer is not supported by the m4a adapter"]
+        if audio_format == "m4a"
+        else []
+    )
+    assert capability["blockers"] == expected_blockers
+    assert not any("lyrics_synced" in blocker for blocker in capability["blockers"])
+    assert replacement.read_bytes() == before
 
 
 @pytest.mark.asyncio

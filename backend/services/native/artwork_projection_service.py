@@ -16,6 +16,7 @@ from infrastructure.audio.artwork_processor import ArtworkProcessor
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.integration_result import IntegrationResult
 from infrastructure.queue.priority_queue import RequestPriority
+from models.audio_metadata import EmbeddedArtworkDescriptor
 from models.library_management_artwork import (
     ArtworkCandidate,
     ArtworkDecision,
@@ -34,6 +35,40 @@ from repositories.protocols.coverart_management import (
 
 _SOURCE = "library_management_artwork"
 _MAX_LOCAL_ENTRIES = 10_000
+
+
+def merge_embedded_artwork(
+    existing: Sequence[EmbeddedArtworkDescriptor],
+    replacements: Sequence[EmbeddedArtworkDescriptor],
+) -> tuple[EmbeddedArtworkDescriptor, ...]:
+    replacement_types = {value.image_type for value in replacements}
+    return (
+        *replacements,
+        *(value for value in existing if value.image_type not in replacement_types),
+    )
+
+
+def desired_embedded_artwork(
+    existing: Sequence[EmbeddedArtworkDescriptor],
+    replacements: Sequence[ArtworkOutput],
+) -> tuple[EmbeddedArtworkDescriptor, ...]:
+    return merge_embedded_artwork(
+        existing,
+        tuple(
+            EmbeddedArtworkDescriptor(
+                image_type=value.image_type,
+                mime_type=value.mime_type,
+                description=value.description,
+                width=value.width,
+                height=value.height,
+                byte_size=value.byte_size,
+                sha256=value.sha256,
+                content=value.content,
+                format_supported=True,
+            )
+            for value in replacements
+        ),
+    )
 
 
 def _record_degradation(message: str) -> None:

@@ -516,7 +516,7 @@ def test_custom_tag_cannot_alias_managed_native_field() -> None:
     assert any("managed native tag" in blocker for blocker in plan.blockers)
 
 
-@pytest.mark.parametrize("audio_format", ("flac", "ogg", "opus", "m4a", "aac"))
+@pytest.mark.parametrize("audio_format", ("m4a", "aac"))
 def test_synced_lyrics_without_picard_mapping_is_an_explicit_capability_blocker(
     audio_format: str,
 ) -> None:

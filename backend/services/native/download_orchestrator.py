@@ -1638,9 +1638,8 @@ class DownloadOrchestrator:
             "remote_queued": False,
             "preferred_quality_fallback_at": None,
             "has_next_source": False,
+            "error_message": error_message,
         }
-        if error_message:
-            fields["error_message"] = error_message
         attempt_id = None
         disposition = None
         bundle_ids: list[str] = []

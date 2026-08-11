@@ -33,6 +33,7 @@
 		managementAudioFormat,
 		managementAlbumArtworkVersion,
 		managementArtworkPreviewHash,
+		managementDesiredField,
 		managementPlanAlbum,
 		managementPlanAlbumArtist,
 		managementPlanArtist,
@@ -63,22 +64,33 @@
 	let undoOpener: HTMLButtonElement | null = null;
 	let undoError = $state('');
 	let nowSeconds = $state(Date.now() / 1000);
+	let redirectingReadyPreview = $state(false);
 
 	const operationQuery = getLibraryManagementOperationQuery(
 		() => authStore.user?.id,
 		() => jobId
 	);
+	const operation = $derived(operationQuery.data ?? null);
 	const resultsQuery = getLibraryManagementOperationResultsQuery(
 		() => authStore.user?.id,
 		() => jobId,
-		() => 50
+		() => 50,
+		() => operation?.state ?? null
 	);
 	const pauseOperation = controlLibraryManagementOperationMutation('pause');
 	const resumeOperation = controlLibraryManagementOperationMutation('resume');
 	const stopOperation = controlLibraryManagementOperationMutation('stop');
 	const createUndo = createLibraryManagementUndoPreviewMutation();
 
-	const operation = $derived(operationQuery.data ?? null);
+	$effect(() => {
+		if (!redirectingReadyPreview && operation?.mode === 'preview' && operation.state === 'ready') {
+			redirectingReadyPreview = true;
+			void goto(`/library/management/previews/${encodeURIComponent(jobId)}`, {
+				replaceState: true
+			});
+		}
+	});
+
 	const externalRefreshes = $derived(operation?.external_refreshes ?? []);
 	const results = $derived(resultsQuery.data?.pages.flatMap((page) => page.items) ?? []);
 	const resultDossiers = $derived(
@@ -265,6 +277,7 @@
 			albumTitle: managementPlanAlbum(item.plan),
 			albumArtist: managementPlanAlbumArtist(item.plan),
 			albumId: item.plan.local_album_id,
+			albumMbid: managementDesiredField(item.plan, 'musicbrainz_release_group_id'),
 			albumArtworkVersion: managementAlbumArtworkVersion(item.plan),
 			format: managementAudioFormat(item.plan),
 			status: titleManagementValue(item.failure_code ?? item.work_state),
@@ -289,14 +302,17 @@
 
 {#snippet resultInspector(ordinal: number)}
 	{@const result = results.find((candidate) => candidate.plan.ordinal === ordinal)}
-	{#if result}<LibraryManagementResultInspector item={result} />{/if}
+	{#if result}<LibraryManagementResultInspector
+			item={result}
+			operationState={operation?.state}
+		/>{/if}
 {/snippet}
 
 <div class="management-preview-shell px-4 py-8 sm:px-6 lg:px-8">
 	<main class="mx-auto max-w-7xl space-y-5">
 		<BackButton fallback="/library/management#management-controls" />
 
-		{#if operationQuery.isLoading}
+		{#if operationQuery.isLoading || redirectingReadyPreview}
 			<div class="space-y-4">
 				<div class="skeleton h-48 rounded-2xl"></div>
 				<div class="skeleton h-72 rounded-2xl"></div>

@@ -153,10 +153,8 @@ FORMAT_CAPABILITIES: dict[AudioContainer, FormatCapabilities] = {
         artwork_writable=True,
         artwork_types_preserved=True,
         artwork_mime_types=_ARTWORK_MIMES,
-        supported_fields=tuple(
-            field for field in _ALL_FIELDS if field not in _SYNCED_LYRICS_UNSUPPORTED
-        ),
-        unsupported_fields=_SYNCED_LYRICS_UNSUPPORTED,
+        supported_fields=_ALL_FIELDS,
+        unsupported_fields=(),
     ),
     "mp3": FormatCapabilities(
         audio_format="mp3",
@@ -188,10 +186,8 @@ FORMAT_CAPABILITIES: dict[AudioContainer, FormatCapabilities] = {
         artwork_writable=True,
         artwork_types_preserved=True,
         artwork_mime_types=_ARTWORK_MIMES,
-        supported_fields=tuple(
-            field for field in _ALL_FIELDS if field not in _SYNCED_LYRICS_UNSUPPORTED
-        ),
-        unsupported_fields=_SYNCED_LYRICS_UNSUPPORTED,
+        supported_fields=_ALL_FIELDS,
+        unsupported_fields=(),
     ),
     "opus": FormatCapabilities(
         audio_format="opus",
@@ -205,10 +201,8 @@ FORMAT_CAPABILITIES: dict[AudioContainer, FormatCapabilities] = {
         artwork_writable=True,
         artwork_types_preserved=True,
         artwork_mime_types=_ARTWORK_MIMES,
-        supported_fields=tuple(
-            field for field in _ALL_FIELDS if field not in _SYNCED_LYRICS_UNSUPPORTED
-        ),
-        unsupported_fields=_SYNCED_LYRICS_UNSUPPORTED,
+        supported_fields=_ALL_FIELDS,
+        unsupported_fields=(),
     ),
     "m4a": FormatCapabilities(
         audio_format="m4a",
@@ -700,6 +694,7 @@ _VORBIS_KEYS: dict[str, tuple[str, ...]] = {
     "acoustid_id": ("ACOUSTID_ID",),
     "acoustid_fingerprint": ("ACOUSTID_FINGERPRINT",),
     "lyrics_plain": ("LYRICS",),
+    "lyrics_synced": ("SYNCEDLYRICS",),
     "replaygain_track_gain": ("REPLAYGAIN_TRACK_GAIN",),
     "replaygain_album_gain": ("REPLAYGAIN_ALBUM_GAIN",),
     "replaygain_track_peak": ("REPLAYGAIN_TRACK_PEAK",),
@@ -2127,6 +2122,11 @@ class AudioMetadataEngine:
         }
         scrub_preserved_names = {
             *preserved_names,
+            *(
+                mutation.name
+                for mutation in mutations
+                if mutation.operation in {"unchanged", "preserve"}
+            ),
             *(
                 name
                 for name in ENRICHMENT_AUDIO_FIELDS

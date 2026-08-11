@@ -89,7 +89,7 @@ async def test_scan_trigger_is_independent_and_deduplicates_exact_input(
 
     _activate_scan(preferences, policy_revision)
     assert await service.schedule_identified_album("album-1", "stale-input") is None
-    first = await service.schedule_identified_album("album-1", input_policy_revision)
+    first = await service.schedule_scanned_album("album-1")
     second = await service.schedule_identified_album("album-1", input_policy_revision)
 
     assert first is not None and second == first
@@ -100,6 +100,44 @@ async def test_scan_trigger_is_independent_and_deduplicates_exact_input(
     assert snapshot.origin == "scan_discovered"
     assert snapshot.mode == "preview"
     assert snapshot.phase == "planning"
+
+
+@pytest.mark.asyncio
+async def test_scan_trigger_manages_only_indexed_tracks_in_a_mixed_album(
+    tmp_path: Path,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _record_applied_policy(tmp_path / "library.db", policy_revision)
+    _activate_scan(preferences, policy_revision)
+    with sqlite3.connect(tmp_path / "library.db") as connection:
+        connection.execute(
+            "INSERT INTO local_tracks "
+            "(id,local_album_id,root_id,file_path,relative_path,path_hash,"
+            "file_size_bytes,file_mtime_ns,stat_revision,title,title_folded,"
+            "album_title,album_title_folded,disc_number,track_number,file_format,"
+            "availability,ingest_source,imported_at,membership_source) "
+            "VALUES ('track-missing','album-1','root-1',?,'missing.flac','missing',"
+            "1,1,'missing','Missing','missing','Alpha','alpha',1,2,'flac',"
+            "'missing','scan',1,'automatic')",
+            (str(source.with_name("missing.flac")),),
+        )
+
+    all_tracks = await store.get_album_identification_context("album-1")
+    assert all_tracks is not None and len(all_tracks["tracks"]) == 2
+
+    service = AutomaticScanManagementService(
+        store,
+        LibraryManagementProfileService(preferences),
+        _planner(tmp_path, store, preferences),
+    )
+    job_id = await service.schedule_scanned_album("album-1")
+
+    assert job_id is not None
+    identity = await store.get_accepted_library_management_identity("album-1")
+    assert identity is not None
+    assert [track.local_track_id for track in identity.tracks] == ["track-1"]
 
 
 @pytest.mark.asyncio

@@ -438,16 +438,20 @@ class LibraryManagementUndoService:
         ancillary: list[dict] = []
         current = None
         restore_snapshot = None
+        fingerprint = ""
+        fingerprint_changed = False
         try:
             async with self._filesystem.read_many(
                 {source_root_id, destination_root_id}
             ):
                 fingerprint = await asyncio.to_thread(self._hash_file, source)
                 current = await asyncio.to_thread(self._audio.read, source)
+                fingerprint_changed = (
+                    journal.staged_fingerprint is None
+                    or fingerprint != journal.staged_fingerprint
+                )
                 if (
                     before.expires_at <= now
-                    or journal.staged_fingerprint is None
-                    or fingerprint != journal.staged_fingerprint
                     or before.after_root_id != source_root_id
                     or before.after_relative_path != str(track["relative_path"])
                 ):
@@ -466,6 +470,19 @@ class LibraryManagementUndoService:
                 )
         except (OSError, ValidationError, ConflictError):
             reason = reason or FILE_CHANGED
+
+        if (
+            reason is None
+            and fingerprint_changed
+            and not await self._matches_completed_undo_restoration(
+                source_job_id=source_job_id,
+                local_track_id=before.local_track_id,
+                root_id=source_root_id,
+                relative_path=str(track["relative_path"]),
+                fingerprint=fingerprint,
+            )
+        ):
+            reason = FILE_CHANGED
 
         identity = await self._store.get_accepted_library_management_identity(
             str(track["local_album_id"]),
@@ -579,7 +596,9 @@ class LibraryManagementUndoService:
             expected_relative_path=str(track["relative_path"]),
             expected_stat_revision=str(track["stat_revision"]),
             expected_tag_revision=str(track["tag_revision"]),
-            expected_file_fingerprint=(journal.staged_fingerprint or "missing"),
+            expected_file_fingerprint=(
+                fingerprint or journal.staged_fingerprint or "missing"
+            ),
             source_path_identity=str(source),
             destination_root_id=destination_root_id,
             destination_relative_path=before.before_relative_path,
@@ -604,6 +623,36 @@ class LibraryManagementUndoService:
             reason_code=reason,
             estimated_temporary_bytes=int(track["file_size_bytes"] or 0),
             created_at=now,
+        )
+
+    async def _matches_completed_undo_restoration(
+        self,
+        *,
+        source_job_id: str,
+        local_track_id: str,
+        root_id: str,
+        relative_path: str,
+        fingerprint: str,
+    ) -> bool:
+        result = await self._store.get_latest_completed_management_audio_result(
+            local_track_id
+        )
+        if (
+            result is None
+            or result["operation_mode"] != "undo"
+            or result["staged_fingerprint"] != fingerprint
+            or result["destination_root_id"] != root_id
+            or result["destination_relative_path"] != relative_path
+        ):
+            return False
+        try:
+            diff = json.loads(str(result["diff_json"]))
+        except json.JSONDecodeError:
+            return False
+        restored_state = diff.get("restore_management_state")
+        return bool(
+            isinstance(restored_state, dict)
+            and restored_state.get("last_operation_job_id") == source_job_id
         )
 
     async def plan_ancillary_restore(

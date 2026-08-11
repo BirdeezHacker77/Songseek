@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
-from core.exceptions import ConflictError, StaleRevisionError, ValidationError
+from core.exceptions import (
+    ConflictError,
+    LibraryManagementDestinationConflictError,
+    StaleRevisionError,
+    ValidationError,
+)
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from services.native.library_management_planner import LibraryManagementPlanner
 from services.native.library_management_publisher import LibraryManagementPublisher
@@ -16,6 +22,8 @@ from services.native.library_management_baseline_service import (
 from services.native.library_management_duplicate_service import (
     LibraryManagementDuplicateService,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LibraryManagementWorker:
@@ -57,7 +65,7 @@ class LibraryManagementWorker:
                     terminal_code="STALE_INPUT",
                     now=time.time(),
                 )
-            except ValidationError:
+            except (ValidationError, ConflictError):
                 return await self._store.finish_operation_job(
                     job_id,
                     worker_id,
@@ -80,7 +88,7 @@ class LibraryManagementWorker:
                     terminal_code="STALE_INPUT",
                     now=time.time(),
                 )
-            except ValidationError:
+            except (ValidationError, ConflictError):
                 return await self._store.finish_operation_job(
                     job_id,
                     worker_id,
@@ -105,7 +113,7 @@ class LibraryManagementWorker:
                     terminal_code="STALE_INPUT",
                     now=time.time(),
                 )
-            except ValidationError:
+            except (ValidationError, ConflictError):
                 return await self._store.finish_operation_job(
                     job_id,
                     worker_id,
@@ -149,7 +157,7 @@ class LibraryManagementWorker:
                 terminal_code="STALE_INPUT",
                 now=time.time(),
             )
-        except ValidationError:
+        except (ValidationError, ConflictError):
             return await self._store.finish_operation_job(
                 job_id,
                 worker_id,
@@ -233,22 +241,50 @@ class LibraryManagementWorker:
                     )
                     continue
                 await self._publisher.publish_bundle(job_id, ordinal, worker_id)
-            except (StaleRevisionError, ConflictError) as error:
+            except (
+                StaleRevisionError,
+                LibraryManagementDestinationConflictError,
+                ConflictError,
+            ) as error:
                 current = await self._store.get_operation_work_item(job_id, ordinal)
                 if current is not None and current["state"] == "succeeded":
                     continue
+                if isinstance(error, StaleRevisionError):
+                    failure_code = "STALE_INPUT"
+                    result_json = json.dumps(
+                        {"reason": str(error)}, separators=(",", ":"), sort_keys=True
+                    )
+                elif isinstance(error, LibraryManagementDestinationConflictError):
+                    failure_code = "STALE_DESTINATION"
+                    result_json = json.dumps(
+                        {"reason": str(error)}, separators=(",", ":"), sort_keys=True
+                    )
+                else:
+                    failure_code = "PUBLICATION_CONFLICT"
+                    result_json = json.dumps(
+                        {
+                            "conflict_type": type(error).__name__,
+                            "reason": str(error),
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                logger.warning(
+                    "Library management publication rejected "
+                    "job_id=%s bundle_ordinal=%s conflict_type=%s reason=%s",
+                    job_id,
+                    ordinal,
+                    type(error).__name__,
+                    str(error),
+                )
                 await self._store.complete_operation_work(
                     job_id,
                     ordinal,
                     worker_id=worker_id,
                     expected_work_revision=int(work["row_revision"]),
                     state="skipped",
-                    result_json=None,
-                    failure_code=(
-                        "STALE_DESTINATION"
-                        if isinstance(error, ConflictError)
-                        else "STALE_INPUT"
-                    ),
+                    result_json=result_json,
+                    failure_code=failure_code,
                     completed_at=time.time(),
                 )
             except (ValidationError, OSError):

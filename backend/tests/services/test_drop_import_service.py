@@ -653,6 +653,7 @@ async def test_unidentified_drop_needs_review_then_manual_match(tmp_path):
     assert matched.release_group_mbid == "rg-manual"
     assert library.upsert_file.await_count == 2
     assert (library_root / "Test Artist" / "Test Album (2020)").exists()
+    assert not Path(job.staging_dir).exists()
 
 
 @pytest.mark.asyncio
@@ -748,6 +749,7 @@ async def test_discard_removes_staged_files(tmp_path):
     discarded = await service.discard_item(item.id, user_id="user-1", is_admin=False)
     assert discarded.status == ItemStatus.DISCARDED
     assert all(not p.exists() for p in staged)
+    assert not Path(job.staging_dir).exists()
 
 
 # -- single files and loose drops --

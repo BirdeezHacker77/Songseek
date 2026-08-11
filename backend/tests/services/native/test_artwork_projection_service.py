@@ -8,11 +8,16 @@ from api.v1.schemas.library_management import ArtworkManagementSettings
 from core.exceptions import ExternalServiceError
 from infrastructure.audio.artwork_processor import ArtworkProcessor
 from infrastructure.queue.priority_queue import RequestPriority
+from models.audio_metadata import EmbeddedArtworkDescriptor
 from models.library_management_artwork import (
     ArtworkCandidate,
+    ArtworkOutput,
     ExistingArtworkDescriptor,
 )
-from services.native.artwork_projection_service import ArtworkProjectionService
+from services.native.artwork_projection_service import (
+    ArtworkProjectionService,
+    desired_embedded_artwork,
+)
 
 _RELEASE = "aff0622e-7bd3-4fb6-9ca3-0fa19dd2340b"
 _RG = "dcff25f1-702d-3b5e-b0da-d48172e6e62a"
@@ -91,6 +96,54 @@ class StubArtworkRepository:
         if len(content) > maximum_bytes:
             raise ExternalServiceError("too large")
         return content, "image/png"
+
+
+def test_merge_embedded_artwork_replaces_only_matching_image_types() -> None:
+    front = EmbeddedArtworkDescriptor(
+        image_type="front",
+        mime_type="image/jpeg",
+        description="old front",
+        width=700,
+        height=700,
+        byte_size=9,
+        sha256="old-front",
+        content=b"old-front",
+        format_supported=True,
+    )
+    back = EmbeddedArtworkDescriptor(
+        image_type="back",
+        mime_type="image/jpeg",
+        description="back",
+        width=600,
+        height=600,
+        byte_size=4,
+        sha256="back",
+        content=b"back",
+        format_supported=True,
+    )
+    replacement = ArtworkOutput(
+        output_kind="embedded",
+        image_type="front",
+        content=b"new-front",
+        mime_type="image/jpeg",
+        format="jpeg",
+        width=1200,
+        height=1200,
+        byte_size=9,
+        sha256="new-front",
+        source="cover_art_archive_release",
+        source_candidate_id="candidate",
+        source_is_exact_release=True,
+    )
+
+    preserved = desired_embedded_artwork((front, back), ())
+    replaced = desired_embedded_artwork((front, back), (replacement,))
+
+    assert preserved == (front, back)
+    assert [(value.image_type, value.sha256) for value in replaced] == [
+        ("front", "new-front"),
+        ("back", "back"),
+    ]
 
 
 @pytest.mark.asyncio

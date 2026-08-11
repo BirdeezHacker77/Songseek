@@ -193,9 +193,9 @@ class LibraryManagementBaselineService:
         request: LibraryManagementBaselinePurgeRequest,
         actor_user_id: str,
     ) -> LibraryManagementBaselinePurgeResponse:
-        if request.typed_confirmation != "PURGE BASELINES":
+        if request.typed_confirmation != "CONFIRM":
             raise ValidationError(
-                "Type PURGE BASELINES exactly to permanently purge baselines."
+                "Type CONFIRM exactly to permanently purge baselines."
             )
         if not request.idempotency_key.strip():
             raise ValidationError("A baseline purge idempotency key is required.")

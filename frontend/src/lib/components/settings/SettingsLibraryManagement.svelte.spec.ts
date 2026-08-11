@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 
 import type { LibraryManagementSettingsResponse } from '$lib/queries/library-management/types';
+import { authStore, type AuthUser } from '$lib/stores/authStore.svelte';
 
 const h = vi.hoisted(() => ({
 	settings: { data: {}, isLoading: false, isError: false, refetch: vi.fn() } as Record<
@@ -25,18 +26,27 @@ const h = vi.hoisted(() => ({
 	purgeImpact: vi.fn(),
 	purge: vi.fn(),
 	purgeData: null as Record<string, unknown> | null,
-	remember: vi.fn()
+	remember: vi.fn(),
+	rememberSession: vi.fn(),
+	forgetSession: vi.fn(),
+	readSession: vi.fn(),
+	operations: {
+		data: { pages: [{ items: [] as Array<Record<string, unknown>> }] },
+		isLoading: false,
+		isError: false
+	} as Record<string, unknown>
 }));
 
-vi.mock('$lib/stores/authStore.svelte', () => ({
-	authStore: { isAdmin: true, user: { id: 'admin-1' } }
-}));
 vi.mock('$lib/queries/library-management/LibraryManagementPreviewTokens', () => ({
-	rememberLibraryManagementPreviewToken: (...args: unknown[]) => h.remember(...args)
+	rememberLibraryManagementPreviewToken: (...args: unknown[]) => h.remember(...args),
+	rememberLibraryManagementActivationSession: (...args: unknown[]) => h.rememberSession(...args),
+	readLibraryManagementActivationSession: (...args: unknown[]) => h.readSession(...args),
+	forgetLibraryManagementActivationSession: (...args: unknown[]) => h.forgetSession(...args)
 }));
 vi.mock('$lib/queries/library-management/LibraryManagementQueries.svelte', () => ({
 	getLibraryManagementSettingsQuery: () => h.settings,
 	getLibraryManagementActivationPreviewQuery: () => h.activation,
+	getLibraryManagementOperationsQuery: () => h.operations,
 	getLibraryManagementPresetDiffQuery: () => h.presetDiff
 }));
 vi.mock('$lib/queries/library-management/LibraryManagementMutations.svelte', () => ({
@@ -192,6 +202,7 @@ function baseSettings(): LibraryManagementSettingsResponse {
 						provider: 'lrclib',
 						write_plain: true,
 						write_synced: true,
+						preserve_existing: false,
 						required: false
 					},
 					replaygain: { enabled: false, mode: 'preserve', album_aware: true, required: false }
@@ -237,12 +248,32 @@ const roots = [
 	}
 ];
 
+function adminUser(id: string): AuthUser {
+	return {
+		id,
+		display_name: id,
+		role: 'admin',
+		email: null,
+		avatar_url: null,
+		username: id,
+		username_display: id,
+		providers: []
+	};
+}
+
 beforeEach(() => {
+	authStore.setUser(adminUser('admin-1'));
 	vi.clearAllMocks();
 	h.createActivationPending = false;
 	h.confirmActivationPending = false;
 	h.stopActivationPending = false;
 	h.purgeData = null;
+	h.readSession.mockReturnValue(null);
+	h.operations = {
+		data: { pages: [{ items: [] }] },
+		isLoading: false,
+		isError: false
+	};
 	const settings = baseSettings();
 	const presetProfile = structuredClone(settings.profiles[0]);
 	presetProfile.metadata.fields[0].mode = 'replace';
@@ -294,6 +325,18 @@ describe('SettingsLibraryManagement', () => {
 		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
 		await expect.element(page.getByText('Off everywhere')).toBeVisible();
 		await expect.element(page.getByText('Scanning: Automatic identification')).toBeVisible();
+		await expect.element(page.getByText('Library default', { exact: true })).toBeVisible();
+		await expect
+			.element(page.getByRole('radio', { name: 'Make Picard-style Organizer the library default' }))
+			.toBeChecked();
+		await expect
+			.element(page.getByRole('button', { name: 'Choose Management profile for Archive' }))
+			.toHaveTextContent(/Inherited from library default.*Picard-style Organizer/);
+		await expect
+			.element(page.getByRole('combobox', { name: 'Management profile for Archive' }))
+			.not.toBeInTheDocument();
+		await expect.element(page.getByText('Configuration saved')).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Saved' })).toBeDisabled();
 
 		await page.getByRole('button', { name: 'Edit' }).click();
 		const profileDialog = page.getByRole('dialog', { name: 'Picard-style Organizer' });
@@ -304,17 +347,30 @@ describe('SettingsLibraryManagement', () => {
 		await expect
 			.element(profileDialog.getByText('Changed sections: metadata, file organization'))
 			.toBeVisible();
+		await expect.element(profileDialog.getByText('1 managed field')).toBeVisible();
+		await expect.element(profileDialog.getByText('Lyrics off')).toBeVisible();
+		await expect.element(profileDialog.getByText('ReplayGain off')).toBeVisible();
+		await expect
+			.element(profileDialog.getByRole('button', { name: 'Save profile' }))
+			.toBeDisabled();
+		await expect.element(profileDialog.getByText('Manage metadata tags')).not.toBeVisible();
+
+		await profileDialog.getByText('File naming and organization').click();
 		await profileDialog.getByText('Language reference').click();
 		await expect.element(profileDialog.getByText('Alpha/Management Track.flac')).toBeVisible();
 		await expect
 			.element(profileDialog.getByText(/Run a dry preview for real file results/))
 			.toBeVisible();
+		await profileDialog.getByText('Metadata fields').click();
+		await expect.element(profileDialog.getByText('Alpha/Management Track.flac')).toBeVisible();
 		const metadataToggle = profileDialog.getByRole('checkbox', { name: /Manage metadata tags/ });
 		await metadataToggle.click();
+		await expect.element(profileDialog.getByText('Saved choices retained')).toBeVisible();
 		await expect
 			.element(profileDialog.getByRole('combobox', { name: 'Mode for title' }))
 			.not.toBeInTheDocument();
 		await metadataToggle.click();
+		await expect.element(profileDialog.getByText('1 managed field')).toBeVisible();
 		await expect
 			.element(profileDialog.getByRole('combobox', { name: 'Mode for title' }))
 			.toHaveValue('merge');
@@ -328,6 +384,15 @@ describe('SettingsLibraryManagement', () => {
 		await lyricsToggle.click();
 		await expect.element(plainLyrics).toBeEnabled();
 		await expect.element(plainLyrics).toBeChecked();
+		await profileDialog.getByText('Advanced lyrics behavior').click();
+		const preserveLyrics = profileDialog.getByRole('checkbox', {
+			name: /Preserve existing lyrics/
+		});
+		await expect.element(preserveLyrics).toBeEnabled();
+		await expect.element(preserveLyrics).not.toBeChecked();
+		await preserveLyrics.click();
+		await expect.element(preserveLyrics).toBeChecked();
+		await expect.element(profileDialog.getByText('Lyrics · synced + plain')).toBeVisible();
 
 		const replayGainToggle = profileDialog.getByRole('checkbox', {
 			name: /Manage ReplayGain/
@@ -339,13 +404,219 @@ describe('SettingsLibraryManagement', () => {
 		await replayGainToggle.click();
 		await expect.element(replayGainMode).toBeEnabled();
 		await expect.element(replayGainMode).toHaveValue('preserve');
+		await expect.element(profileDialog.getByText('ReplayGain · preserve')).toBeVisible();
+
+		await profileDialog.getByText('Lyrics and loudness').click();
+		await expect.element(profileDialog.getByText('Preserve existing lyrics')).not.toBeVisible();
+		await profileDialog.getByText('Lyrics and loudness').click();
+		await expect
+			.element(profileDialog.getByRole('checkbox', { name: /Preserve existing lyrics/ }))
+			.toBeChecked();
 
 		await profileDialog.getByText('Preservation and format safety').click();
+		await profileDialog.getByText('Post-write notifications').click();
 		await expect
 			.element(profileDialog.getByText('DroppedNeedle catalog updates immediately'))
 			.toBeVisible();
 		await expect
 			.element(profileDialog.getByRole('checkbox', { name: /Refresh DroppedNeedle/ }))
+			.not.toBeInTheDocument();
+	});
+
+	it('sets the library default from the profile cards and updates inherited roots', async () => {
+		const settings = baseSettings();
+		const lyricsProfile = structuredClone(settings.profiles[0]);
+		lyricsProfile.id = '1c56cd00-4f7d-42ee-97df-2710110a31d2';
+		lyricsProfile.name = 'Picard-style Organizer + Lyrics';
+		lyricsProfile.description = 'Canonical organization with synchronized lyrics.';
+		lyricsProfile.preset_origin = null;
+		lyricsProfile.preset_version = null;
+		lyricsProfile.enrichment.lyrics.enabled = true;
+		settings.profiles.push(lyricsProfile);
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		const lyricsCard = page.getByRole('article', { name: 'Picard-style Organizer + Lyrics' });
+		await expect.element(lyricsCard).toHaveAttribute('data-default', 'false');
+		await lyricsCard
+			.getByRole('radio', {
+				name: 'Make Picard-style Organizer + Lyrics the library default'
+			})
+			.click();
+
+		await expect.element(lyricsCard).toHaveAttribute('data-default', 'true');
+		await expect.element(lyricsCard.getByText('Default after save')).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Validate and save' })).toBeVisible();
+
+		const rootPicker = page.getByRole('button', {
+			name: 'Choose Management profile for Archive'
+		});
+		await expect.element(rootPicker).toHaveTextContent('Inherited from library default');
+		await expect.element(rootPicker).toHaveTextContent('Picard-style Organizer + Lyrics');
+		await rootPicker.click();
+		const rootChoices = page.getByRole('group', {
+			name: 'Management profile for Archive choices'
+		});
+		await expect
+			.element(
+				rootChoices.getByRole('radio', {
+					name: 'Use library default: Picard-style Organizer + Lyrics'
+				})
+			)
+			.toBeChecked();
+		await rootChoices
+			.getByRole('radio', { name: 'Use Picard-style Organizer', exact: true })
+			.click();
+
+		await expect.element(rootPicker).toHaveTextContent('Explicit root profile');
+		await expect.element(rootPicker).toHaveTextContent('Unsaved choice');
+	});
+
+	it('restores an activation draft after the settings page remounts', async () => {
+		const response = baseSettings();
+		const { settings_revision: _settingsRevision, ...savedSettings } = response;
+		const activationSettings = structuredClone(savedSettings);
+		activationSettings.root_assignments = [
+			{
+				root_id: 'root-1',
+				profile_id: profileId,
+				overrides: null,
+				enabled: true,
+				automatic_acquisitions: true,
+				automatic_drop_imports: false,
+				automatic_scan_discovered: false,
+				activation_profile_revision: null,
+				activation_policy_revision: null,
+				activation_settings_revision: null,
+				activation_preview_token: null,
+				activation_preview_hash: null,
+				activation_confirmed_at: null
+			}
+		];
+		h.readSession.mockReturnValue({
+			sourceRevision: 'settings-1',
+			policyRevision: 'policy-1',
+			draft: activationSettings,
+			activationDraft: activationSettings,
+			rootIds: ['root-1'],
+			rootIndex: 0,
+			jobId: 'preview-1',
+			previewToken: 'token-1',
+			proofs: []
+		});
+		h.activation = {
+			data: {
+				job_id: 'preview-1',
+				state: 'running',
+				worker_stalled: false,
+				control_request: 'none',
+				ready_for_confirmation: false,
+				expired: false,
+				stale: false,
+				summary: { item_count: 1000, bundle_count: 111 }
+			},
+			isLoading: false,
+			isError: false,
+			isFetching: false,
+			refetch: vi.fn()
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		await expect.element(page.getByText('Dry run planning', { exact: true })).toBeVisible();
+		await expect.element(page.getByText(/files found/)).toHaveTextContent(/1,000.*files found/);
+		await expect.element(page.getByRole('button', { name: 'View dry run' })).toBeVisible();
+		await expect
+			.element(page.getByRole('checkbox', { name: /Configure Library Management/ }))
+			.toBeChecked();
+	});
+
+	it('keeps activation sessions isolated when the authenticated admin changes', async () => {
+		const response = baseSettings();
+		const { settings_revision: _settingsRevision, ...savedSettings } = response;
+		const activationSettings = structuredClone(savedSettings);
+		activationSettings.root_assignments = [
+			{
+				root_id: 'root-1',
+				profile_id: profileId,
+				overrides: null,
+				enabled: true,
+				automatic_acquisitions: true,
+				automatic_drop_imports: false,
+				automatic_scan_discovered: false,
+				activation_profile_revision: null,
+				activation_policy_revision: null,
+				activation_settings_revision: null,
+				activation_preview_token: null,
+				activation_preview_hash: null,
+				activation_confirmed_at: null
+			}
+		];
+		h.readSession.mockImplementation((userId: string) =>
+			userId === 'admin-1'
+				? {
+						sourceRevision: 'settings-1',
+						policyRevision: 'policy-1',
+						draft: activationSettings,
+						activationDraft: activationSettings,
+						rootIds: ['root-1'],
+						rootIndex: 0,
+						jobId: 'preview-1',
+						previewToken: 'token-1',
+						proofs: []
+					}
+				: null
+		);
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await vi.waitFor(() => expect(h.readSession).toHaveBeenCalledWith('admin-1'));
+		h.rememberSession.mockClear();
+
+		authStore.setUser(adminUser('admin-2'));
+
+		await vi.waitFor(() => expect(h.readSession).toHaveBeenCalledWith('admin-2'));
+		await vi.waitFor(() => expect(h.forgetSession).toHaveBeenCalledWith('admin-2'));
+		expect(h.rememberSession).not.toHaveBeenCalledWith(
+			'admin-2',
+			expect.objectContaining({ previewToken: 'token-1' })
+		);
+	});
+
+	it('surfaces a server-side activation dry run instead of an inert save action', async () => {
+		h.operations = {
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								operation: { id: 'preview-remote', state: 'running' },
+								profile_name: 'Picard-style Organizer + Lyrics',
+								target_root_id: 'root-1',
+								activation_preview: true
+							}
+						]
+					}
+				]
+			},
+			isLoading: false,
+			isError: false
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		await expect.element(page.getByText('Write-access dry run in progress')).toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Review dry run' }))
+			.toHaveAttribute('href', '/library/management/previews/preview-remote');
+		await expect
+			.element(page.getByRole('button', { name: 'Validate and save' }))
+			.not.toBeInTheDocument();
+
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await expect.element(page.getByRole('button', { name: 'Validate and save' })).toBeVisible();
+		await expect
+			.element(page.getByRole('link', { name: 'Review dry run' }))
 			.not.toBeInTheDocument();
 	});
 
@@ -452,6 +723,7 @@ describe('SettingsLibraryManagement', () => {
 			.element(resetDialog.getByText(/Review the values, then save the profile/))
 			.toBeVisible();
 		await resetDialog.getByRole('button', { name: 'Reset section' }).click();
+		await profileDialog.getByText('Metadata fields').click();
 		await expect
 			.element(profileDialog.getByRole('combobox', { name: 'Mode for title' }))
 			.toHaveValue('replace');
@@ -516,9 +788,9 @@ describe('SettingsLibraryManagement', () => {
 
 		const enableButton = page.getByRole('button', { name: 'Enable Library Management' });
 		await expect.element(enableButton).toBeDisabled();
-		await page
-			.getByRole('textbox', { name: /Type Enable Library Management/ })
-			.fill('Enable Library Management');
+		await page.getByRole('textbox', { name: /Type CONFIRM/ }).fill('Enable Library Management');
+		await expect.element(enableButton).toBeDisabled();
+		await page.getByRole('textbox', { name: /Type CONFIRM/ }).fill('CONFIRM');
 		await expect.element(enableButton).toBeEnabled();
 		await enableButton.click();
 		expect(h.confirmActivation).toHaveBeenCalledWith(
@@ -527,6 +799,66 @@ describe('SettingsLibraryManagement', () => {
 				proofs: [{ root_id: 'root-1', job_id: 'preview-1', preview_token: 'token-1' }]
 			})
 		);
+	});
+
+	it('saves another trigger immediately when the write profile is already authorized', async () => {
+		const settings = baseSettings();
+		settings.root_assignments = [
+			{
+				root_id: 'root-1',
+				profile_id: profileId,
+				overrides: null,
+				enabled: true,
+				automatic_acquisitions: true,
+				automatic_drop_imports: false,
+				automatic_scan_discovered: false,
+				activation_profile_revision: 'profile-1',
+				activation_policy_revision: 'policy-1',
+				activation_settings_revision: 'settings-1',
+				activation_preview_token: 'verified',
+				activation_preview_hash: 'preview-hash',
+				activation_confirmed_at: 1
+			}
+		];
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+		h.impact.mockResolvedValue({
+			current_settings_revision: 'settings-1',
+			proposed_settings_revision: 'settings-2',
+			stale: false,
+			classification: 'harmless',
+			preview_required: false,
+			affected_root_ids: ['root-1'],
+			reasons: ['The authorized write profile is unchanged.']
+		});
+		const saved = structuredClone(settings);
+		saved.settings_revision = 'settings-2';
+		saved.root_assignments[0].automatic_drop_imports = true;
+		h.update.mockResolvedValue(saved);
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		await page.getByRole('checkbox', { name: /Drop & Free imports/ }).click();
+		await expect.element(page.getByText(/Trigger-only changes save immediately/)).toBeVisible();
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+
+		expect(h.createActivation).not.toHaveBeenCalled();
+		expect(h.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expected_settings_revision: 'settings-1',
+				settings: expect.objectContaining({
+					root_assignments: [
+						expect.objectContaining({
+							root_id: 'root-1',
+							automatic_drop_imports: true
+						})
+					]
+				})
+			})
+		);
+		await expect
+			.element(page.getByRole('heading', { name: 'Enable Library Management' }))
+			.not.toBeInTheDocument();
+		await expect.element(page.getByText('Configuration saved')).toBeVisible();
 	});
 
 	it('rechecks a ready dry run before accepting it for activation', async () => {
@@ -570,7 +902,7 @@ describe('SettingsLibraryManagement', () => {
 			.element(page.getByRole('alert'))
 			.toHaveTextContent('This dry run is no longer current.');
 		await expect
-			.element(page.getByRole('textbox', { name: /Type Enable Library Management/ }))
+			.element(page.getByRole('textbox', { name: /Type CONFIRM/ }))
 			.not.toBeInTheDocument();
 	});
 
@@ -728,8 +1060,8 @@ describe('SettingsLibraryManagement', () => {
 		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 		await expect.element(page.getByText('Dry run interrupted', { exact: true })).toBeVisible();
 		await expect
-			.element(page.getByText(/files planned/))
-			.toHaveTextContent(/1,500 files planned · 169 release bundles/);
+			.element(page.getByText(/files found/))
+			.toHaveTextContent(/1,500.*files found.*169.*release bundles/);
 	});
 
 	it('distinguishes queued work and can stop the durable dry run', async () => {
@@ -933,14 +1265,18 @@ describe('SettingsLibraryManagement', () => {
 		await expect
 			.element(page.getByRole('button', { name: 'Purge baselines', exact: true }))
 			.toBeDisabled();
-		await page.getByRole('textbox', { name: /PURGE BASELINES/ }).fill('PURGE BASELINES');
+		await page.getByRole('textbox', { name: /CONFIRM/ }).fill('PURGE BASELINES');
+		await expect
+			.element(page.getByRole('button', { name: 'Purge baselines', exact: true }))
+			.toBeDisabled();
+		await page.getByRole('textbox', { name: /CONFIRM/ }).fill('CONFIRM');
 		await page.getByRole('button', { name: 'Purge baselines', exact: true }).click();
 
 		expect(h.purge).toHaveBeenCalledWith(
 			expect.objectContaining({
 				impact_token: 'impact-token',
 				expected_catalog_revision: 7,
-				typed_confirmation: 'PURGE BASELINES'
+				typed_confirmation: 'CONFIRM'
 			})
 		);
 	});

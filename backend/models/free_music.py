@@ -24,6 +24,7 @@ class FreeMusicTask(AppStruct):
     status: str
     created_at: float
     updated_at: float
+    track_count: int = 0
     identifier: str = ""  # the archive.org item, once chosen
     licence_url: str = ""
     format: str = ""

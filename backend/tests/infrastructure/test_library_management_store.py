@@ -113,10 +113,29 @@ async def test_management_identity_snapshot_retains_selected_edition_and_mapping
             "VALUES ('track-1', 'musicbrainz', 'recording-1', 'release-1', "
             "'release-track-1', 2, 7, 'manual', 2, 5)"
         )
+        connection.execute(
+            "INSERT INTO local_tracks "
+            "(id, local_album_id, root_id, file_path, relative_path, path_hash, "
+            "file_size_bytes, file_mtime_ns, stat_revision, stat_revision_kind, "
+            "tag_revision, title, title_folded, artist_name, artist_name_folded, "
+            "album_title, album_title_folded, album_artist_name, "
+            "album_artist_name_folded, disc_number, track_number, file_format, "
+            "ingest_source, imported_at, membership_source, availability, missing_since) "
+            "VALUES ('track-missing', 'album-1', 'root-1', '/music/old-track.flac', "
+            "'old-track.flac', 'old-path-hash', 100, 9, 'old-stat', 'exact', "
+            "'old-tag', 'Track', 'track', 'Artist', 'artist', 'Album', 'album', "
+            "'Artist', 'artist', 1, 1, 'flac', 'scan', 1, 'automatic', 'missing', 3)"
+        )
+        connection.execute(
+            "INSERT INTO local_track_external_identities "
+            "(local_track_id, provider, recording_mbid, release_mbid, "
+            "release_track_mbid, medium_position, release_track_position, "
+            "decision_source, selected_at, row_revision) "
+            "VALUES ('track-missing', 'musicbrainz', 'recording-1', 'release-1', "
+            "'release-track-1', 2, 7, 'manual', 1, 3)"
+        )
 
-    identity = await store.get_accepted_library_management_identity(
-        "album-1", local_track_ids=("track-1",)
-    )
+    identity = await store.get_accepted_library_management_identity("album-1")
 
     assert identity is not None
     assert identity.release_group_mbid == "release-group-1"
@@ -127,6 +146,15 @@ async def test_management_identity_snapshot_retains_selected_edition_and_mapping
     assert identity.tracks[0].medium_position == 2
     assert identity.tracks[0].release_track_position == 7
     assert identity.tracks[0].identity_revision == 5
+    assert [track.local_track_id for track in identity.tracks] == ["track-1"]
+
+    targeted_history = await store.get_accepted_library_management_identity(
+        "album-1", local_track_ids=("track-missing",)
+    )
+    assert targeted_history is not None
+    assert [track.local_track_id for track in targeted_history.tracks] == [
+        "track-missing"
+    ]
 
 
 def _job_snapshot(job_id: str = "management-1") -> LibraryManagementJobSnapshot:
@@ -1146,6 +1174,20 @@ async def test_management_selection_pages_are_stable_and_expand_track_albums(
             "(local_album_id, source, version, updated_at) "
             "VALUES ('album-1', 'provider', 7, 2)"
         )
+        connection.execute(
+            "INSERT INTO local_tracks "
+            "(id, local_album_id, root_id, file_path, relative_path, path_hash, "
+            "file_size_bytes, file_mtime_ns, stat_revision, stat_revision_kind, "
+            "tag_revision, title, title_folded, artist_name, artist_name_folded, "
+            "album_title, album_title_folded, album_artist_name, "
+            "album_artist_name_folded, disc_number, track_number, file_format, "
+            "ingest_source, imported_at, membership_source, availability, missing_since) "
+            "VALUES ('track-missing', 'album-1', 'root-1', "
+            "'/music/disc/missing.flac', 'disc/missing.flac', 'path-missing', 200, "
+            "19, 'stat-missing', 'exact', 'tag-missing', 'Missing Track', "
+            "'missing track', 'Artist', 'artist', 'Album', 'album', 'Artist', "
+            "'artist', 1, 3, 'flac', 'scan', 1, 'automatic', 'missing', 3)"
+        )
 
     track_selection = NormalizedLibraryManagementSelection(
         kind="tracks", ids=("track-2",), requested_track_ids=("track-2",)
@@ -1398,6 +1440,50 @@ async def test_management_preview_seal_rejects_a_changed_catalog(
     assert claimed is not None
     assert snapshot is not None and snapshot.phase == "planning"
     assert operation is not None and operation["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_management_preview_seal_refuses_a_pending_control(
+    store: NativeLibraryStore,
+) -> None:
+    job_id = "management-pending-control"
+    await store.create_library_management_job(
+        OperationJob(
+            id=job_id,
+            kind="library_management",
+            input_catalog_revision=0,
+            created_at=10,
+        ),
+        _job_snapshot(job_id),
+    )
+    revision = await store.append_library_management_plan_items(
+        job_id, [_plan_item(job_id, 0)], expected_snapshot_revision=1
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=12, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+    await store.request_operation_control(
+        job_id,
+        control="pause",
+        expected_row_revision=int(claimed["row_revision"]),
+        idempotency_key="pause-before-management-seal",
+        now=13,
+    )
+
+    with pytest.raises(StaleRevisionError, match="pending control"):
+        await store.finalize_library_management_preview(
+            job_id,
+            "worker-1",
+            expected_snapshot_revision=revision,
+            now=14,
+        )
+
+    snapshot = await store.get_library_management_job_snapshot(job_id)
+    operation = await store.get_operation_job(job_id)
+    assert snapshot is not None and snapshot.phase == "planning"
+    assert operation is not None and operation["state"] == "running"
+    assert operation["control_request"] == "pause"
 
 
 @pytest.mark.asyncio

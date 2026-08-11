@@ -57,7 +57,6 @@ from models.audio_metadata import (
     AudioSemanticField,
     DesiredAudioDocument,
     DesiredAudioField,
-    EmbeddedArtworkDescriptor,
     ReadAudioDocument,
 )
 from models.library_management import (
@@ -107,7 +106,10 @@ from models.library_management_planning import (
     PinnedLibraryManagementProfile,
 )
 from models.library_work import OperationJob
-from services.native.artwork_projection_service import ArtworkProjectionService
+from services.native.artwork_projection_service import (
+    ArtworkProjectionService,
+    desired_embedded_artwork,
+)
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.background_workload_gate import BackgroundWorkloadGate
 from services.native.canonical_release_metadata_service import (
@@ -118,6 +120,11 @@ from services.native.effective_metadata_projection_service import (
 )
 from services.native.genre_projection_service import GenreProjectionService
 from services.native.library_policy_resolver import LibraryPolicyResolver
+from services.native.lyrics_management_policy import (
+    planned_lyrics_outputs,
+    required_lyrics_outputs_available,
+    synchronized_lyrics_supported,
+)
 from services.native.lyrics_projection_service import LyricsProjectionService
 from services.native.managed_field_registry import canonical_track_values
 from services.native.naming import NamingTemplateEngine
@@ -132,9 +139,51 @@ SOURCE_INSPECTION_TIMEOUT_SECONDS = 90.0
 MAX_TIMED_OUT_INSPECTIONS_PER_ROOT = 3
 PLANNING_LEASE_SECONDS = 60.0
 PLANNING_LEASE_RENEWAL_SECONDS = 20.0
+PLANNING_PROGRESS_PERSIST_INTERVAL_SECONDS = 30.0
+SCRUB_VALUE_PREVIEW_CHARACTERS = 2_048
 _PREVIEW_NAMESPACE = uuid.UUID("8e6fd30e-412f-50c0-9e82-3019dc602f70")
 
 logger = logging.getLogger(__name__)
+
+
+def _scrubbed_raw_tag_evidence(
+    document: ReadAudioDocument, scrubbed_raw_keys: Sequence[str]
+) -> list[dict[str, object]]:
+    scrubbed = {value.casefold() for value in scrubbed_raw_keys}
+    evidence: list[dict[str, object]] = []
+    for raw in document.raw_tags:
+        if raw.key.casefold() not in scrubbed:
+            continue
+        remaining = SCRUB_VALUE_PREVIEW_CHARACTERS
+        values: list[str] = []
+        truncated = False
+        for value in raw.values:
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(value) > remaining:
+                values.append(value[:remaining])
+                truncated = True
+                remaining = 0
+            else:
+                values.append(value)
+                remaining -= len(value)
+        digest = (
+            raw.binary_sha256
+            or hashlib.sha256(msgspec.json.encode(raw.values)).hexdigest()
+        )
+        evidence.append(
+            {
+                "key": raw.key,
+                "value_kind": raw.value_kind,
+                "values": values,
+                "value_count": len(raw.values),
+                "truncated": truncated,
+                "sha256": digest,
+            }
+        )
+    return evidence
+
 
 # Audio metadata reads can block indefinitely on a broken network mount. A dedicated
 # process-lifetime pool keeps those abandoned calls away from asyncio's shared executor
@@ -200,6 +249,7 @@ class LibraryManagementPlanner:
         replaygain: ReplayGainAnalysisService | None = None,
         *,
         clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store = store
         self._preferences = preferences
@@ -216,6 +266,7 @@ class LibraryManagementPlanner:
         self._lyrics = lyrics
         self._replaygain = replaygain
         self._clock = clock
+        self._monotonic_clock = monotonic_clock
 
     async def create_preview(
         self,
@@ -527,6 +578,7 @@ class LibraryManagementPlanner:
         snapshot_revision = snapshot.row_revision
         timed_out_sources: set[tuple[str, str, int, int]] = set()
         timed_out_inspections_by_root: dict[str, int] = {}
+        progress_persisted_at = self._monotonic_clock()
         while True:
             if self._workload_gate is not None and self._workload_gate.scan_active:
                 await self._store.defer_library_management_preview_for_scan(
@@ -566,7 +618,29 @@ class LibraryManagementPlanner:
             groups: dict[str, list[LibraryManagementSelectionSubject]] = {}
             for subject in page.subjects:
                 groups.setdefault(subject.local_album_id, []).append(subject)
+            last_planned_subject: LibraryManagementSelectionSubject | None = None
             for subjects in groups.values():
+                if self._workload_gate is not None and self._workload_gate.scan_active:
+                    if last_planned_subject is not None:
+                        cursor = self._selection_cursor_after(last_planned_subject)
+                        snapshot_revision = await self._persist_planning_progress(
+                            job_id,
+                            items,
+                            metadata_snapshot_ids,
+                            expected_snapshot_revision=snapshot_revision,
+                            cursor=cursor,
+                        )
+                    return await self._defer_preview_for_scan(job_id, worker_id)
+                controlled = await self._store.checkpoint_operation_control(
+                    job_id, worker_id, now=self._clock()
+                )
+                if controlled is not None and controlled["state"] != "running":
+                    refreshed = await self._store.get_library_management_job_snapshot(
+                        job_id
+                    )
+                    if refreshed is None:
+                        raise ResourceNotFoundError("Library management job not found.")
+                    return refreshed
                 planned, pinned_ids = await self._plan_album_page_with_lease(
                     job_id,
                     worker_id,
@@ -580,6 +654,7 @@ class LibraryManagementPlanner:
                 )
                 items.extend(planned)
                 metadata_snapshot_ids.extend(pinned_ids)
+                last_planned_subject = subjects[-1]
                 renewed = await self._store.heartbeat_operation_job(
                     job_id,
                     worker_id,
@@ -590,18 +665,47 @@ class LibraryManagementPlanner:
                     raise StaleRevisionError(
                         "The management preview lease changed during planning."
                     )
-            if metadata_snapshot_ids:
-                await self._store.pin_library_management_metadata_snapshots(
-                    job_id, metadata_snapshot_ids
+                scan_active = (
+                    self._workload_gate is not None and self._workload_gate.scan_active
                 )
-            cursor = page.next_cursor
-            cursor_json = _json(cursor) if cursor is not None else None
-            snapshot_revision = await self._store.append_library_management_plan_items(
-                job_id,
-                items,
-                expected_snapshot_revision=snapshot_revision,
-                staging_cursor=cursor_json,
+                if scan_active or (
+                    self._monotonic_clock() - progress_persisted_at
+                    >= PLANNING_PROGRESS_PERSIST_INTERVAL_SECONDS
+                ):
+                    cursor = self._selection_cursor_after(last_planned_subject)
+                    snapshot_revision = await self._persist_planning_progress(
+                        job_id,
+                        items,
+                        metadata_snapshot_ids,
+                        expected_snapshot_revision=snapshot_revision,
+                        cursor=cursor,
+                    )
+                    items = []
+                    metadata_snapshot_ids = []
+                    last_planned_subject = None
+                    progress_persisted_at = self._monotonic_clock()
+                    if scan_active:
+                        return await self._defer_preview_for_scan(job_id, worker_id)
+            if last_planned_subject is not None:
+                cursor = self._selection_cursor_after(last_planned_subject)
+                snapshot_revision = await self._persist_planning_progress(
+                    job_id,
+                    items,
+                    metadata_snapshot_ids,
+                    expected_snapshot_revision=snapshot_revision,
+                    cursor=cursor,
+                )
+                progress_persisted_at = self._monotonic_clock()
+            controlled = await self._store.checkpoint_operation_control(
+                job_id, worker_id, now=self._clock()
             )
+            if controlled is not None and controlled["state"] != "running":
+                refreshed = await self._store.get_library_management_job_snapshot(
+                    job_id
+                )
+                if refreshed is None:
+                    raise ResourceNotFoundError("Library management job not found.")
+                return refreshed
             if page.complete:
                 return await self._seal_preview(
                     snapshot,
@@ -609,6 +713,50 @@ class LibraryManagementPlanner:
                     expected_snapshot_revision=snapshot_revision,
                     roots=roots,
                 )
+
+    async def _defer_preview_for_scan(
+        self, job_id: str, worker_id: str
+    ) -> LibraryManagementJobSnapshot:
+        await self._store.defer_library_management_preview_for_scan(
+            job_id, worker_id, now=self._clock()
+        )
+        refreshed = await self._store.get_library_management_job_snapshot(job_id)
+        if refreshed is None:
+            raise ResourceNotFoundError("Library management job not found.")
+        return refreshed
+
+    async def _persist_planning_progress(
+        self,
+        job_id: str,
+        items: list[LibraryManagementPlanItem],
+        metadata_snapshot_ids: list[str],
+        *,
+        expected_snapshot_revision: int,
+        cursor: LibraryManagementSelectionCursor,
+    ) -> int:
+        if metadata_snapshot_ids:
+            await self._store.pin_library_management_metadata_snapshots(
+                job_id, metadata_snapshot_ids
+            )
+        return await self._store.append_library_management_plan_items(
+            job_id,
+            items,
+            expected_snapshot_revision=expected_snapshot_revision,
+            staging_cursor=_json(cursor),
+        )
+
+    @staticmethod
+    def _selection_cursor_after(
+        subject: LibraryManagementSelectionSubject,
+    ) -> LibraryManagementSelectionCursor:
+        return LibraryManagementSelectionCursor(
+            album_id=subject.local_album_id,
+            disc_number=subject.disc_number,
+            track_number=subject.track_number,
+            track_id=subject.local_track_id,
+            next_ordinal=subject.ordinal + 1,
+            bundle_ordinal=subject.bundle_ordinal,
+        )
 
     async def _plan_album_page_with_lease(
         self,
@@ -999,24 +1147,19 @@ class LibraryManagementPlanner:
             )
         else:
             lyrics_projection = LyricsProjection(status="disabled")
-        selected_lyrics = tuple(
-            value
-            for enabled, value in (
-                (
-                    profile.enrichment.lyrics.write_plain,
-                    lyrics_projection.plain_lyrics,
-                ),
-                (
-                    profile.enrichment.lyrics.write_synced,
-                    lyrics_projection.synced_lyrics,
-                ),
-            )
-            if enabled and value
+        synced_lyrics_supported = synchronized_lyrics_supported(
+            source.document.probe.detected_format,
+            wav_tag_policy=profile.metadata.format_compatibility.wav_tag_policy,
         )
         if (
             profile.enrichment.lyrics.enabled
             and profile.enrichment.lyrics.required
-            and (lyrics_projection.status != "available" or not selected_lyrics)
+            and not required_lyrics_outputs_available(
+                profile.enrichment.lyrics,
+                lyrics_projection,
+                existing,
+                synchronized_supported=synced_lyrics_supported,
+            )
         ):
             return self._blocked_item(snapshot, source, METADATA_UNAVAILABLE)
         replaygain_settings = profile.enrichment.replaygain
@@ -1149,9 +1292,8 @@ class LibraryManagementPlanner:
             priority=RequestPriority.BACKGROUND_SYNC,
         )
         desired_artwork = (
-            tuple(
-                self._embedded_descriptor(value)
-                for value in artwork_projection.embedded
+            desired_embedded_artwork(
+                source.document.artwork, artwork_projection.embedded
             )
             if profile.artwork.embedded_enabled
             else None
@@ -1168,23 +1310,15 @@ class LibraryManagementPlanner:
                 ),
             )
         )
-        if lyrics_projection.status == "available":
-            for name, enabled, value in (
-                (
-                    "lyrics_plain",
-                    profile.enrichment.lyrics.write_plain,
-                    lyrics_projection.plain_lyrics,
-                ),
-                (
-                    "lyrics_synced",
-                    profile.enrichment.lyrics.write_synced,
-                    lyrics_projection.synced_lyrics,
-                ),
-            ):
-                if enabled and value:
-                    desired_fields.append(
-                        DesiredAudioField(name=name, action="set", value=value)
-                    )
+        for name, value in planned_lyrics_outputs(
+            profile.enrichment.lyrics,
+            lyrics_projection,
+            existing,
+            synchronized_supported=synced_lyrics_supported,
+        ):
+            desired_fields.append(
+                DesiredAudioField(name=name, action="set", value=value)
+            )
         if replaygain_settings.enabled and replaygain_settings.mode != "preserve":
             for name, value in replaygain_values:
                 if value is None or (
@@ -1447,6 +1581,7 @@ class LibraryManagementPlanner:
         capability = {
             "audio_format": write_plan.audio_format,
             "adapter": write_plan.adapter_name,
+            "album_artwork_version": source.subject.album_artwork_version,
             "blockers": blockers,
             "warnings": warnings,
             "representation_losses": [
@@ -1463,13 +1598,17 @@ class LibraryManagementPlanner:
             or any(
                 value.operation != "preserve"
                 for value in write_plan.custom_tag_mutations
-            ),
+            )
+            or bool(write_plan.scrubbed_raw_keys),
             "artwork_changed": artwork_changed,
             "path_changed": path_changed,
             "sidecars_changed": sidecars_changed,
             "field_mutations": msgspec.to_builtins(write_plan.mutations),
             "custom_tag_mutations": msgspec.to_builtins(
                 write_plan.custom_tag_mutations
+            ),
+            "scrubbed_raw_tags": _scrubbed_raw_tag_evidence(
+                source.document, write_plan.scrubbed_raw_keys
             ),
             "transformations": msgspec.to_builtins(transformed.transformations),
             "artwork_decisions": msgspec.to_builtins(artwork_projection.decisions),
@@ -1480,6 +1619,10 @@ class LibraryManagementPlanner:
                 "reason": lyrics_projection.reason,
                 "plain_available": lyrics_projection.plain_lyrics is not None,
                 "synced_available": lyrics_projection.synced_lyrics is not None,
+                "plain_selected": profile.enrichment.lyrics.write_plain,
+                "synced_selected": profile.enrichment.lyrics.write_synced,
+                "synced_supported": synced_lyrics_supported,
+                "preserve_existing": profile.enrichment.lyrics.preserve_existing,
             },
             "replaygain_analysis": (
                 {
@@ -2072,12 +2215,25 @@ class LibraryManagementPlanner:
                 root_reasons,
                 expected_snapshot_revision=expected_snapshot_revision,
             )
-        return await self._store.finalize_library_management_preview(
-            snapshot.job_id,
-            worker_id,
-            expected_snapshot_revision=expected_snapshot_revision,
-            now=self._clock(),
-        )
+        try:
+            return await self._store.finalize_library_management_preview(
+                snapshot.job_id,
+                worker_id,
+                expected_snapshot_revision=expected_snapshot_revision,
+                now=self._clock(),
+            )
+        except StaleRevisionError:
+            controlled = await self._store.checkpoint_operation_control(
+                snapshot.job_id, worker_id, now=self._clock()
+            )
+            if controlled is None or controlled["state"] == "running":
+                raise
+            refreshed = await self._store.get_library_management_job_snapshot(
+                snapshot.job_id
+            )
+            if refreshed is None:
+                raise ResourceNotFoundError("Library management job not found.")
+            return refreshed
 
     @staticmethod
     def _identity_reason(
@@ -2162,20 +2318,6 @@ class LibraryManagementPlanner:
                 action = "set"
             fields.append(DesiredAudioField(name=name, action=action, value=after))
         return tuple(fields)
-
-    @staticmethod
-    def _embedded_descriptor(output: ArtworkOutput) -> EmbeddedArtworkDescriptor:
-        return EmbeddedArtworkDescriptor(
-            image_type=output.image_type,
-            mime_type=output.mime_type,
-            description=output.description,
-            width=output.width,
-            height=output.height,
-            byte_size=output.byte_size,
-            sha256=output.sha256,
-            content=output.content,
-            format_supported=True,
-        )
 
     def _blocked_item(
         self,

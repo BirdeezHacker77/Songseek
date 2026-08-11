@@ -53,6 +53,15 @@
 	const active = $derived(
 		history.find((item) => ['queued', 'running', 'paused'].includes(item.operation.state)) ?? null
 	);
+	const activeProgressLabel = $derived.by(() => {
+		if (!active) return '';
+		if (active.operation.expected_work_count > 0) {
+			return `${active.operation.completed_count.toLocaleString()} / ${active.operation.expected_work_count.toLocaleString()}`;
+		}
+		return active.phase === 'planning'
+			? 'Discovering files and release bundles'
+			: 'Preparing the preview';
+	});
 	const readyPreviews = $derived(
 		history
 			.filter((item) => item.operation.state === 'ready' && !item.activation_preview)
@@ -111,8 +120,13 @@
 		return value.replaceAll('_', ' ').replace(/^\w/, (letter) => letter.toUpperCase());
 	}
 
-	function operationHref(jobId: string, state: string, terminalCode: string | null): string {
-		return state === 'ready' || terminalCode === 'PREVIEW_DISCARDED'
+	function operationHref(
+		jobId: string,
+		state: string,
+		terminalCode: string | null,
+		mode: string
+	): string {
+		return mode === 'preview' || state === 'ready' || terminalCode === 'PREVIEW_DISCARDED'
 			? `/library/management/previews/${encodeURIComponent(jobId)}`
 			: `/library/management/operations/${encodeURIComponent(jobId)}`;
 	}
@@ -182,11 +196,12 @@
 					<div class="flex min-w-0 flex-1 items-start gap-3">
 						<span class="management-live-dot" aria-hidden="true"></span>
 						<div class="min-w-0">
-							<p class="management-step">Active write work</p>
+							<p class="management-step">
+								{active.activation_preview ? 'Write-access dry run' : 'Active write work'}
+							</p>
 							<h3 class="font-semibold">{active.profile_name}</h3>
 							<p class="text-sm text-base-content/55">
-								{title(active.mode)} · {title(active.phase)} · {active.operation.completed_count.toLocaleString()}
-								/ {active.operation.expected_work_count.toLocaleString()}
+								{title(active.mode)} · {title(active.phase)} · {activeProgressLabel}
 							</p>
 						</div>
 					</div>
@@ -216,7 +231,8 @@
 							href={operationHref(
 								active.operation.id,
 								active.operation.state,
-								active.operation.terminal_code
+								active.operation.terminal_code,
+								active.mode
 							)}>Open details <ArrowRight class="h-4 w-4" /></a
 						>
 					</div>
@@ -252,7 +268,8 @@
 								href={operationHref(
 									item.operation.id,
 									item.operation.state,
-									item.operation.terminal_code
+									item.operation.terminal_code,
+									item.mode
 								)}
 								class="management-history-row min-w-0 flex-1"
 								><Sparkles class="h-4 w-4 shrink-0 text-library-manage" /><span
@@ -286,7 +303,8 @@
 							href={operationHref(
 								item.operation.id,
 								item.operation.state,
-								item.operation.terminal_code
+								item.operation.terminal_code,
+								item.mode
 							)}
 							class="management-history-row"
 							><History class="h-4 w-4 text-base-content/45" /><span class="min-w-0 flex-1"

@@ -248,4 +248,42 @@ describe('LibraryManagementControlRoom', () => {
 			.element(page.getByRole('button', { name: /Discard preview/ }))
 			.not.toBeInTheDocument();
 	});
+
+	it('describes unknown planning scope without presenting false zero progress', async () => {
+		h.operations = {
+			data: {
+				pages: [
+					{
+						items: [
+							{
+								operation: {
+									id: 'activation-preview-1',
+									state: 'running',
+									row_revision: 2,
+									completed_count: 0,
+									expected_work_count: 0,
+									failed_count: 0
+								},
+								profile_name: 'Picard-style Organizer + Lyrics',
+								mode: 'preview',
+								phase: 'planning',
+								activation_preview: true
+							}
+						]
+					}
+				]
+			},
+			isLoading: false,
+			isError: false
+		};
+
+		render(LibraryManagementControlRoom);
+
+		await expect.element(page.getByText('Write-access dry run')).toBeVisible();
+		await expect.element(page.getByText(/Discovering files and release bundles/)).toBeVisible();
+		await expect.element(page.getByText('0 / 0')).not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('link', { name: 'Open details' }))
+			.toHaveAttribute('href', '/library/management/previews/activation-preview-1');
+	});
 });

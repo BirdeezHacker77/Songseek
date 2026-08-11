@@ -16,10 +16,21 @@ from models.library_management_enrichment import LyricsProjection
 from repositories.protocols.lrclib import LrclibRepositoryProtocol
 
 _DURATION_TOLERANCE_SECONDS = 2.0
+_TYPOGRAPHIC_APOSTROPHES = str.maketrans(
+    {
+        "\u02bc": "'",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201b": "'",
+    }
+)
 
 
 def _normalized(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    normalized = unicodedata.normalize("NFKC", value).translate(
+        _TYPOGRAPHIC_APOSTROPHES
+    )
+    return " ".join(normalized.casefold().split())
 
 
 def _artist_credit(credits) -> str:  # noqa: ANN001

@@ -70,6 +70,12 @@ async def _schedule_identified_album_work(
     )
 
 
+async def _schedule_scanned_album_work(local_album_id: str) -> str | None:
+    return await get_automatic_scan_management_service().schedule_scanned_album(
+        local_album_id
+    )
+
+
 async def _invalidate_artist_reconciliation_catalog() -> None:
     from services.search_service import SearchService
 
@@ -427,6 +433,7 @@ def get_target_library_scan_coordinator() -> "LibraryScanCoordinator":
         LibraryScanEventPublisher(store, get_sse_publisher()),
         workload_gate=get_background_workload_gate(),
         filesystem_coordinator=filesystem,
+        on_indexed_album=_schedule_scanned_album_work,
     )
 
 
@@ -1074,13 +1081,12 @@ def get_target_free_music_service() -> "FreeMusicService":
 def get_acquisition_dispatcher() -> "AcquisitionDispatcher":
     from services.acquisition_dispatcher import AcquisitionDispatcher
 
-    # holds the getters, not instances: a settings save rebuilds DownloadService,
-    # and Free Music reads its settings per request - so the dispatcher itself
-    # never needs rebuilding
+    # Resolve settings-sensitive dependencies at call time.
     return AcquisitionDispatcher(
         get_download_service=get_download_service,
         get_free_music_service=get_free_music_service,
         preferences_service=get_preferences_service(),
+        get_album_service=get_album_service,
     )
 
 
@@ -1093,6 +1099,7 @@ def get_target_acquisition_dispatcher() -> "AcquisitionDispatcher":
         get_free_music_service=get_target_free_music_service,
         preferences_service=get_preferences_service(),
         ownership_service=get_target_library_ownership_service(),
+        get_album_service=get_target_album_service,
     )
 
 

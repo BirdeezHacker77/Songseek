@@ -56,6 +56,66 @@ async def test_duplicate_content_reuses_one_verified_blob(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_content_promotes_image_metadata_across_blob_kinds(
+    blob_store: LibraryManagementBlobStore, ledger: NativeLibraryStore
+) -> None:
+    first = await blob_store.add_bytes(
+        b"shared cover",
+        kind="sidecar_manifest",
+        created_at=1,
+    )
+
+    second = await blob_store.add_bytes(
+        b"shared cover",
+        kind="image",
+        created_at=2,
+        media_metadata_json='{"mime_type":"image/jpeg"}',
+    )
+    third = await blob_store.add_bytes(
+        b"shared cover",
+        kind="sidecar_manifest",
+        created_at=3,
+    )
+
+    assert second.sha256 == first.sha256
+    assert second.relative_path == first.relative_path
+    assert second.kind == "image"
+    assert second.media_metadata_json == '{"mime_type":"image/jpeg"}'
+    assert second.row_revision == first.row_revision + 1
+    assert await ledger.get_management_blob(first.sha256) == second
+    assert third == second
+    assert await blob_store.read_bytes(second.sha256) == b"shared cover"
+
+
+@pytest.mark.asyncio
+async def test_legacy_image_blob_without_metadata_is_enriched_on_reuse(
+    blob_store: LibraryManagementBlobStore, ledger: NativeLibraryStore
+) -> None:
+    content = b"\x89PNG\r\n\x1a\nlegacy-image"
+    sidecar = await blob_store.add_bytes(
+        content,
+        kind="sidecar_manifest",
+        created_at=1,
+    )
+    legacy_image = await ledger.register_management_blob(
+        LibraryManagementBlob(
+            sha256=sidecar.sha256,
+            kind="image",
+            byte_length=sidecar.byte_length,
+            relative_path=sidecar.relative_path,
+            created_at=2,
+        )
+    )
+    assert legacy_image.media_metadata_json == "{}"
+
+    enriched = await blob_store.add_bytes(content, kind="image", created_at=3)
+
+    assert enriched.kind == "image"
+    assert enriched.media_metadata_json == '{"mime_type":"image/png"}'
+    assert enriched.row_revision == legacy_image.row_revision + 1
+
+
+@pytest.mark.asyncio
 async def test_concurrent_publishers_deduplicate_without_overwriting(
     tmp_path: Path, ledger: NativeLibraryStore
 ) -> None:

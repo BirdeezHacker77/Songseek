@@ -9,6 +9,7 @@
 		Copy,
 		FolderCog,
 		History,
+		Link2,
 		Pencil,
 		RefreshCw,
 		ShieldAlert,
@@ -18,13 +19,20 @@
 		Trash2
 	} from 'lucide-svelte';
 
+	import LibraryManagementProfilePicker from './LibraryManagementProfilePicker.svelte';
 	import LibraryManagementProfileEditor from './LibraryManagementProfileEditor.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
-	import { rememberLibraryManagementPreviewToken } from '$lib/queries/library-management/LibraryManagementPreviewTokens';
+	import {
+		forgetLibraryManagementActivationSession,
+		readLibraryManagementActivationSession,
+		rememberLibraryManagementActivationSession,
+		rememberLibraryManagementPreviewToken
+	} from '$lib/queries/library-management/LibraryManagementPreviewTokens';
 	import { createUuid } from '$lib/utils/uuid';
 	import type { LibraryRootSettings } from '$lib/queries/library/LibraryOperationsTypes';
 	import {
 		getLibraryManagementActivationPreviewQuery,
+		getLibraryManagementOperationsQuery,
 		getLibraryManagementSettingsQuery
 	} from '$lib/queries/library-management/LibraryManagementQueries.svelte';
 	import {
@@ -39,6 +47,7 @@
 		updateLibraryManagementSettingsMutation,
 		validateLibraryManagementSettingsMutation
 	} from '$lib/queries/library-management/LibraryManagementMutations.svelte';
+	import { LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE } from '$lib/queries/library-management/LibraryManagementConfirmation';
 	import type {
 		LibraryManagementActivationProof,
 		LibraryManagementProfile,
@@ -58,6 +67,10 @@
 	const settingsQuery = getLibraryManagementSettingsQuery(
 		() => authStore.user?.id,
 		() => authStore.isAdmin
+	);
+	const operationsQuery = getLibraryManagementOperationsQuery(
+		() => authStore.user?.id,
+		() => ({ limit: 20 })
 	);
 	const updateSettings = updateLibraryManagementSettingsMutation();
 	const validateSettings = validateLibraryManagementSettingsMutation();
@@ -89,6 +102,7 @@
 	let activationProofs = $state<LibraryManagementActivationProof[]>([]);
 	let activationPhrase = $state('');
 	let activationError = $state('');
+	let activationSessionHydratedFor = $state<string | null>(null);
 	let acceptingActivation = $state(false);
 	let deleteDialog: HTMLDialogElement;
 	let deleteHeading: HTMLHeadingElement;
@@ -127,6 +141,38 @@
 
 	$effect(() => {
 		const response = settingsQuery.data;
+		const userId = authStore.user?.id ?? null;
+		const hydratedFor = untrack(() => activationSessionHydratedFor);
+		if (userId !== hydratedFor) {
+			clearActivationState();
+			activationSessionHydratedFor = null;
+			if (!userId || !response) return;
+			draft = settingsPayload(response);
+			persistedSettings = settingsPayload(response);
+			sourceRevision = response.settings_revision;
+			const currentCopySource = untrack(() => copySourceProfileId);
+			if (!response.profiles.some((profile) => profile.id === currentCopySource)) {
+				copySourceProfileId = response.default_profile_id;
+			}
+			const session = readLibraryManagementActivationSession(userId);
+			activationSessionHydratedFor = userId;
+			if (
+				session &&
+				session.sourceRevision === response.settings_revision &&
+				session.policyRevision === policyRevision
+			) {
+				draft = structuredClone(session.draft);
+				activationDraft = structuredClone(session.activationDraft);
+				activationRootIds = [...session.rootIds];
+				activationIndex = session.rootIndex;
+				activationJobId = session.jobId;
+				activationToken = session.previewToken;
+				activationProofs = structuredClone(session.proofs);
+			} else {
+				forgetLibraryManagementActivationSession(userId);
+			}
+			return;
+		}
 		const currentRevision = untrack(() => sourceRevision);
 		if (response && response.settings_revision !== currentRevision) {
 			draft = settingsPayload(response);
@@ -139,7 +185,30 @@
 		}
 	});
 
+	$effect(() => {
+		const userId = authStore.user?.id;
+		if (!userId || activationSessionHydratedFor !== userId) return;
+		if (!draft || !activationDraft || activationRootIds.length === 0) {
+			forgetLibraryManagementActivationSession(userId);
+			return;
+		}
+		rememberLibraryManagementActivationSession(userId, {
+			sourceRevision,
+			policyRevision,
+			draft: $state.snapshot(draft),
+			activationDraft: $state.snapshot(activationDraft),
+			rootIds: $state.snapshot(activationRootIds),
+			rootIndex: activationIndex,
+			jobId: activationJobId,
+			previewToken: activationToken,
+			proofs: $state.snapshot(activationProofs)
+		});
+	});
+
 	const profiles = $derived(draft?.profiles ?? []);
+	const defaultProfile = $derived(
+		profiles.find((profile) => profile.id === draft?.default_profile_id) ?? null
+	);
 	const activeAssignments = $derived(
 		(persistedSettings?.root_assignments ?? []).filter(
 			(assignment) =>
@@ -147,6 +216,23 @@
 				(assignment.automatic_acquisitions ||
 					assignment.automatic_drop_imports ||
 					assignment.automatic_scan_discovered)
+		)
+	);
+	const operationHistory = $derived(
+		operationsQuery.data?.pages.flatMap((page) => page.items) ?? []
+	);
+	const remoteActivation = $derived(
+		operationHistory.find(
+			(item) =>
+				item.activation_preview &&
+				['queued', 'running', 'paused', 'ready'].includes(item.operation.state)
+		) ?? null
+	);
+	const hasUnsavedSettings = $derived(
+		Boolean(
+			draft &&
+			persistedSettings &&
+			JSON.stringify($state.snapshot(draft)) !== JSON.stringify($state.snapshot(persistedSettings))
 		)
 	);
 	const selectedProfile = $derived(
@@ -272,6 +358,11 @@
 		};
 	}
 
+	function updateDefaultProfile(profileId: string): void {
+		if (!draft) return;
+		draft = { ...draft, default_profile_id: profileId };
+	}
+
 	function updateOverrides(rootId: string, update: Partial<LibraryManagementRootOverrides>): void {
 		updateAssignment(rootId, (assignment) => ({
 			...assignment,
@@ -309,6 +400,8 @@
 		if (profile.genres.enabled) aspects.push('genres');
 		if (profile.artwork.embedded_enabled || profile.artwork.external_enabled)
 			aspects.push('artwork');
+		if (profile.enrichment.lyrics.enabled) aspects.push('lyrics');
+		if (profile.enrichment.replaygain.enabled) aspects.push('ReplayGain');
 		if (profile.organization.rename_enabled) aspects.push('rename');
 		if (profile.organization.move_enabled) aspects.push('move');
 		return aspects;
@@ -550,6 +643,12 @@
 	}
 
 	function resetActivationSession(): void {
+		const userId = authStore.user?.id;
+		if (userId) forgetLibraryManagementActivationSession(userId);
+		clearActivationState();
+	}
+
+	function clearActivationState(): void {
 		activationDraft = null;
 		activationRootIds = [];
 		activationIndex = 0;
@@ -564,7 +663,7 @@
 		if (
 			!activationDraft ||
 			activationProofs.length !== activationRootIds.length ||
-			activationPhrase !== 'Enable Library Management' ||
+			activationPhrase !== LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE ||
 			!activationCoversCurrentDraft
 		)
 			return;
@@ -618,7 +717,7 @@
 
 	async function confirmPurge(): Promise<void> {
 		const impact = purgeImpact.data;
-		if (!impact || purgePhrase !== 'PURGE BASELINES') return;
+		if (!impact || purgePhrase !== LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE) return;
 		try {
 			await purgeBaselines.mutateAsync({
 				impact_token: impact.impact_token,
@@ -680,27 +779,16 @@
 	{:else}
 		<div class="space-y-6 p-5 sm:p-6">
 			<section class="space-y-3" aria-labelledby="management-profiles-title">
-				<div class="flex flex-wrap items-end justify-between gap-3">
+				<div>
 					<div>
 						<p class="management-step">01 · Profiles</p>
 						<h3 id="management-profiles-title" class="font-display text-lg font-semibold">
 							Choose what “managed” means
 						</h3>
 						<p class="text-xs text-base-content/55">
-							Profiles are inert until assigned to a root and activated.
+							Choose one library default below. Profiles remain inert until a root is activated.
 						</p>
 					</div>
-					<label class="grid gap-1 text-xs">
-						<span class="font-semibold">Global default</span>
-						<select
-							class="select select-bordered select-sm bg-base-100"
-							bind:value={draft.default_profile_id}
-						>
-							{#each profiles as profile (profile.id)}<option value={profile.id}
-									>{profile.name}</option
-								>{/each}
-						</select>
-					</label>
 				</div>
 
 				<!-- svelte-ignore a11y_no_noninteractive_tabindex (bounded scroll region must be keyboard-focusable) -->
@@ -714,19 +802,19 @@
 						<article
 							class="management-profile-card"
 							data-default={profile.id === draft.default_profile_id}
+							aria-labelledby={`management-profile-${profile.id}`}
 						>
 							<div class="flex items-start justify-between gap-3">
 								<div class="min-w-0">
 									<div class="flex flex-wrap items-center gap-2">
-										<h4 class="font-semibold">{profile.name}</h4>
+										<h4 id={`management-profile-${profile.id}`} class="font-semibold">
+											{profile.name}
+										</h4>
 										<span
 											class="badge badge-xs {profile.preset_origin
 												? 'badge-outline'
 												: 'badge-ghost'}">{profile.preset_origin ? 'Preset' : 'Custom'}</span
 										>
-										{#if profile.id === draft.default_profile_id}<span
-												class="badge badge-xs management-badge">Default</span
-											>{/if}
 									</div>
 									<p class="mt-1 line-clamp-2 text-xs text-base-content/55">
 										{profile.description || 'No description.'}
@@ -742,16 +830,39 @@
 							<div
 								class="mt-4 flex items-center justify-between border-t border-base-content/10 pt-3"
 							>
-								<span
-									class="text-xs text-base-content/45"
-									title={assignedRootLabels(profile.id).length
-										? `Assigned to: ${assignedRootLabels(profile.id).join(', ')}`
-										: undefined}
-									>{assignedRootCount(profile.id)} assigned root{assignedRootCount(profile.id) === 1
-										? ''
-										: 's'}{#if assignedRootLabels(profile.id).length}
-										· {assignedRootLabels(profile.id).join(', ')}{/if}</span
-								>
+								<div class="management-profile-card__state">
+									<label
+										class="management-profile-default-control"
+										data-unsaved={profile.id === draft.default_profile_id &&
+											draft.default_profile_id !== persistedSettings?.default_profile_id}
+									>
+										<input
+											type="radio"
+											name="library-default-profile"
+											class="radio radio-xs"
+											checked={profile.id === draft.default_profile_id}
+											aria-label={`Make ${profile.name} the library default`}
+											onchange={() => updateDefaultProfile(profile.id)}
+										/>
+										<span
+											>{profile.id !== draft.default_profile_id
+												? 'Make default'
+												: draft.default_profile_id !== persistedSettings?.default_profile_id
+													? 'Default after save'
+													: 'Library default'}</span
+										>
+									</label>
+									<span
+										class="text-xs font-medium text-base-content/55"
+										title={assignedRootLabels(profile.id).length
+											? `Assigned to: ${assignedRootLabels(profile.id).join(', ')}`
+											: undefined}
+										>{#if assignedRootLabels(profile.id).length}<Link2
+												class="mr-1 inline h-3.5 w-3.5 align-text-bottom text-library-manage"
+											/>Assigned to {assignedRootLabels(profile.id).join(', ')}{:else}Not assigned
+											to a root{/if}</span
+									>
+								</div>
 								<div class="flex gap-1">
 									<button
 										class="btn btn-ghost btn-xs"
@@ -817,10 +928,10 @@
 					{#each roots as root (root.id)}
 						{@const assignment = assignmentFor(root.id)}
 						<article class="management-root-card">
-							<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_15rem]">
+							<div class="flex flex-wrap items-start justify-between gap-3">
 								<div>
 									<div class="flex flex-wrap items-center gap-2">
-										<h4 class="font-semibold">{root.label}</h4>
+										<h4 class="font-display text-lg font-semibold">{root.label}</h4>
 										<span class="badge badge-ghost badge-sm"
 											>Scanning: {root.policy === 'automatic'
 												? 'Automatic identification'
@@ -828,26 +939,29 @@
 										>
 									</div>
 									<p class="mt-1 font-mono text-xs text-base-content/40">{root.path}</p>
-									<p class="mt-2 text-sm">
-										<strong>Library Management:</strong>
-										{rootManagementStatus(root.id)}
-									</p>
 								</div>
-								<label class="grid gap-1 text-xs"
-									><span class="font-semibold">Effective profile</span><select
-										class="select select-bordered select-sm bg-base-100"
-										value={assignment.profile_id ?? ''}
-										onchange={(event) =>
-											updateAssignment(root.id, (value) => ({
-												...value,
-												profile_id: event.currentTarget.value || null
-											}))}
-										><option value="">Inherit global default</option
-										>{#each profiles as profile (profile.id)}<option value={profile.id}
-												>{profile.name}</option
-											>{/each}</select
-									></label
+								<span class="management-status-badge" data-active={assignment.enabled}
+									>{rootManagementStatus(root.id)}</span
 								>
+							</div>
+							<div class="mt-4">
+								<LibraryManagementProfilePicker
+									id={`root-${root.id}`}
+									eyebrow={assignment.profile_id
+										? 'Explicit root profile'
+										: 'Inherited from library default'}
+									label={`Management profile for ${root.label}`}
+									description="Defines tags, artwork, enrichment, and file organization for this root. Choose the library default or make an explicit override."
+									{profiles}
+									selectedId={assignment.profile_id ?? ''}
+									changed={assignment.profile_id !== persistedAssignmentFor(root.id).profile_id}
+									inheritedProfile={defaultProfile}
+									onselect={(profileId) =>
+										updateAssignment(root.id, (value) => ({
+											...value,
+											profile_id: profileId || null
+										}))}
+								/>
 							</div>
 							<div class="mt-4 border-t border-base-content/10 pt-4">
 								<label class="management-master-toggle max-w-xl"
@@ -1126,10 +1240,12 @@
 						<p class="text-xs text-base-content/50">
 							{#if !activationCoversCurrentDraft}The existing result cannot authorize the settings
 								now shown. Restart the review to create one current dry run.{:else if currentActivationRoot}{currentActivationRoot.label}
-								· {(activationQuery.data?.summary.item_count ?? 0).toLocaleString()}
-								files planned · {(activationQuery.data?.summary.bundle_count ?? 0).toLocaleString()}
-								release bundles{:else}Every required dry run is accepted. Automatic writes are still
-								off.{/if}
+								{#if (activationQuery.data?.summary.item_count ?? 0) > 0}
+									· {(activationQuery.data?.summary.item_count ?? 0).toLocaleString()}
+									files found · {(activationQuery.data?.summary.bundle_count ?? 0).toLocaleString()}
+									release bundles{:else}
+									· Discovering files and release bundles{/if}{:else}Every required dry run is
+								accepted. Automatic writes are still off.{/if}
 						</p>
 					</div>
 					{#if !activationCoversCurrentDraft}<button
@@ -1146,11 +1262,12 @@
 								></span>{/if}<ShieldAlert class="h-4 w-4" /> View dry run</button
 						>
 					{/if}
-				{:else}
+				{:else if hasUnsavedSettings}
 					<div>
 						<strong class="text-sm">Review configuration changes</strong>
 						<p class="text-xs text-base-content/50">
-							Broader write access cannot save until every affected root has a current dry run.
+							Trigger-only changes save immediately. Changes to file-writing scope require a current
+							dry run.
 						</p>
 					</div>
 					<button
@@ -1163,6 +1280,34 @@
 								class="loading loading-spinner loading-sm"
 							></span>{/if}<Sparkles class="h-4 w-4" /> Validate and save</button
 					>
+				{:else if remoteActivation}
+					<div>
+						<strong class="text-sm">
+							{remoteActivation.operation.state === 'ready'
+								? 'Write-access dry run ready'
+								: 'Write-access dry run in progress'}
+						</strong>
+						<p class="text-xs text-base-content/50">
+							{roots.find((root) => root.id === remoteActivation.target_root_id)?.label ??
+								'This root'} · {remoteActivation.profile_name} · {remoteActivation.operation
+								.state === 'ready'
+								? 'Ready to review'
+								: 'Discovering files and release bundles'}
+						</p>
+					</div>
+					<a
+						class="btn management-btn"
+						href={`/library/management/previews/${encodeURIComponent(remoteActivation.operation.id)}`}
+						><ShieldAlert class="h-4 w-4" /> Review dry run</a
+					>
+				{:else}
+					<div>
+						<strong class="text-sm">Configuration saved</strong>
+						<p class="text-xs text-base-content/50">
+							Change a profile, assignment, or automatic trigger to review an update.
+						</p>
+					</div>
+					<button class="btn btn-ghost" disabled><Check class="h-4 w-4" /> Saved</button>
 				{/if}
 			</div>
 		</div>
@@ -1269,7 +1414,7 @@
 						onclick={discardActivationPreview}>Start a fresh dry run</button
 					>
 				{:else if activationQuery.data}
-					{#if !activationReady}<div
+					{#if !activationReady && (activationQuery.data.summary.item_count ?? 0) > 0}<div
 							class="mt-4 flex flex-wrap items-baseline justify-between gap-x-5 gap-y-1 rounded-lg border border-library-manage/20 bg-library-manage/5 px-3.5 py-3"
 							aria-live="polite"
 						>
@@ -1281,6 +1426,17 @@
 							>
 							<span class="text-sm text-base-content/55"
 								>{(activationQuery.data.summary.bundle_count ?? 0).toLocaleString()} release bundles</span
+							>
+						</div>{:else if !activationReady}<div
+							class="mt-4 flex items-center gap-3 rounded-lg border border-library-manage/20 bg-library-manage/5 px-3.5 py-3 text-sm text-base-content/60"
+							aria-live="polite"
+						>
+							<span
+								class="loading loading-spinner loading-sm text-library-manage"
+								aria-hidden="true"
+							></span><span
+								><strong class="block text-base-content/80">Discovering the root</strong>File and
+								release totals appear after the first durable planning checkpoint.</span
 							>
 						</div>{/if}
 					{#if activationReady}<div class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -1408,7 +1564,7 @@
 					>
 				</div>
 				<label class="grid gap-1.5 text-sm"
-					><span>Type <strong>Enable Library Management</strong></span><input
+					><span>Type <strong>{LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE}</strong></span><input
 						class="input input-bordered bg-base-100"
 						bind:value={activationPhrase}
 						autocomplete="off"
@@ -1434,7 +1590,7 @@
 				disabled={activationPending}>Close</button
 			>{#if !currentActivationRoot}<button
 					class="btn management-btn"
-					disabled={activationPhrase !== 'Enable Library Management' ||
+					disabled={activationPhrase !== LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE ||
 						activationPending ||
 						!activationCoversCurrentDraft}
 					onclick={() => void enableManagement()}
@@ -1525,7 +1681,7 @@
 					>
 						Recovery or restore work is active. Purge is blocked.
 					</div>{/if}<label class="grid gap-1.5"
-					><span>Type <strong>PURGE BASELINES</strong></span><input
+					><span>Type <strong>{LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE}</strong></span><input
 						class="input input-bordered bg-base-100"
 						bind:value={purgePhrase}
 						autocomplete="off"
@@ -1542,7 +1698,7 @@
 				onclick={() => purgeDialog.close()}>Cancel</button
 			><button
 				class="btn btn-error"
-				disabled={purgePhrase !== 'PURGE BASELINES' ||
+				disabled={purgePhrase !== LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE ||
 					purgeBaselines.isPending ||
 					Boolean(
 						purgeImpact.data?.blocked_journal_count || purgeImpact.data?.active_restore_count

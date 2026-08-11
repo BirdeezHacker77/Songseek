@@ -10,16 +10,21 @@
 		managementPlanTitle,
 		titleManagementValue
 	} from './LibraryManagementDisplay';
+	import LibraryManagementLyricsEvidence from './LibraryManagementLyricsEvidence.svelte';
 
 	interface Props {
 		item: LibraryManagementResultItem;
+		operationState?: string | null;
 	}
 
-	let { item }: Props = $props();
+	let { item, operationState = null }: Props = $props();
 	const title = $derived(managementPlanTitle(item.plan));
 	const artist = $derived(managementPlanArtist(item.plan));
 	const album = $derived(managementPlanAlbum(item.plan));
 	const status = $derived(item.failure_code ?? item.work_state);
+	const failureReason = $derived(
+		typeof item.result.reason === 'string' ? item.result.reason : null
+	);
 	const pathChanged = $derived(
 		Boolean(item.plan.destination_relative_path) &&
 			(item.plan.destination_relative_path !== item.plan.source_relative_path ||
@@ -66,6 +71,8 @@
 		{/if}
 	</div>
 
+	<LibraryManagementLyricsEvidence item={item.plan} workState={item.work_state} {operationState} />
+
 	<section>
 		<h4 class="management-inspector-section-title">Durable journal</h4>
 		{#if item.journal_states.length}
@@ -95,7 +102,8 @@
 				<div>
 					<strong>{titleManagementValue(item.failure_code)}</strong>
 					<p class="mt-1 text-base-content/55">
-						Use the durable journal and recovery state above to diagnose the failure.
+						{failureReason ??
+							'Check the journal and recovery details above to diagnose the failure.'}
 					</p>
 				</div>
 			</div>

@@ -385,11 +385,53 @@
 
 .management-profile-card {
 	padding: 1rem;
+	transition:
+		border-color 160ms ease,
+		box-shadow 160ms ease,
+		background-color 160ms ease;
 }
 
 .management-profile-card[data-default='true'] {
-	border-color: color-mix(in oklab, var(--color-library-manage) 34%, transparent);
-	box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-library-manage) 10%, transparent);
+	border-color: color-mix(in oklab, var(--color-library-manage) 50%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 7%, var(--color-base-100));
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--color-library-manage) 20%, transparent),
+		0 0 1.4rem color-mix(in oklab, var(--color-library-manage) 12%, transparent);
+}
+
+.management-profile-card__state {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.35rem;
+}
+
+.management-profile-default-control {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-height: 1.75rem;
+	padding-inline: 0.6rem;
+	border: 1px solid color-mix(in oklab, var(--color-base-content) 13%, transparent);
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--color-base-200) 65%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-base-content) 58%, transparent);
+	font-size: 0.7rem;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.management-profile-default-control:has(input:checked) {
+	border-color: color-mix(in oklab, var(--color-library-manage) 38%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 12%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-library-manage) 64%, var(--color-base-content));
+}
+
+.management-profile-default-control[data-unsaved='true'] {
+	border-color: color-mix(in oklab, var(--color-warning) 38%, transparent);
+	background: color-mix(in oklab, var(--color-warning) 10%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content));
 }
 
 .management-badge,
@@ -406,6 +448,178 @@
 	font-weight: 700;
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
+}
+
+.management-profile-picker {
+	overflow: hidden;
+	border: 1px solid color-mix(in oklab, var(--color-library-manage) 24%, transparent);
+	border-radius: 0.95rem;
+	background: color-mix(in oklab, var(--color-library-manage) 5%, var(--color-base-100));
+}
+
+.management-profile-picker-summary {
+	display: grid;
+	width: 100%;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 0.9rem;
+	padding: 1rem;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.management-profile-picker-summary:focus-visible {
+	outline: 2px solid var(--color-library-manage);
+	outline-offset: -2px;
+}
+
+.management-profile-picker[data-open='true'] .management-profile-picker-summary {
+	border-bottom: 1px solid color-mix(in oklab, var(--color-library-manage) 18%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 7%, var(--color-base-100));
+}
+
+.management-profile-picker-mark,
+.management-profile-option-icon {
+	display: grid;
+	place-items: center;
+	flex: none;
+	border: 1px solid color-mix(in oklab, var(--color-library-manage) 22%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 11%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-library-manage) 68%, var(--color-base-content));
+}
+
+.management-profile-picker-mark {
+	width: 2.4rem;
+	height: 2.4rem;
+	border-radius: 0.75rem;
+}
+
+.management-profile-picker-name,
+.management-profile-picker-description {
+	display: block;
+}
+
+.management-profile-picker-name {
+	margin-top: 0.1rem;
+	font-size: 1rem;
+}
+
+.management-profile-picker-description {
+	margin-top: 0.2rem;
+	max-width: 52rem;
+	color: color-mix(in oklab, var(--color-base-content) 54%, transparent);
+	font-size: 0.75rem;
+	line-height: 1.4;
+}
+
+.management-profile-picker-aspects {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.3rem;
+	margin-top: 0.55rem;
+}
+
+.management-profile-picker-status {
+	display: flex;
+	align-items: center;
+	justify-content: end;
+	gap: 0.55rem;
+	min-height: 2.4rem;
+}
+
+.management-unsaved-badge {
+	border: 1px solid color-mix(in oklab, var(--color-warning) 35%, transparent);
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--color-warning) 11%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-warning) 58%, var(--color-base-content));
+	padding: 0.2rem 0.55rem;
+	font-size: 0.65rem;
+	font-weight: 700;
+}
+
+.management-profile-picker-chevron {
+	transition: transform 160ms ease;
+}
+
+.management-profile-picker[data-open='true'] .management-profile-picker-chevron {
+	transform: rotate(180deg);
+}
+
+.management-profile-picker-body {
+	display: grid;
+	gap: 0.85rem;
+	padding: 1rem;
+	background: color-mix(in oklab, var(--color-base-200) 45%, var(--color-base-100));
+}
+
+.management-profile-options {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+	gap: 0.6rem;
+}
+
+.management-profile-option {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 0.7rem;
+	min-height: 5.5rem;
+	padding: 0.8rem;
+	border: 1px solid color-mix(in oklab, var(--color-base-content) 12%, transparent);
+	border-radius: 0.8rem;
+	background: var(--color-base-100);
+	cursor: pointer;
+	transition:
+		border-color 140ms ease,
+		background-color 140ms ease,
+		transform 140ms ease;
+}
+
+.management-profile-option:hover {
+	border-color: color-mix(in oklab, var(--color-library-manage) 34%, transparent);
+	transform: translateY(-1px);
+}
+
+.management-profile-option:has(input:focus-visible) {
+	outline: 2px solid var(--color-library-manage);
+	outline-offset: 2px;
+}
+
+.management-profile-option:has(input:checked) {
+	border-color: color-mix(in oklab, var(--color-library-manage) 48%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 9%, var(--color-base-100));
+}
+
+.management-profile-option-icon {
+	width: 1.8rem;
+	height: 1.8rem;
+	border-radius: 0.55rem;
+}
+
+.management-profile-option strong,
+.management-profile-option small {
+	display: block;
+}
+
+.management-profile-option small {
+	margin-top: 0.25rem;
+	color: color-mix(in oklab, var(--color-base-content) 52%, transparent);
+	font-size: 0.7rem;
+	line-height: 1.35;
+}
+
+.management-profile-option-check {
+	margin-top: 0.35rem;
+	color: var(--color-library-manage);
+	opacity: 0;
+}
+
+.management-profile-option:has(input:checked) .management-profile-option-check {
+	opacity: 1;
 }
 
 .management-create-row,
@@ -438,14 +652,16 @@
 
 .management-master-toggle > span,
 .management-trigger > span,
-.management-editor-summary > span:not(.management-editor-icon) {
+.management-editor-summary__copy,
+.management-editor-advanced > summary > span {
 	display: grid;
 	gap: 0.12rem;
 }
 
 .management-master-toggle small,
 .management-trigger small,
-.management-editor-summary small {
+.management-editor-summary small,
+.management-editor-advanced small {
 	color: color-mix(in oklab, var(--color-base-content) 52%, transparent);
 	font-size: 0.7rem;
 	font-weight: 400;
@@ -467,13 +683,45 @@
 	padding: 1rem;
 }
 
+.management-editor-section {
+	transition:
+		border-color 160ms ease,
+		background-color 160ms ease,
+		box-shadow 160ms ease;
+}
+
+.management-editor-section[data-active='true'] {
+	border-color: color-mix(in oklab, var(--color-library-manage) 24%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 3.5%, var(--color-base-100));
+}
+
+.management-editor-section[open] {
+	border-color: color-mix(in oklab, var(--color-library-manage) 38%, transparent);
+	box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-library-manage) 7%, transparent);
+}
+
 .management-retention-panel > summary,
 .management-editor-summary {
-	display: flex;
 	align-items: center;
 	gap: 0.7rem;
 	list-style: none;
 	cursor: pointer;
+}
+
+.management-retention-panel > summary {
+	display: flex;
+}
+
+.management-editor-summary {
+	display: grid;
+	grid-template-columns: auto minmax(11rem, 1fr) minmax(0, auto) auto;
+}
+
+.management-editor-summary:focus-visible,
+.management-editor-advanced > summary:focus-visible {
+	border-radius: 0.55rem;
+	outline: 2px solid var(--color-library-manage);
+	outline-offset: 0.35rem;
 }
 
 .management-retention-panel > summary::-webkit-details-marker,
@@ -488,10 +736,125 @@
 	flex: none;
 	place-items: center;
 	border-radius: 0.65rem;
+	background: color-mix(in oklab, var(--color-base-content) 5%, transparent);
+	color: color-mix(in oklab, var(--color-base-content) 62%, transparent);
+}
+
+.management-editor-section[data-active='true'] > summary .management-editor-icon {
+	background: color-mix(in oklab, var(--color-library-manage) 11%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-library-manage) 72%, var(--color-base-content));
+}
+
+.management-editor-overview {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.35rem;
+}
+
+.management-editor-state,
+.management-editor-chip {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.55rem;
+	padding-inline: 0.55rem;
+	border: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent);
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--color-base-200) 65%, transparent);
+	color: color-mix(in oklab, var(--color-base-content) 52%, transparent);
+	font-size: 0.65rem;
+	font-weight: 650;
+	line-height: 1.1;
+}
+
+.management-editor-state {
+	min-width: 2.8rem;
+	justify-content: center;
+	letter-spacing: 0.045em;
+	text-transform: uppercase;
+}
+
+.management-editor-state[data-active='true'],
+.management-editor-chip[data-active='true'] {
+	border-color: color-mix(in oklab, var(--color-library-manage) 26%, transparent);
+	background: color-mix(in oklab, var(--color-library-manage) 9%, var(--color-base-100));
+	color: color-mix(in oklab, var(--color-library-manage) 67%, var(--color-base-content));
+}
+
+.management-editor-chevron {
+	color: color-mix(in oklab, var(--color-base-content) 42%, transparent);
+	transition: transform 160ms ease;
 }
 
 details[open] > summary .management-editor-chevron {
 	transform: rotate(90deg);
+}
+
+.management-editor-advanced {
+	overflow: hidden;
+	border: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent);
+	border-radius: 0.75rem;
+	background: color-mix(in oklab, var(--color-base-200) 38%, transparent);
+}
+
+.management-editor-advanced > summary {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	padding: 0.8rem 0.9rem;
+	list-style: none;
+	cursor: pointer;
+}
+
+.management-editor-advanced > summary::-webkit-details-marker {
+	display: none;
+}
+
+.management-editor-advanced > summary > svg {
+	flex: none;
+	color: color-mix(in oklab, var(--color-base-content) 42%, transparent);
+	transition: transform 160ms ease;
+}
+
+.management-editor-advanced[open] > summary {
+	border-bottom: 1px solid color-mix(in oklab, var(--color-base-content) 8%, transparent);
+}
+
+.management-editor-advanced[open] > summary > svg {
+	transform: rotate(90deg);
+}
+
+.management-editor-advanced > :not(summary) {
+	margin-inline: 0.9rem;
+	margin-bottom: 0.9rem;
+}
+
+@media (max-width: 767px) {
+	.management-profile-picker-summary {
+		grid-template-columns: auto minmax(0, 1fr);
+	}
+
+	.management-profile-picker-status {
+		grid-column: 1 / -1;
+		justify-content: flex-start;
+		min-height: auto;
+		padding-left: 3.3rem;
+	}
+
+	.management-editor-summary {
+		grid-template-columns: auto minmax(0, 1fr) auto;
+	}
+
+	.management-editor-overview {
+		grid-column: 2 / -1;
+		justify-content: flex-start;
+	}
+
+	.management-editor-chevron {
+		grid-column: 3;
+		grid-row: 1;
+	}
 }
 
 .management-save-bar {
@@ -2545,9 +2908,18 @@ details[open] > summary .management-editor-chevron {
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.management-profile-card,
+	.management-editor-section,
 	.management-editor-chevron,
-	.management-disclosure > summary svg {
+	.management-editor-advanced > summary > svg,
+	.management-disclosure > summary svg,
+	.management-profile-picker-chevron,
+	.management-profile-option {
 		transition: none !important;
+	}
+
+	.management-profile-option:hover {
+		transform: none;
 	}
 }
 

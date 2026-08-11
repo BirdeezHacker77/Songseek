@@ -981,6 +981,7 @@ export const API = {
 		releases: () => '/api/v1/version/releases'
 	},
 	local: {
+		lyrics: (trackId: string) => `/api/v1/local/tracks/${trackId}/lyrics`,
 		albumMatch: (mbid: string) => `/api/v1/local/albums/match/${mbid}`,
 		albums: (
 			limit = 50,

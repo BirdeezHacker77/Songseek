@@ -102,6 +102,7 @@ from services.youtube_service import YouTubeService
 from services.requests_page_service import RequestsPageService
 from services.jellyfin_playback_service import JellyfinPlaybackService
 from services.local_files_service import LocalFilesService
+from services.compat.native_lyrics_service import NativeLyricsService
 from services.jellyfin_library_service import JellyfinLibraryService
 from services.navidrome_library_service import NavidromeLibraryService
 from services.navidrome_playback_service import NavidromePlaybackService
@@ -201,6 +202,7 @@ from .service_providers import (
     get_plex_playback_service,
     get_version_service,
 )
+from .compat_providers import get_native_lyrics_service
 
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -372,6 +374,9 @@ JellyfinPlaybackServiceDep = Annotated[
     JellyfinPlaybackService, Depends(get_jellyfin_playback_service)
 ]
 LocalFilesServiceDep = Annotated[LocalFilesService, Depends(get_local_files_service)]
+NativeLyricsServiceDep = Annotated[
+    NativeLyricsService, Depends(get_native_lyrics_service)
+]
 JellyfinLibraryServiceDep = Annotated[
     JellyfinLibraryService, Depends(get_jellyfin_library_service)
 ]

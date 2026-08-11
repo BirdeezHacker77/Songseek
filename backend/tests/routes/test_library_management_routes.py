@@ -499,7 +499,7 @@ def test_baseline_restore_and_purge_routes_are_explicit_admin_actions(
         json={
             "impact_token": "impact",
             "expected_catalog_revision": 7,
-            "typed_confirmation": "PURGE BASELINES",
+            "typed_confirmation": "CONFIRM",
             "idempotency_key": "purge-once",
         },
     )

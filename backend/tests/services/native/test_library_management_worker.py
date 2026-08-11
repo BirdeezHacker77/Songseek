@@ -5,6 +5,11 @@ from unittest.mock import AsyncMock
 import msgspec
 import pytest
 
+from core.exceptions import (
+    ConflictError,
+    LibraryManagementDestinationConflictError,
+    StaleRevisionError,
+)
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.library_management import LibraryManagementJobSnapshot
 from services.native.library_management_planner import LibraryManagementPlanner
@@ -110,6 +115,50 @@ async def test_apply_worker_honours_control_only_outside_critical_publish() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "failure_code"),
+    [
+        (
+            LibraryManagementDestinationConflictError(
+                "A destination was created after preview."
+            ),
+            "STALE_DESTINATION",
+        ),
+        (
+            ConflictError("The durable management snapshot does not match its retry."),
+            "PUBLICATION_CONFLICT",
+        ),
+        (
+            StaleRevisionError("A managed file changed after preview."),
+            "STALE_INPUT",
+        ),
+    ],
+)
+async def test_apply_worker_preserves_publication_conflict_classification(
+    error: ConflictError | StaleRevisionError,
+    failure_code: str,
+) -> None:
+    worker, store, publisher = _worker()
+    store.claim_operation_work.side_effect = [
+        {"ordinal": 0, "row_revision": 2, "state": "running"},
+        None,
+    ]
+    store.get_operation_work_item.return_value = {
+        "ordinal": 0,
+        "state": "running",
+    }
+    publisher.publish_bundle.side_effect = error
+
+    result = await worker.run_claimed({"id": "management-1"}, "management-worker")
+
+    assert result["state"] == "succeeded"
+    values = store.complete_operation_work.await_args.kwargs
+    assert values["state"] == "skipped"
+    assert values["failure_code"] == failure_code
+    assert msgspec.json.decode(values["result_json"])["reason"] == str(error)
+
+
+@pytest.mark.asyncio
 async def test_baseline_restore_preview_dispatches_to_baseline_planner() -> None:
     worker, store, _publisher = _worker()
     snapshot = _snapshot()
@@ -146,6 +195,33 @@ async def test_duplicate_preview_dispatches_to_duplicate_planner() -> None:
     assert result["state"] == "ready"
     worker._duplicates.run_claimed_preview.assert_awaited_once_with(
         {"id": "management-1"}, "management-worker"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preview_conflict_finishes_instead_of_repeating_after_lease_expiry() -> (
+    None
+):
+    worker, store, _publisher = _worker()
+    snapshot = _snapshot()
+    snapshot.mode = "preview"
+    snapshot.phase = "planning"
+    store.get_library_management_job_snapshot.return_value = snapshot
+    worker._planner.run_claimed_preview.side_effect = ConflictError(
+        "The content hash is already registered with different metadata."
+    )
+    store.finish_operation_job.return_value = {
+        "id": "management-1",
+        "state": "failed",
+        "terminal_code": "PLANNING_FAILED",
+    }
+
+    result = await worker.run_claimed({"id": "management-1"}, "management-worker")
+
+    assert result["state"] == "failed"
+    store.finish_operation_job.assert_awaited_once()
+    assert store.finish_operation_job.await_args.kwargs["terminal_code"] == (
+        "PLANNING_FAILED"
     )
 
 

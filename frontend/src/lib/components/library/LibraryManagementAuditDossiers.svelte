@@ -174,6 +174,10 @@
 							data-testid="management-dossier-art-frame"
 						>
 							<AlbumImage
+								mbid={dossier.artworkUrl ||
+								(dossier.albumId && dossier.albumArtworkVersion !== null)
+									? ''
+									: (dossier.albumMbid ?? '')}
 								albumId={dossier.artworkUrl ? undefined : (dossier.albumId ?? undefined)}
 								coverVersion={dossier.artworkUrl
 									? undefined

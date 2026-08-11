@@ -22,6 +22,7 @@
 	import { getLibrarySearchQuery } from '$lib/queries/library/LibraryQueries.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { createLibraryManagementEvents } from '$lib/queries/library-management/LibraryManagementEvents';
+	import { LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE } from '$lib/queries/library-management/LibraryManagementConfirmation';
 	import {
 		applyLibraryManagementPreviewMutation,
 		createLibraryManagementDuplicateResolutionMutation
@@ -47,6 +48,7 @@
 		managementAudioFormat,
 		managementAlbumArtworkVersion,
 		managementArtworkPreviewHash,
+		managementDesiredField,
 		managementPlanAlbum,
 		managementPlanAlbumArtist,
 		managementPlanArtist,
@@ -97,7 +99,7 @@
 	let collisionClass = $state('');
 	let hasPreservedValue = $state(false);
 	let hasRepresentationLoss = $state(false);
-	let previewToken = $state<string | null>(null);
+	let previewToken = $derived(readLibraryManagementPreviewToken(jobId));
 	let confirmation = $state('');
 	let applyError = $state('');
 	let applyDialog: HTMLDialogElement;
@@ -148,15 +150,6 @@
 	const roots = $derived(policyQuery.data?.library_roots ?? []);
 	const auditDossiers = $derived(
 		groupManagementAuditEntries(items.map((item) => planAuditEntry(item)))
-	);
-	const applyPhrase = $derived(
-		preview?.mode === 'undo'
-			? 'UNDO OPERATION'
-			: preview?.mode === 'baseline_restore'
-				? 'RESTORE FIRST-MANAGEMENT STATE'
-				: preview?.mode === 'duplicate_resolution'
-					? 'APPLY COLLISION RESOLUTION'
-					: 'APPLY LIBRARY MANAGEMENT'
 	);
 	const applyCount = $derived(
 		(preview?.summary.eligible_count ?? 0) + (preview?.summary.warning_count ?? 0)
@@ -245,7 +238,6 @@
 	);
 
 	onMount(() => {
-		previewToken = readLibraryManagementPreviewToken(jobId);
 		const events = createLibraryManagementEvents();
 		events.start();
 		return events.stop;
@@ -306,6 +298,7 @@
 			albumTitle: managementPlanAlbum(item),
 			albumArtist: managementPlanAlbumArtist(item),
 			albumId: item.local_album_id,
+			albumMbid: managementDesiredField(item, 'musicbrainz_release_group_id'),
 			albumArtworkVersion: managementAlbumArtworkVersion(item),
 			format: managementAudioFormat(item),
 			status: titleManagementValue(item.eligibility),
@@ -363,7 +356,13 @@
 	}
 
 	async function apply(): Promise<void> {
-		if (!preview || !previewToken || confirmation !== applyPhrase || !canApply) return;
+		if (
+			!preview ||
+			!previewToken ||
+			confirmation !== LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE ||
+			!canApply
+		)
+			return;
 		applyError = '';
 		try {
 			const operation = await applyPreview.mutateAsync({
@@ -865,7 +864,7 @@
 		</div>
 		<p class="mt-4 text-sm text-base-content/65">{applyAction.detail}</p>
 		<label class="mt-4 grid gap-1 text-sm"
-			><span>Type <strong>{applyPhrase}</strong></span><input
+			><span>Type <strong>{LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE}</strong></span><input
 				class="input input-bordered bg-base-100 font-mono"
 				bind:value={confirmation}
 				autocomplete="off"
@@ -879,7 +878,9 @@
 				onclick={() => applyDialog.close()}>Cancel</button
 			><button
 				class="btn btn-warning"
-				disabled={!canApply || confirmation !== applyPhrase || applyPreview.isPending}
+				disabled={!canApply ||
+					confirmation !== LIBRARY_MANAGEMENT_CONFIRMATION_PHRASE ||
+					applyPreview.isPending}
 				onclick={() => void apply()}
 				>{#if applyPreview.isPending}<span class="loading loading-spinner loading-sm"
 					></span>{/if}<CheckCircle2 class="h-4 w-4" />

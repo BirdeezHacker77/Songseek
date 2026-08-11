@@ -13,6 +13,12 @@ from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
+from services.native.library_management_preview_service import (
+    LibraryManagementPreviewService,
+)
+from services.native.library_management_profile_service import (
+    LibraryManagementProfileService,
+)
 from services.native.library_management_publisher import LibraryManagementPublisher
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.native.library_policy_resolver import LibraryPolicyResolver
@@ -201,6 +207,13 @@ async def test_undo_restores_real_audio_path_tags_and_management_state(
     await undo_publisher.publish_bundle(
         preview.job_id, int(work["ordinal"]), "undo-apply-worker"
     )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE library_operation_jobs SET state='succeeded',terminal_at=125.5,"
+            "lease_owner=NULL,lease_expires_at=NULL,heartbeat_at=NULL,updated_at=125.5,"
+            "row_revision=row_revision+1,event_revision=event_revision+1 WHERE id=?",
+            (preview.job_id,),
+        )
 
     restored = await store.get_target_track("track-1")
     state = await store.get_track_management_state("track-1")
@@ -222,6 +235,49 @@ async def test_undo_restores_real_audio_path_tags_and_management_state(
     )
     assert journals and all(value.state == "completed" for value in journals)
     assert not list(root.rglob(".droppedneedle-management-*"))
+
+    first_job = await store.get_operation_job(first_job_id)
+    assert first_job is not None
+    chained = await undo.create_preview(
+        first_job_id,
+        LibraryManagementUndoPreviewRequest(
+            expected_operation_row_revision=int(first_job["row_revision"]),
+            idempotency_key="chained-undo-preview",
+        ),
+        "admin",
+    )
+    claimed_chained = await store.claim_operation_job(
+        "chained-undo-worker", now=126.0, lease_seconds=60.0, kind="library_management"
+    )
+    assert claimed_chained is not None and claimed_chained["id"] == chained.job_id
+    await undo.run_claimed_preview(claimed_chained, "chained-undo-worker")
+    chained_items = await store.list_library_management_plan_items(chained.job_id)
+    assert len(chained_items) == 1
+    assert chained_items[0].eligibility == "eligible"
+    assert (
+        chained_items[0].expected_file_fingerprint
+        == hashlib.sha256(first_path.read_bytes()).hexdigest()
+    )
+
+    with first_path.open("ab") as stream:
+        stream.write(b"external edit")
+    changed = await undo.create_preview(
+        first_job_id,
+        LibraryManagementUndoPreviewRequest(
+            expected_operation_row_revision=int(first_job["row_revision"]),
+            idempotency_key="changed-after-chained-undo-preview",
+        ),
+        "admin",
+    )
+    claimed_changed = await store.claim_operation_job(
+        "changed-undo-worker", now=127.0, lease_seconds=60.0, kind="library_management"
+    )
+    assert claimed_changed is not None and claimed_changed["id"] == changed.job_id
+    await undo.run_claimed_preview(claimed_changed, "changed-undo-worker")
+    changed_items = await store.list_library_management_plan_items(changed.job_id)
+    assert len(changed_items) == 1
+    assert changed_items[0].eligibility == "stale"
+    assert changed_items[0].reason_code == "FILE_CHANGED"
 
 
 @pytest.mark.asyncio
@@ -321,30 +377,47 @@ async def test_undo_preview_counts_embedded_artwork_restoration(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_undo_external_artwork_choice_retains_blob_metadata(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "pre_register_sidecar",
+    (False, True),
+    ids=("fresh-image-snapshot", "sidecar-first-snapshot"),
+)
+async def test_undo_external_artwork_choice_previews_publisher_snapshot(
+    tmp_path, pre_register_sidecar: bool
+) -> None:
     (
         root,
         source,
         store,
         audio,
         publisher,
-        _source_job_id,
+        source_job_id,
     ) = await _ready_apply_operation(tmp_path)
-    blobs = LibraryManagementBlobStore(tmp_path / "restoration-blobs", store)
-    content = b"pinned-restoration-artwork"
-    blob = await blobs.add_bytes(
-        content,
+    blobs = publisher._blobs
+    content = _ArtworkRepository().content
+    artwork_path = root / "cover.png"
+    artwork_path.write_bytes(content)
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+    assert await store.get_management_blob(expected_sha256) is None
+    sidecar_blob = None
+    if pre_register_sidecar:
+        sidecar_blob = await blobs.add_file(
+            artwork_path,
+            kind="sidecar_manifest",
+            created_at=119.0,
+        )
+    captured_sha256 = await publisher._capture_snapshot_file(
+        artwork_path,
         kind="image",
         created_at=120.0,
-        media_metadata_json=json.dumps(
-            {
-                "mime_type": "image/png",
-                "image_type": "front",
-                "width": 1425,
-                "height": 1425,
-            }
-        ),
     )
+    blob = await store.get_management_blob(captured_sha256)
+    assert blob is not None
+    assert blob.sha256 == expected_sha256
+    if sidecar_blob is not None:
+        assert blob.sha256 == sidecar_blob.sha256
+    assert blob.kind == "image"
+    assert json.loads(blob.media_metadata_json) == {"mime_type": "image/png"}
     undo = LibraryManagementUndoService(
         store,
         publisher._preferences,
@@ -384,13 +457,34 @@ async def test_undo_external_artwork_choice_retains_blob_metadata(tmp_path) -> N
                 "source": "operation_snapshot",
                 "byte_size": len(content),
                 "mime_type": "image/png",
-                "image_type": "front",
-                "width": 1425,
-                "height": 1425,
                 "format": "png",
             },
         }
     ]
+
+    source_items = await store.list_library_management_plan_items(source_job_id)
+    assert len(source_items) == 1
+    choice = values[0]["artwork_choice"]
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE library_management_plan_items SET artwork_choices_json=? "
+            "WHERE job_id=? AND ordinal=?",
+            (json.dumps([choice]), source_job_id, source_items[0].ordinal),
+        )
+    preview_service = LibraryManagementPreviewService(
+        store,
+        publisher._preferences,
+        LibraryManagementProfileService(publisher._preferences),
+        _planner(tmp_path, store, publisher._preferences),
+        blobs=blobs,
+    )
+
+    preview_content, mime_type = await preview_service.artwork_preview(
+        source_job_id, source_items[0].ordinal, blob.sha256
+    )
+
+    assert preview_content == content
+    assert mime_type == "image/png"
 
 
 @pytest.mark.asyncio

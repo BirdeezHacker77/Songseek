@@ -761,6 +761,7 @@ class LibraryManagementProfileService:
         }
         destructive: list[str] = []
         restrictive: list[str] = []
+        harmless: list[str] = []
         affected: set[str] = set()
         for root_id in sorted(set(current_assignments) | set(proposed_assignments)):
             old_assignment = current_assignments.get(root_id)
@@ -803,8 +804,9 @@ class LibraryManagementProfileService:
             old_payload = cls._effective_scope_payload(current, old_assignment)
             new_payload = cls._effective_scope_payload(proposed, new_assignment)
             if added_trigger:
-                destructive.append(
-                    f"An automatic trigger is enabled for root {root_id}."
+                harmless.append(
+                    f"An automatic trigger is enabled for root {root_id}; the "
+                    "authorized write profile is unchanged."
                 )
                 affected.add(root_id)
             if old_payload != new_payload:
@@ -828,10 +830,12 @@ class LibraryManagementProfileService:
             reasons = destructive + restrictive
         elif restrictive:
             classification = "restrictive"
-            reasons = restrictive
+            reasons = restrictive + harmless
         else:
             classification = "harmless"
-            reasons = ["No enabled automatic root gains file-writing scope."]
+            reasons = harmless or [
+                "No enabled automatic root gains file-writing scope."
+            ]
         return LibraryManagementChangeImpact(
             current_settings_revision=current_revision,
             proposed_settings_revision=proposed_revision,

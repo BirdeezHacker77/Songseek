@@ -57,6 +57,28 @@ export interface ManagementRestoration {
 	};
 }
 
+export interface ManagementLyricsProjection {
+	status: 'available' | 'not_found' | 'deferred' | 'mismatch';
+	providerId: number | null;
+	providerRevision: string | null;
+	reason: string | null;
+	plainAvailable: boolean;
+	syncedAvailable: boolean;
+	plainSelected: boolean;
+	syncedSelected: boolean;
+	syncedSupported: boolean;
+	preserveExisting: boolean;
+}
+
+export interface ManagementScrubbedRawTag {
+	key: string;
+	valueKind: string;
+	values: string[];
+	valueCount: number;
+	truncated: boolean;
+	sha256: string | null;
+}
+
 export type ManagementAuditChangeKind = 'tags' | 'artwork' | 'path' | 'sidecars';
 
 const MANAGEMENT_ARTWORK_PREVIEW_MIME_TYPES = new Set([
@@ -171,6 +193,50 @@ export function managementCustomTagDiffs(item: LibraryManagementPlanItem): Manag
 	});
 }
 
+export function managementScrubbedRawTags(
+	item: LibraryManagementPlanItem
+): ManagementScrubbedRawTag[] {
+	const raw = item.diff.scrubbed_raw_tags;
+	if (!Array.isArray(raw)) return [];
+	return raw.flatMap((value) => {
+		if (!isRecord(value) || typeof value.key !== 'string') return [];
+		return [
+			{
+				key: value.key,
+				valueKind: stringOrNull(value.value_kind) ?? 'text',
+				values: managementStringList(value.values),
+				valueCount: numberOrNull(value.value_count) ?? 0,
+				truncated: value.truncated === true,
+				sha256: stringOrNull(value.sha256)
+			}
+		];
+	});
+}
+
+export function managementLyricsProjection(
+	item: LibraryManagementPlanItem
+): ManagementLyricsProjection | null {
+	const diff = isRecord(item.diff) ? item.diff : {};
+	const value = diff.lyrics_projection;
+	if (!isRecord(value)) return null;
+	const status = stringOrNull(value.status);
+	if (!status || !['available', 'not_found', 'deferred', 'mismatch'].includes(status)) {
+		return null;
+	}
+	return {
+		status: status as ManagementLyricsProjection['status'],
+		providerId: numberOrNull(value.provider_id),
+		providerRevision: stringOrNull(value.provider_revision),
+		reason: stringOrNull(value.reason),
+		plainAvailable: value.plain_available === true,
+		syncedAvailable: value.synced_available === true,
+		plainSelected: value.plain_selected === true,
+		syncedSelected: value.synced_selected === true,
+		syncedSupported: value.synced_supported !== false,
+		preserveExisting: value.preserve_existing === true
+	};
+}
+
 export function managementStringList(value: unknown): string[] {
 	return Array.isArray(value)
 		? value.filter((item): item is string => typeof item === 'string')
@@ -244,8 +310,20 @@ export function managementPlanChanges(
 	const changes: ManagementAuditChangeKind[] = [];
 	if (
 		diff.tags_changed === true ||
-		(Array.isArray(diff.field_mutations) && diff.field_mutations.length > 0) ||
-		(Array.isArray(diff.custom_tag_mutations) && diff.custom_tag_mutations.length > 0)
+		(Array.isArray(diff.field_mutations) &&
+			diff.field_mutations.some(
+				(value) =>
+					isRecord(value) &&
+					typeof value.operation === 'string' &&
+					['set', 'clear', 'merge'].includes(value.operation)
+			)) ||
+		(Array.isArray(diff.custom_tag_mutations) &&
+			diff.custom_tag_mutations.some(
+				(value) =>
+					isRecord(value) &&
+					typeof value.operation === 'string' &&
+					['set', 'append', 'delete'].includes(value.operation)
+			))
 	) {
 		changes.push('tags');
 	}

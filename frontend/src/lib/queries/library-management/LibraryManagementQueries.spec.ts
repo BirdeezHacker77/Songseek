@@ -12,6 +12,7 @@ vi.mock('$lib/api/client', () => ({
 
 import { api } from '$lib/api/client';
 import { LibraryManagementQueryKeyFactory } from './LibraryManagementQueryKeyFactory';
+import type { LibraryManagementResultPageResponse } from './types';
 import {
 	getLibraryManagementActivationPreviewQuery,
 	getLibraryManagementOperationQuery,
@@ -143,6 +144,49 @@ describe('Library Management query endpoints', () => {
 		);
 	});
 
+	it('polls ordinary previews and operations until they are ready or terminal', () => {
+		const queries = [
+			getLibraryManagementPreviewQuery(
+				() => 'admin-a',
+				() => 'preview-1'
+			),
+			getLibraryManagementOperationQuery(
+				() => 'admin-a',
+				() => 'operation-1'
+			)
+		] as unknown as Array<{
+			refetchInterval: (query: {
+				state: {
+					data?: {
+						state: string;
+						ready_for_confirmation: boolean;
+						stale: boolean;
+						expired: boolean;
+					};
+				};
+			}) => number | false;
+		}>;
+		const planning = {
+			state: 'planning',
+			ready_for_confirmation: false,
+			stale: false,
+			expired: false
+		};
+
+		for (const query of queries) {
+			expect(query.refetchInterval({ state: {} })).toBe(2000);
+			expect(query.refetchInterval({ state: { data: planning } })).toBe(2000);
+			expect(
+				query.refetchInterval({
+					state: { data: { ...planning, state: 'ready', ready_for_confirmation: true } }
+				})
+			).toBe(false);
+			expect(query.refetchInterval({ state: { data: { ...planning, state: 'succeeded' } } })).toBe(
+				false
+			);
+		}
+	});
+
 	it('uses every detail endpoint through encoded API builders', async () => {
 		const signal = new AbortController().signal;
 		const queries = [
@@ -234,5 +278,44 @@ describe('Library Management query endpoints', () => {
 			'/api/v1/library/management/operations/job%2F1/results?after_ordinal=7&limit=40',
 			{ signal }
 		);
+	});
+
+	it('polls operation results until terminal work is visible', () => {
+		let operationState = 'running';
+		const query = getLibraryManagementOperationResultsQuery(
+			() => 'admin-a',
+			() => 'job-1',
+			() => 40,
+			() => operationState
+		) as unknown as {
+			refetchInterval: (query: {
+				state: { data?: { pages: LibraryManagementResultPageResponse[] } };
+			}) => number | false;
+		};
+		const page = (workState: string): LibraryManagementResultPageResponse => ({
+			items: [
+				{
+					plan: {} as LibraryManagementResultPageResponse['items'][number]['plan'],
+					work_state: workState,
+					failure_code: null,
+					result: {},
+					journal_states: []
+				}
+			],
+			next_after_ordinal: null,
+			has_more: false
+		});
+
+		expect(query.refetchInterval({ state: {} })).toBe(2000);
+		expect(query.refetchInterval({ state: { data: { pages: [page('pending')] } } })).toBe(2000);
+		operationState = 'succeeded';
+		expect(query.refetchInterval({ state: { data: { pages: [page('not_scheduled')] } } })).toBe(
+			false
+		);
+		operationState = 'stopped';
+		expect(query.refetchInterval({ state: { data: { pages: [page('pending')] } } })).toBe(false);
+		operationState = 'succeeded';
+		expect(query.refetchInterval({ state: { data: { pages: [page('pending')] } } })).toBe(2000);
+		expect(query.refetchInterval({ state: { data: { pages: [page('skipped')] } } })).toBe(false);
 	});
 });

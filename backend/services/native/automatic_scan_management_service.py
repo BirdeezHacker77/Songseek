@@ -37,6 +37,16 @@ class AutomaticScanManagementService:
         self._profiles = profiles
         self._planner = planner
 
+    async def schedule_scanned_album(self, local_album_id: str) -> str | None:
+        context = await self._store.get_album_identification_context(local_album_id)
+        if context is None or not context["tracks"]:
+            return None
+        return await self._schedule_identified_context(
+            local_album_id,
+            album_input_revisions(context["tracks"])[2],
+            context,
+        )
+
     async def schedule_identified_album(
         self,
         local_album_id: str,
@@ -47,12 +57,29 @@ class AutomaticScanManagementService:
         context = await self._store.get_album_identification_context(local_album_id)
         if context is None or not context["tracks"]:
             return None
-        tracks = context["tracks"]
+        return await self._schedule_identified_context(
+            local_album_id, expected_input_policy_revision, context
+        )
+
+    async def _schedule_identified_context(
+        self,
+        local_album_id: str,
+        expected_input_policy_revision: str,
+        context: dict,
+    ) -> str | None:
+        if (
+            album_input_revisions(context["tracks"])[2]
+            != expected_input_policy_revision
+        ):
+            return None
+        tracks = [
+            track for track in context["tracks"] if track["availability"] == "indexed"
+        ]
+        if not tracks:
+            return None
         tag_revision, file_revision, input_policy_revision = album_input_revisions(
             tracks
         )
-        if input_policy_revision != expected_input_policy_revision:
-            return None
         applied_policy_revisions = {
             str(track["applied_policy_revision"]) for track in tracks
         }

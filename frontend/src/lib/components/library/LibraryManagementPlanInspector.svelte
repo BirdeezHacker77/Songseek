@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ArrowRight, FileClock, Image, RotateCcw, Tags } from 'lucide-svelte';
+	import { ArrowRight, Eraser, FileClock, Image, RotateCcw, Tags } from 'lucide-svelte';
 
 	import { API } from '$lib/constants';
 	import type { LibraryManagementPlanItem } from '$lib/queries/library-management/types';
@@ -15,12 +15,14 @@
 		managementPlanArtist,
 		managementPlanTitle,
 		managementRestoration,
+		managementScrubbedRawTags,
 		managementSidecars,
 		managementStringList,
 		titleManagementValue,
 		type ManagementCollision,
 		type ManagementRestorationArtwork
 	} from './LibraryManagementDisplay';
+	import LibraryManagementLyricsEvidence from './LibraryManagementLyricsEvidence.svelte';
 
 	interface Props {
 		item: LibraryManagementPlanItem;
@@ -37,6 +39,7 @@
 	let { item, jobId, roots, reasonLabel, onresolve }: Props = $props();
 	const diffs = $derived([...managementFieldDiffs(item), ...managementCustomTagDiffs(item)]);
 	const restoration = $derived(managementRestoration(item));
+	const scrubbedRawTags = $derived(managementScrubbedRawTags(item));
 	const warnings = $derived(managementStringList(item.capability.warnings));
 	const blockers = $derived(managementStringList(item.capability.blockers));
 	const losses = $derived(managementStringList(item.capability.representation_losses));
@@ -154,9 +157,61 @@
 	</div>
 
 	{#if item.reason_code}
-		<p class="rounded-lg border border-error/20 bg-error/5 p-2 text-sm font-semibold text-error">
+		<p
+			class="rounded-lg border p-2 text-sm font-semibold {item.eligibility === 'warning'
+				? 'border-warning/25 bg-warning/5 text-warning'
+				: 'border-error/20 bg-error/5 text-error'}"
+		>
 			{reasonLabel(item.reason_code)}
 		</p>
+	{/if}
+
+	<LibraryManagementLyricsEvidence {item} />
+
+	{#if scrubbedRawTags.length}
+		<section class="rounded-xl border border-warning/30 bg-warning/5 p-3">
+			<div class="flex items-start justify-between gap-3">
+				<div class="flex items-start gap-2">
+					<Eraser class="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+					<div>
+						<h4 class="management-inspector-section-title">Unmanaged tags to remove</h4>
+						<p class="mt-1 text-xs text-base-content/55">
+							Explicit scrub will delete these native entries because they are not in the profile's
+							preserve list.
+						</p>
+					</div>
+				</div>
+				<span class="badge badge-warning badge-sm">{scrubbedRawTags.length}</span>
+			</div>
+			<div
+				class="mt-3 divide-y divide-warning/15 rounded-lg border border-warning/15 bg-base-100/60"
+			>
+				{#each scrubbedRawTags as tag (`${tag.key}:${tag.sha256 ?? ''}`)}
+					<div class="grid gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+						<div class="min-w-0">
+							<code class="break-all text-xs font-semibold">{tag.key}</code>
+							<p class="mt-1 break-words text-xs text-base-content/60">
+								{tag.valueKind === 'binary'
+									? 'Binary metadata'
+									: tag.values.join(' · ') || 'Empty value'}
+							</p>
+							{#if tag.truncated}
+								<small class="mt-1 block text-base-content/45">
+									Preview shortened · {tag.valueCount.toLocaleString()} values · {shortFingerprint(
+										tag.sha256
+									)}
+								</small>
+							{:else if tag.valueKind === 'binary'}
+								<small class="mt-1 block font-mono text-base-content/45">
+									{shortFingerprint(tag.sha256)}
+								</small>
+							{/if}
+						</div>
+						<span class="badge badge-warning badge-outline badge-sm">Remove</span>
+					</div>
+				{/each}
+			</div>
+		</section>
 	{/if}
 
 	{#if diffs.length}

@@ -11,6 +11,7 @@ export interface ManagementAuditEntry {
 	albumTitle: string | null;
 	albumArtist: string | null;
 	albumId: string | null;
+	albumMbid: string | null;
 	albumArtworkVersion: number | null;
 	format: string;
 	status: string;
@@ -31,6 +32,7 @@ export interface ManagementAuditDossier {
 	artist: string;
 	artworkUrl: string | null;
 	albumId: string | null;
+	albumMbid: string | null;
 	albumArtworkVersion: number | null;
 	entries: ManagementAuditEntry[];
 }
@@ -52,6 +54,7 @@ export function groupManagementAuditEntries(
 			artist: group.find((entry) => entry.albumArtist)?.albumArtist ?? 'Unknown artist',
 			artworkUrl: group.find((entry) => entry.artworkUrl)?.artworkUrl ?? null,
 			albumId: group.find((entry) => entry.albumId)?.albumId ?? null,
+			albumMbid: group.find((entry) => entry.albumMbid)?.albumMbid ?? null,
 			albumArtworkVersion:
 				group.find((entry) => entry.albumArtworkVersion !== null)?.albumArtworkVersion ?? null,
 			entries: group.sort((left, right) => left.ordinal - right.ordinal)

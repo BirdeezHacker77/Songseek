@@ -445,12 +445,12 @@ async def test_baseline_purge_requires_impact_typed_confirmation_and_is_idempote
     assert impact.baseline_count == 1
     assert impact.referenced_blob_count >= 1
 
-    with pytest.raises(ValidationError, match="PURGE BASELINES"):
+    with pytest.raises(ValidationError, match="CONFIRM"):
         await service.purge(
             LibraryManagementBaselinePurgeRequest(
                 impact_token=impact.impact_token,
                 expected_catalog_revision=impact.catalog_revision,
-                typed_confirmation="purge baselines",
+                typed_confirmation="confirm",
                 idempotency_key="purge-baselines-once",
             ),
             "admin",
@@ -459,7 +459,7 @@ async def test_baseline_purge_requires_impact_typed_confirmation_and_is_idempote
     request = LibraryManagementBaselinePurgeRequest(
         impact_token=impact.impact_token,
         expected_catalog_revision=impact.catalog_revision,
-        typed_confirmation="PURGE BASELINES",
+        typed_confirmation="CONFIRM",
         idempotency_key="purge-baselines-once",
     )
     purged = await service.purge(request, "admin")

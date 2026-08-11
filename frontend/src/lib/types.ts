@@ -1472,6 +1472,12 @@ export type NavidromeLyricsResponse = {
 	lines: LyricLine[];
 };
 
+export type LocalLyricsResponse = {
+	text: string;
+	is_synced: boolean;
+	lines: LyricLine[];
+};
+
 export type JellyfinLyricsLine = {
 	text: string;
 	start_seconds: number | null;

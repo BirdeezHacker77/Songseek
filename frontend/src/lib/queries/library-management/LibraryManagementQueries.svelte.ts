@@ -19,6 +19,49 @@ import type {
 	LibraryManagementTagEditorContext
 } from './types';
 
+type PreviewQuery = { state: { data?: LibraryManagementPreviewDetailResponse } };
+type ResultsQuery = {
+	state: { data?: { pages: LibraryManagementResultPageResponse[] } };
+};
+
+const activePreviewRefetchInterval = (jobId: string | null, query: PreviewQuery) => {
+	if (!jobId) return false;
+	const preview = query.state.data;
+	if (!preview) return 2000;
+	if (
+		preview.ready_for_confirmation ||
+		preview.stale ||
+		preview.expired ||
+		['failed', 'cancelled', 'discarded', 'stopped', 'succeeded'].includes(preview.state)
+	)
+		return false;
+	return 2000;
+};
+
+const activeResultsRefetchInterval = (
+	jobId: string | null,
+	operationState: string | null,
+	query: ResultsQuery
+) => {
+	if (!jobId) return false;
+	const terminalOperationStates = ['failed', 'cancelled', 'discarded', 'stopped', 'succeeded'];
+	if (operationState && !terminalOperationStates.includes(operationState)) {
+		return 2000;
+	}
+	const pages = query.state.data?.pages;
+	if (!pages) return 2000;
+	const hasPendingResults = pages.some((page) =>
+		page.items.some(
+			(item) => !['succeeded', 'failed', 'skipped', 'not_scheduled'].includes(item.work_state)
+		)
+	);
+	if (!hasPendingResults) return false;
+	if (operationState && ['failed', 'cancelled', 'discarded', 'stopped'].includes(operationState)) {
+		return false;
+	}
+	return 2000;
+};
+
 export const getLibraryManagementSettingsQueryOptions = (userId: string | null | undefined) =>
 	queryOptions({
 		queryKey: LibraryManagementQueryKeyFactory.settings(userId),
@@ -96,19 +139,7 @@ export const getLibraryManagementActivationPreviewQuery = (
 		const jobId = getJobId();
 		return {
 			enabled: Boolean(jobId),
-			refetchInterval: (query: { state: { data?: LibraryManagementPreviewDetailResponse } }) => {
-				if (!jobId) return false;
-				const preview = query.state.data;
-				if (!preview) return 2000;
-				if (
-					preview.ready_for_confirmation ||
-					preview.stale ||
-					preview.expired ||
-					['failed', 'cancelled', 'discarded', 'stopped'].includes(preview.state)
-				)
-					return false;
-				return 2000;
-			},
+			refetchInterval: (query: PreviewQuery) => activePreviewRefetchInterval(jobId, query),
 			queryKey: LibraryManagementQueryKeyFactory.activationPreview(getUserId(), jobId ?? ''),
 			queryFn: ({ signal }) =>
 				api.global.get<LibraryManagementPreviewDetailResponse>(
@@ -126,6 +157,7 @@ export const getLibraryManagementPreviewQuery = (
 		const jobId = getJobId();
 		return {
 			enabled: Boolean(jobId),
+			refetchInterval: (query: PreviewQuery) => activePreviewRefetchInterval(jobId, query),
 			queryKey: LibraryManagementQueryKeyFactory.preview(getUserId(), jobId ?? ''),
 			queryFn: ({ signal }) =>
 				api.global.get<LibraryManagementPreviewDetailResponse>(
@@ -189,6 +221,7 @@ export const getLibraryManagementOperationQuery = (
 		const jobId = getJobId();
 		return {
 			enabled: Boolean(jobId),
+			refetchInterval: (query: PreviewQuery) => activePreviewRefetchInterval(jobId, query),
 			queryKey: LibraryManagementQueryKeyFactory.operation(getUserId(), jobId ?? ''),
 			queryFn: ({ signal }) =>
 				api.global.get<LibraryManagementPreviewDetailResponse>(
@@ -201,13 +234,16 @@ export const getLibraryManagementOperationQuery = (
 export const getLibraryManagementOperationResultsQuery = (
 	getUserId: Getter<string | null | undefined>,
 	getJobId: Getter<string | null>,
-	getLimit: Getter<number> = () => 100
+	getLimit: Getter<number> = () => 100,
+	getOperationState: Getter<string | null> = () => null
 ) =>
 	createInfiniteQuery(() => {
 		const jobId = getJobId();
 		const limit = getLimit();
 		return {
 			enabled: Boolean(jobId),
+			refetchInterval: (query: ResultsQuery) =>
+				activeResultsRefetchInterval(jobId, getOperationState(), query),
 			queryKey: LibraryManagementQueryKeyFactory.operationResults(getUserId(), jobId ?? '', limit),
 			initialPageParam: -1,
 			queryFn: ({ pageParam, signal }) =>

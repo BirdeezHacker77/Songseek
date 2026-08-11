@@ -45,12 +45,12 @@ def _release() -> CanonicalReleaseDocument:
     )
 
 
-def _track() -> CanonicalTrackDocument:
+def _track(*, title: str = "The Chain") -> CanonicalTrackDocument:
     return CanonicalTrackDocument(
         local_track_id="track",
         source_track_revision=1,
         source_identity_revision=1,
-        title="The Chain",
+        title=title,
         artist_credits=(
             CanonicalArtistCredit(
                 display_name="Fleetwood Mac",
@@ -116,6 +116,30 @@ async def test_exact_normalized_signature_projects_plain_and_synced() -> None:
     assert result.synced_lyrics == "[00:01.000]Synced"
     repository.get_exact_lyrics.assert_awaited_once_with(
         track_name="The Chain",
+        artist_name="Fleetwood Mac",
+        album_name="Rumours",
+        duration_seconds=270,
+    )
+
+
+@pytest.mark.asyncio
+async def test_typographic_apostrophe_is_the_same_exact_signature() -> None:
+    repository = AsyncMock()
+    repository.get_exact_lyrics.return_value = LyricsLookupResult(
+        found=True,
+        candidate=_candidate(track_name="I Don't Want to Die Tonight"),
+    )
+    result = await LyricsProjectionService(repository).project(
+        settings=LyricsManagementSettings(enabled=True),
+        canonical_release=_release(),
+        canonical_track=_track(title="I Don’t Want to Die Tonight"),
+        duration_seconds=270.0,
+    )
+
+    assert result.status == "available"
+    assert result.plain_lyrics == "Plain"
+    repository.get_exact_lyrics.assert_awaited_once_with(
+        track_name="I Don’t Want to Die Tonight",
         artist_name="Fleetwood Mac",
         album_name="Rumours",
         duration_seconds=270,

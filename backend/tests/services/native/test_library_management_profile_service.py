@@ -186,6 +186,49 @@ def test_impact_distinguishes_harmless_restrictive_and_destructive(
     assert destructive_impact.preview_required is True
 
 
+@pytest.mark.parametrize(
+    ("assignment_field", "trigger"),
+    [
+        ("automatic_drop_imports", "drop_import"),
+        ("automatic_scan_discovered", "scan_discovered"),
+    ],
+)
+def test_enabling_another_trigger_reuses_current_write_authorization(
+    tmp_path: Path,
+    assignment_field: str,
+    trigger: str,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs, validate=True)
+    _activate(service, prefs)
+    current = service.get_settings()
+    proposed = prefs.get_library_management_settings_raw()
+    assignment = proposed.root_assignments[0]
+    setattr(assignment, assignment_field, True)
+
+    impact = service.preview_impact(
+        proposed,
+        expected_settings_revision=current.settings_revision,
+    )
+    saved = service.save_settings(
+        proposed,
+        expected_settings_revision=current.settings_revision,
+    )
+    prepared = service.prepare_automatic_profile(
+        root_id=assignment.root_id,
+        trigger=trigger,
+        expected_policy_revision=assignment.activation_policy_revision or "",
+    )
+
+    assert impact.classification == "harmless"
+    assert impact.preview_required is False
+    assert impact.affected_root_ids == [assignment.root_id]
+    assert "authorized write profile is unchanged" in impact.reasons[0]
+    assert getattr(saved.root_assignments[0], assignment_field) is True
+    assert saved.root_assignments[0].activation_preview_token == "verified"
+    assert prepared is not None
+
+
 def test_automatic_enablement_requires_bound_verified_activation(
     tmp_path: Path,
 ) -> None:

@@ -15,7 +15,7 @@ from models.free_music import FreeMusicStatus, FreeMusicTask
 _COLUMNS = (
     "id, user_id, kind, mbid, artist, title, status, identifier, licence_url, "
     "format, files_total, files_completed, bytes_total, bytes_downloaded, "
-    "attempts, error, created_at, updated_at"
+    "attempts, error, created_at, updated_at, track_count"
 )
 
 
@@ -28,6 +28,7 @@ def _row_to_task(row: sqlite3.Row) -> FreeMusicTask:
         artist=row["artist"],
         title=row["title"],
         status=row["status"],
+        track_count=row["track_count"],
         identifier=row["identifier"] or "",
         licence_url=row["licence_url"] or "",
         format=row["format"] or "",
@@ -69,27 +70,44 @@ class FreeMusicStore(PersistenceBase):
                     attempts INTEGER NOT NULL DEFAULT 0,
                     error TEXT,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    track_count INTEGER NOT NULL DEFAULT 0 CHECK(track_count >= 0)
                 );
                 CREATE INDEX IF NOT EXISTS idx_free_music_user
                     ON free_music_tasks(user_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_free_music_mbid
                     ON free_music_tasks(mbid);
             """)
+            try:
+                conn.execute(
+                    "ALTER TABLE free_music_tasks ADD COLUMN track_count "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK(track_count >= 0)"
+                )
+            except sqlite3.OperationalError as error:
+                if "duplicate column name" not in str(error).casefold():
+                    raise
             conn.commit()
         finally:
             conn.close()
 
     async def create(
-        self, task_id: str, user_id: str, kind: str, mbid: str, artist: str, title: str
+        self,
+        task_id: str,
+        user_id: str,
+        kind: str,
+        mbid: str,
+        artist: str,
+        title: str,
+        *,
+        track_count: int = 0,
     ) -> None:
         now = time.time()
 
         def operation(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO free_music_tasks "
-                "(id, user_id, kind, mbid, artist, title, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, user_id, kind, mbid, artist, title, status, created_at, updated_at, "
+                "track_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     user_id,
@@ -100,6 +118,7 @@ class FreeMusicStore(PersistenceBase):
                     FreeMusicStatus.SEARCHING,
                     now,
                     now,
+                    max(0, track_count),
                 ),
             )
 

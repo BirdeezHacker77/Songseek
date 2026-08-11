@@ -150,9 +150,9 @@ class FreeMusicService:
             raise ValidationError("Wait for this download to stop before retrying")
         if not await self._store.restart_terminal(task_id):
             raise ValidationError("That download is no longer available to retry")
-        self._spawn(task_id, task)
         refreshed = await self._store.get(task_id)
         assert refreshed is not None
+        self._spawn(task_id, refreshed)
         return refreshed
 
     async def remove(self, task_id: str, *, user_id: str, is_admin: bool) -> None:
@@ -204,19 +204,28 @@ class FreeMusicService:
             status=FreeMusicStatus.SEARCHING,
             created_at=time.time(),
             updated_at=time.time(),
+            track_count=max(0, track_count),
         )
         # the row exists before we return: the caller links the request to this id
-        await self._store.create(task_id, user_id, kind, mbid, artist, title)
-        self._spawn(task_id, task, track_count)
+        await self._store.create(
+            task_id,
+            user_id,
+            kind,
+            mbid,
+            artist,
+            title,
+            track_count=max(0, track_count),
+        )
+        self._spawn(task_id, task)
         return task_id
 
-    def _spawn(self, task_id: str, task: FreeMusicTask, track_count: int = 0) -> None:
+    def _spawn(self, task_id: str, task: FreeMusicTask) -> None:
         cancel = asyncio.Event()
         lifecycle_lock = asyncio.Lock()
         self._cancels[task_id] = cancel
         self._lifecycle_locks[task_id] = lifecycle_lock
         handle = asyncio.create_task(
-            self._run_guarded(task_id, task, track_count, cancel, lifecycle_lock)
+            self._run_guarded(task_id, task, cancel, lifecycle_lock)
         )
         self._tasks[task_id] = handle
         handle.add_done_callback(lambda t, tid=task_id: self._on_done(tid, t))
@@ -235,12 +244,11 @@ class FreeMusicService:
         self,
         task_id: str,
         task: FreeMusicTask,
-        track_count: int,
         cancel: asyncio.Event,
         lifecycle_lock: asyncio.Lock,
     ) -> None:
         try:
-            await self._run(task_id, task, track_count, cancel, lifecycle_lock)
+            await self._run(task_id, task, cancel, lifecycle_lock)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -251,12 +259,11 @@ class FreeMusicService:
         self,
         task_id: str,
         task: FreeMusicTask,
-        track_count: int,
         cancel: asyncio.Event,
         lifecycle_lock: asyncio.Lock,
     ) -> None:
         try:
-            candidates = await self._find_candidates(task, track_count)
+            candidates = await self._find_candidates(task, task.track_count)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user, not swallowed
             logger.warning("free_music.search_failed mbid=%s: %s", task.mbid, exc)
             await self._fail(
