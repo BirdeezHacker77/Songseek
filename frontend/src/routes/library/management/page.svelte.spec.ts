@@ -26,6 +26,11 @@ const h = vi.hoisted(() => ({
 		isLoading: false,
 		isError: false
 	} as Record<string, unknown>,
+	activity: {
+		data: { items: [], work_items: [] as Array<Record<string, unknown>> },
+		isLoading: false,
+		isError: false
+	},
 	operationsRender: vi.fn(),
 	settingsRender: vi.fn()
 }));
@@ -64,6 +69,10 @@ vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
 	getTargetLibrarySettingsQuery: () => h.settings
 }));
 
+vi.mock('$lib/queries/library/LibraryActivityQueries.svelte', () => ({
+	getLibraryActivityQuery: () => h.activity
+}));
+
 import LibraryManagementPage from './+page.svelte';
 
 let scrollSpy: ReturnType<typeof vi.spyOn>;
@@ -71,6 +80,7 @@ let scrollSections: HTMLElement[] = [];
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.activity.data.work_items = [];
 	window.history.replaceState(null, '', window.location.pathname);
 	scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
 	scrollSections = [];
@@ -102,6 +112,42 @@ describe('Library Management route page', () => {
 			.element(navigation.getByRole('link', { name: 'Overview' }))
 			.toHaveAttribute('aria-current', 'location');
 		expect(h.operationsRender).toHaveBeenCalledOnce();
+	});
+
+	it('adds compact live-work badges without replacing the section map', async () => {
+		h.activity.data.work_items = [
+			{
+				id: 'scan-1',
+				kind: 'scan',
+				state: 'running',
+				phase: 'indexing',
+				effect: 'catalog_only',
+				processed: 50,
+				total: 100,
+				unit: 'files',
+				indeterminate: false,
+				remaining_count: null
+			},
+			{
+				id: 'management-1',
+				kind: 'library_management',
+				state: 'running',
+				phase: 'applying',
+				effect: 'file_writing',
+				processed: 1,
+				total: 4,
+				unit: 'releases',
+				indeterminate: false,
+				remaining_count: null
+			}
+		];
+
+		render(LibraryManagementPage);
+
+		const navigation = page.getByRole('navigation', { name: 'Library Management sections' });
+		await expect.element(navigation.getByText('2 tasks')).toBeVisible();
+		await expect.element(navigation.getByText('50%')).toBeVisible();
+		await expect.element(navigation.getByText('Writing')).toBeVisible();
 	});
 
 	it('highlights the section currently beneath the sticky workspace map', async () => {

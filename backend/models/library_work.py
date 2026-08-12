@@ -147,6 +147,46 @@ class OperationJob(AppStruct):
     event_revision: int = 0
 
 
+class LibraryWorkItem(AppStruct):
+    id: str
+    kind: Literal[
+        "scan",
+        "identification",
+        "identity_preparation",
+        "reidentification",
+        "identity_review",
+        "maintenance",
+        "library_management",
+        "recovery",
+    ]
+    state: str
+    phase: str | None = None
+    mode: str | None = None
+    effect: Literal["catalog_only", "file_writing", "attention"] = "catalog_only"
+    processed: int = 0
+    total: int | None = None
+    unit: Literal["files", "albums", "releases", "items"] = "items"
+    indeterminate: bool = False
+    remaining_count: int | None = None
+    subject_count: int | None = None
+    started_at: float | None = None
+    updated_at: float = 0.0
+    origin: str | None = None
+    profile_name: str | None = None
+    scope_label: str | None = None
+    new_count: int = 0
+    changed_count: int = 0
+    missing_count: int = 0
+    warning_count: int = 0
+    blocked_count: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    priority: int = 100
+    failure_event_id: str | None = None
+    failure_at: float | None = None
+
+
 class OperationWorkItem(AppStruct):
     ordinal: int
     expected_subject_revision: int

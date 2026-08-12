@@ -65,6 +65,9 @@ from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.library_scan_coordinator import LibraryScanCoordinator
 from services.native.library_ownership_service import LibraryOwnershipService
 from services.native.identification_queue_service import IdentificationQueueService
+from services.native.library_administrative_work_service import (
+    LibraryAdministrativeWorkService,
+)
 from services.native.album_coverage_service import AlbumCoverageService
 from services.native.album_identification_service import AlbumIdentificationService
 from services.native.reidentification_service import ReidentificationService
@@ -160,6 +163,7 @@ from .service_providers import (
     get_target_library_scan_coordinator,
     get_target_library_ownership_service,
     get_target_identification_queue,
+    get_library_administrative_work_service,
     get_target_album_coverage_service,
     get_target_album_identification_service,
     get_target_reidentification_service,
@@ -283,6 +287,10 @@ TargetLibraryOwnershipServiceDep = Annotated[
 ]
 TargetIdentificationQueueDep = Annotated[
     IdentificationQueueService, Depends(get_target_identification_queue)
+]
+LibraryAdministrativeWorkServiceDep = Annotated[
+    LibraryAdministrativeWorkService,
+    Depends(get_library_administrative_work_service),
 ]
 TargetAlbumIdentificationServiceDep = Annotated[
     AlbumIdentificationService, Depends(get_target_album_identification_service)

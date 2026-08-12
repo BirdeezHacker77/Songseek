@@ -203,6 +203,34 @@ def _plan_item(job_id: str, ordinal: int) -> LibraryManagementPlanItem:
 
 
 @pytest.mark.asyncio
+async def test_active_administrative_work_includes_management_context(
+    store: NativeLibraryStore,
+) -> None:
+    job_id = "management-activity"
+    snapshot = msgspec.structs.replace(
+        _job_snapshot(job_id),
+        summary_json=json.dumps({"selected_item_count": 200}),
+    )
+    await store.create_library_management_job(
+        OperationJob(
+            id=job_id,
+            kind="library_management",
+            input_catalog_revision=0,
+            created_at=10,
+        ),
+        snapshot,
+    )
+
+    rows = await store.list_active_administrative_library_work(failed_after=0)
+
+    row = next(value for value in rows if value["id"] == job_id)
+    assert row["management_mode"] == "preview"
+    assert row["management_phase"] == "planning"
+    assert json.loads(row["management_summary_json"])["selected_item_count"] == 200
+    assert json.loads(row["journal_states_json"]) == []
+
+
+@pytest.mark.asyncio
 async def test_planning_progress_does_not_invalidate_operation_controls(
     store: NativeLibraryStore,
 ) -> None:
@@ -1227,6 +1255,10 @@ async def test_management_selection_pages_are_stable_and_expand_track_albums(
             ),
         )
     )
+    exact_count = await store.count_library_management_selection(track_selection)
+    expanded_count = await store.count_library_management_selection(
+        msgspec.structs.replace(track_selection, expand_album_bundles=True)
+    )
 
     assert [value.local_track_id for value in exact.subjects] == ["track-2"]
     assert exact.subjects[0].track_title == "Second Track"
@@ -1251,6 +1283,8 @@ async def test_management_selection_pages_are_stable_and_expand_track_albums(
         "track-2",
     }
     assert [value.local_track_id for value in filtered.subjects] == ["track-2"]
+    assert exact_count == 1
+    assert expanded_count == 2
 
 
 @pytest.mark.asyncio

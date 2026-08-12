@@ -439,6 +439,7 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
     assert duplicate.job_id == handle.job_id
     assert duplicate.preview_token == handle.preview_token
     assert snapshot.phase == "ready"
+    assert json.loads(snapshot.summary_json)["selected_item_count"] == 1
     assert operation is not None and operation["state"] == "ready"
     assert len(plan) == 1
     assert plan[0].eligibility in {"eligible", "warning"}
@@ -472,6 +473,34 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
     assert sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == [
         "source.flac"
     ]
+
+
+@pytest.mark.asyncio
+async def test_preview_refuses_a_catalog_change_while_counting_its_scope(
+    tmp_path: Path,
+) -> None:
+    (
+        _root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    planner = _planner(tmp_path, store, preferences)
+    store.get_catalog_revision = AsyncMock(side_effect=[0, 1])
+
+    with pytest.raises(StaleRevisionError, match="catalog changed"):
+        await planner.create_preview(
+            selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+            profile_id=PICARD_ORGANIZER_PROFILE_ID,
+            expected_settings_revision=settings_revision,
+            expected_policy_revision=policy_revision,
+            actor_user_id="admin",
+            idempotency_key="catalog-count-race",
+        )
+
+    assert await store.get_operation_by_idempotency_key("catalog-count-race") is None
 
 
 @pytest.mark.asyncio

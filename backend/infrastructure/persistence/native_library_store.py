@@ -18048,6 +18048,98 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._write(operation)
 
+    def _library_management_selection_predicate(
+        self, selection: NormalizedLibraryManagementSelection
+    ) -> tuple[list[str], list[Any]]:
+        clauses = [
+            "album.retired_into_album_id IS NULL",
+            "track.availability = 'indexed'",
+        ]
+        parameters: list[Any] = []
+        ids_json = json.dumps(selection.ids)
+        if selection.kind == "roots":
+            if not selection.root_scopes:
+                raise ValidationError("A root selection cannot be empty.")
+            scopes_json = json.dumps(
+                [msgspec.to_builtins(scope) for scope in selection.root_scopes]
+            )
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(?) scope WHERE "
+                "json_extract(scope.value, '$.root_id') = track.root_id AND ("
+                "json_extract(scope.value, '$.relative_prefix') IS NULL OR "
+                "track.relative_path = json_extract(scope.value, '$.relative_prefix') OR "
+                "substr(track.relative_path, 1, "
+                "length(json_extract(scope.value, '$.relative_prefix')) + 1) = "
+                "json_extract(scope.value, '$.relative_prefix') || '/'))"
+            )
+            parameters.append(scopes_json)
+        elif selection.kind == "artists":
+            if not selection.ids:
+                raise ValidationError("An artist selection cannot be empty.")
+            clauses.append(
+                "(album.album_artist_id IN (SELECT value FROM json_each(?)) OR "
+                "EXISTS (SELECT 1 FROM local_album_artists selected_album_artist "
+                "WHERE selected_album_artist.local_album_id = album.id "
+                "AND selected_album_artist.local_artist_id IN "
+                "(SELECT value FROM json_each(?))) OR "
+                "EXISTS (SELECT 1 FROM local_track_artists selected_track_artist "
+                "WHERE selected_track_artist.local_track_id = track.id "
+                "AND selected_track_artist.local_artist_id IN "
+                "(SELECT value FROM json_each(?))))"
+            )
+            parameters.extend((ids_json, ids_json, ids_json))
+        elif selection.kind == "albums":
+            if not selection.ids:
+                raise ValidationError("An album selection cannot be empty.")
+            clauses.append("album.id IN (SELECT value FROM json_each(?))")
+            parameters.append(ids_json)
+        elif selection.kind == "tracks":
+            if not selection.ids:
+                raise ValidationError("A track selection cannot be empty.")
+            clauses.append("track.id IN (SELECT value FROM json_each(?))")
+            parameters.append(ids_json)
+        elif selection.kind == "filter":
+            self._append_management_filter(
+                clauses, parameters, selection.catalog_filter
+            )
+        else:
+            raise ValidationError("Unknown management selection kind.")
+
+        if selection.expand_album_bundles and selection.kind != "albums":
+            selected_where = " AND ".join(clauses)
+            selected_where = selected_where.replace(
+                "track.", "selected_track."
+            ).replace("album.", "selected_album.")
+            clauses = [
+                "album.retired_into_album_id IS NULL",
+                "track.availability = 'indexed'",
+                "album.id IN (SELECT DISTINCT selected_track.local_album_id "
+                "FROM local_tracks selected_track JOIN local_albums selected_album "
+                "ON selected_album.id = selected_track.local_album_id WHERE "
+                + selected_where
+                + ")",
+            ]
+        return clauses, parameters
+
+    async def count_library_management_selection(
+        self, selection: NormalizedLibraryManagementSelection
+    ) -> int:
+        """Use the planner predicate so the progress denominator cannot drift."""
+
+        def operation(connection: sqlite3.Connection) -> int:
+            clauses, parameters = self._library_management_selection_predicate(
+                selection
+            )
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM local_tracks track "
+                "JOIN local_albums album ON album.id = track.local_album_id WHERE "
+                + " AND ".join(clauses),
+                parameters,
+            ).fetchone()
+            return int(row["count"] or 0)
+
+        return await self._read(operation)
+
     async def list_library_management_selection_page(
         self,
         selection: NormalizedLibraryManagementSelection,
@@ -18061,74 +18153,9 @@ class NativeLibraryStore(PersistenceBase):
             raise ValidationError("Management selection page size is out of range.")
 
         def operation(connection: sqlite3.Connection) -> LibraryManagementSelectionPage:
-            clauses = [
-                "album.retired_into_album_id IS NULL",
-                "track.availability = 'indexed'",
-            ]
-            parameters: list[Any] = []
-            ids_json = json.dumps(selection.ids)
-            if selection.kind == "roots":
-                if not selection.root_scopes:
-                    raise ValidationError("A root selection cannot be empty.")
-                scopes_json = json.dumps(
-                    [msgspec.to_builtins(scope) for scope in selection.root_scopes]
-                )
-                clauses.append(
-                    "EXISTS (SELECT 1 FROM json_each(?) scope WHERE "
-                    "json_extract(scope.value, '$.root_id') = track.root_id AND ("
-                    "json_extract(scope.value, '$.relative_prefix') IS NULL OR "
-                    "track.relative_path = json_extract(scope.value, '$.relative_prefix') OR "
-                    "substr(track.relative_path, 1, "
-                    "length(json_extract(scope.value, '$.relative_prefix')) + 1) = "
-                    "json_extract(scope.value, '$.relative_prefix') || '/'))"
-                )
-                parameters.append(scopes_json)
-            elif selection.kind == "artists":
-                if not selection.ids:
-                    raise ValidationError("An artist selection cannot be empty.")
-                clauses.append(
-                    "(album.album_artist_id IN (SELECT value FROM json_each(?)) OR "
-                    "EXISTS (SELECT 1 FROM local_album_artists selected_album_artist "
-                    "WHERE selected_album_artist.local_album_id = album.id "
-                    "AND selected_album_artist.local_artist_id IN "
-                    "(SELECT value FROM json_each(?))) OR "
-                    "EXISTS (SELECT 1 FROM local_track_artists selected_track_artist "
-                    "WHERE selected_track_artist.local_track_id = track.id "
-                    "AND selected_track_artist.local_artist_id IN "
-                    "(SELECT value FROM json_each(?))))"
-                )
-                parameters.extend((ids_json, ids_json, ids_json))
-            elif selection.kind == "albums":
-                if not selection.ids:
-                    raise ValidationError("An album selection cannot be empty.")
-                clauses.append("album.id IN (SELECT value FROM json_each(?))")
-                parameters.append(ids_json)
-            elif selection.kind == "tracks":
-                if not selection.ids:
-                    raise ValidationError("A track selection cannot be empty.")
-                clauses.append("track.id IN (SELECT value FROM json_each(?))")
-                parameters.append(ids_json)
-            elif selection.kind == "filter":
-                self._append_management_filter(
-                    clauses, parameters, selection.catalog_filter
-                )
-            else:
-                raise ValidationError("Unknown management selection kind.")
-
-            if selection.expand_album_bundles and selection.kind != "albums":
-                selected_where = " AND ".join(clauses)
-                selected_where = selected_where.replace(
-                    "track.", "selected_track."
-                ).replace("album.", "selected_album.")
-                clauses = [
-                    "album.retired_into_album_id IS NULL",
-                    "track.availability = 'indexed'",
-                    "album.id IN (SELECT DISTINCT selected_track.local_album_id "
-                    "FROM local_tracks selected_track JOIN local_albums selected_album "
-                    "ON selected_album.id = selected_track.local_album_id WHERE "
-                    + selected_where
-                    + ")",
-                ]
+            clauses, parameters = self._library_management_selection_predicate(
+                selection
+            )
 
             if cursor is not None:
                 clauses.append(
@@ -18496,6 +18523,7 @@ class NativeLibraryStore(PersistenceBase):
                 else int(existing_summary.get("expanded_track_count", 0))
             )
             summary = {
+                "selected_item_count": existing_summary.get("selected_item_count"),
                 "item_count": int(counts["item_count"] or 0),
                 "bundle_count": int(counts["bundle_count"] or 0),
                 "eligible_count": int(counts["eligible_count"] or 0),
@@ -23304,6 +23332,39 @@ class NativeLibraryStore(PersistenceBase):
                 + " AND ".join(clauses)
                 + " ORDER BY created_at DESC, id DESC LIMIT ?",
                 (*parameters, min(max(limit, 1), 51)),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def list_active_administrative_library_work(
+        self, *, failed_after: float, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = connection.execute(
+                "SELECT job.*, management.mode AS management_mode, "
+                "management.origin AS management_origin, "
+                "management.phase AS management_phase, "
+                "management.summary_json AS management_summary_json, "
+                "json_extract(management.profile_snapshot_json, '$.profile.name') "
+                "AS management_profile_name, "
+                "json_extract(repair.scope_json, '$.purpose') AS repair_purpose, "
+                "bulk.action AS bulk_action, reident.local_album_id, album.title album_title, "
+                "COALESCE((SELECT json_group_array(state) FROM ("
+                "SELECT DISTINCT journal.state state FROM library_file_mutation_journal journal "
+                "WHERE journal.job_id=job.id ORDER BY journal.state)), '[]') journal_states_json "
+                "FROM library_operation_jobs job "
+                "LEFT JOIN library_management_job_snapshots management "
+                "ON management.job_id=job.id "
+                "LEFT JOIN library_repair_snapshots repair ON repair.job_id=job.id "
+                "LEFT JOIN library_bulk_review_snapshots bulk ON bulk.job_id=job.id "
+                "LEFT JOIN library_reidentification_snapshots reident ON reident.job_id=job.id "
+                "LEFT JOIN local_albums album ON album.id=reident.local_album_id "
+                "WHERE job.state IN ('queued','running','paused') OR "
+                "(job.state='failed' AND job.terminal_at>=?) "
+                "ORDER BY CASE job.state WHEN 'failed' THEN 0 WHEN 'running' THEN 1 "
+                "WHEN 'paused' THEN 2 ELSE 3 END, job.updated_at DESC, job.id DESC LIMIT ?",
+                (failed_after, min(max(limit, 1), 20)),
             ).fetchall()
             return [dict(row) for row in rows]
 

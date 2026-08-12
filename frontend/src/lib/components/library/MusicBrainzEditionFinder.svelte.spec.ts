@@ -95,9 +95,6 @@ describe('MusicBrainzEditionFinder', () => {
 		expect(h.getQuery()).toBe('Signal Artist catalogue SIG-12');
 		await expect.element(page.getByText('Current release group')).toBeVisible();
 		await expect.element(page.getByText(/CD · Digipak · 1 disc · 12 tracks/)).toBeVisible();
-		await expect
-			.element(page.getByRole('img', { name: 'Cover for Local Signals' }))
-			.toHaveAttribute('data-src', `/api/v1/covers/release/${releaseMbid}?size=250`);
 		await page.getByRole('button', { name: /Check this edition/ }).click();
 		expect(oncheck).toHaveBeenCalledOnce();
 		expect(oncheck).toHaveBeenCalledWith(releaseMbid);

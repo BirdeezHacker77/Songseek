@@ -11,13 +11,40 @@
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import LibraryOperationsPanel from '$lib/components/library/LibraryOperationsPanel.svelte';
 	import SettingsLibraryManagement from '$lib/components/settings/SettingsLibraryManagement.svelte';
+	import { getLibraryActivityQuery } from '$lib/queries/library/LibraryActivityQueries.svelte';
 	import { getTargetLibrarySettingsQuery } from '$lib/queries/library/LibraryPolicyQueries.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import { onMount } from 'svelte';
 
 	const settingsQuery = getTargetLibrarySettingsQuery(() => authStore.isAdmin);
+	const activityQuery = getLibraryActivityQuery(() => authStore.user?.id);
 	const roots = $derived(settingsQuery.data?.library_roots ?? []);
 	const policyRevision = $derived(settingsQuery.data?.policy_revision ?? '');
+	const workItems = $derived(activityQuery.data?.work_items ?? []);
+	const scanWork = $derived(
+		workItems.find((item) => item.kind === 'scan' || item.kind === 'identification') ?? null
+	);
+	const managementWork = $derived(
+		workItems.find((item) => item.kind === 'library_management' || item.kind === 'recovery') ?? null
+	);
+	const overviewBadge = $derived(
+		workItems.length ? `${workItems.length} ${workItems.length === 1 ? 'task' : 'tasks'}` : null
+	);
+	const scanBadge = $derived.by(() => {
+		if (!scanWork) return null;
+		if (scanWork.effect === 'attention') return 'Needs attention';
+		if (scanWork.remaining_count !== null) return `${scanWork.remaining_count} left`;
+		if (scanWork.total && !scanWork.indeterminate) {
+			return `${Math.min(100, Math.round((scanWork.processed / scanWork.total) * 100))}%`;
+		}
+		return scanWork.state === 'queued' ? 'Queued' : 'Running';
+	});
+	const managementBadge = $derived.by(() => {
+		if (!managementWork) return null;
+		if (managementWork.effect === 'attention') return 'Needs attention';
+		if (managementWork.effect === 'file_writing') return 'Writing';
+		return managementWork.state === 'queued' ? 'Queued' : 'Previewing';
+	});
 	const workspaceSectionIds = [
 		'operations',
 		'scanning-controls',
@@ -176,6 +203,7 @@
 			>
 				<SlidersHorizontal class="h-4 w-4" />
 				<span>Overview</span>
+				{#if overviewBadge}<small class="library-work-nav-badge">{overviewBadge}</small>{/if}
 			</a>
 			<a
 				href="#scanning-controls"
@@ -184,6 +212,7 @@
 			>
 				<ScanSearch class="h-4 w-4" />
 				<span>Scan &amp; identify</span>
+				{#if scanBadge}<small class="library-work-nav-badge">{scanBadge}</small>{/if}
 			</a>
 			<a
 				href="#management-controls"
@@ -192,6 +221,7 @@
 			>
 				<FolderCog class="h-4 w-4" />
 				<span>Manage files</span>
+				{#if managementBadge}<small class="library-work-nav-badge">{managementBadge}</small>{/if}
 			</a>
 			<a
 				href="#management-settings"

@@ -106,6 +106,7 @@ class LibraryManagementPreviewHandle(msgspec.Struct, frozen=True, kw_only=True):
 
 
 class LibraryManagementPreviewSummary(msgspec.Struct, frozen=True, kw_only=True):
+    selected_item_count: int | None = None
     item_count: int = 0
     bundle_count: int = 0
     eligible_count: int = 0

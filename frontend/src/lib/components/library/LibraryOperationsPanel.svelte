@@ -40,6 +40,7 @@
 	import LibraryRepairPanel from './LibraryRepairPanel.svelte';
 	import LibraryManagementControlRoom from './LibraryManagementControlRoom.svelte';
 	import LibraryManagementActionDesk from './LibraryManagementActionDesk.svelte';
+	import LibraryCurrentWorkCard from './LibraryCurrentWorkCard.svelte';
 
 	const activityQuery = getLibraryActivityQuery(() => authStore.user?.id);
 	const runsQuery = getCurrentLibraryRunsQuery(() => authStore.isAdmin);
@@ -199,6 +200,8 @@
 			</p>
 		</div>
 	</div>
+
+	<LibraryCurrentWorkCard />
 
 	<LibraryManagementActionDesk />
 

@@ -454,6 +454,17 @@ def get_target_identification_queue() -> "IdentificationQueueService":
 
 
 @singleton
+def get_library_administrative_work_service() -> "LibraryAdministrativeWorkService":
+    from services.native.library_administrative_work_service import (
+        LibraryAdministrativeWorkService,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    return LibraryAdministrativeWorkService(get_native_library_store())
+
+
+@singleton
 def get_target_album_identification_service() -> "AlbumIdentificationService":
     from services.native.album_candidate_service import AlbumCandidateService
     from services.native.album_evidence_engine import AlbumEvidenceEngine

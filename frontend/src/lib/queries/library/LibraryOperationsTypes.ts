@@ -37,8 +37,50 @@ export interface LibraryActivityItem {
 	foreground_operation_count: number;
 }
 
+export type LibraryWorkKind =
+	| 'scan'
+	| 'identification'
+	| 'identity_preparation'
+	| 'reidentification'
+	| 'identity_review'
+	| 'maintenance'
+	| 'library_management'
+	| 'recovery';
+
+export interface LibraryWorkItem {
+	id: string;
+	kind: LibraryWorkKind;
+	state: string;
+	phase: string | null;
+	mode: string | null;
+	effect: 'catalog_only' | 'file_writing' | 'attention';
+	processed: number;
+	total: number | null;
+	unit: 'files' | 'albums' | 'releases' | 'items';
+	indeterminate: boolean;
+	remaining_count: number | null;
+	subject_count: number | null;
+	started_at: number | null;
+	updated_at: number;
+	origin: string | null;
+	profile_name: string | null;
+	scope_label: string | null;
+	new_count: number;
+	changed_count: number;
+	missing_count: number;
+	warning_count: number;
+	blocked_count: number;
+	succeeded_count: number;
+	failed_count: number;
+	skipped_count: number;
+	priority: number;
+	failure_event_id: string | null;
+	failure_at: number | null;
+}
+
 export interface LibraryActivityResponse {
 	items: LibraryActivityItem[];
+	work_items: LibraryWorkItem[];
 }
 
 export type ScanKind = 'incremental' | 'rescan_files' | 'policy_reconcile';

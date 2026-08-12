@@ -323,6 +323,14 @@ class LibraryManagementPlanner:
                 )
         pinned = self.pin_profile(settings, profile)
         naming_script = pinned.naming_script
+        catalog_revision = await self._store.get_catalog_revision()
+        selected_item_count = await self._store.count_library_management_selection(
+            normalized
+        )
+        if await self._store.get_catalog_revision() != catalog_revision:
+            raise StaleRevisionError(
+                "The library catalog changed while the preview scope was counted."
+            )
         now = self._clock()
         preview_ttl_seconds = settings.preview_retention_hours * 60 * 60
         job_id = (
@@ -332,7 +340,6 @@ class LibraryManagementPlanner:
         )
         token = _preview_token(job_id, idempotency_key)
         token_hash = _sha256_text(token)
-        catalog_revision = await self._store.get_catalog_revision()
         snapshot = LibraryManagementJobSnapshot(
             job_id=job_id,
             mode="preview",
@@ -355,6 +362,7 @@ class LibraryManagementPlanner:
             intent_json=_json(tag_edit_intent) if tag_edit_intent is not None else "{}",
             summary_json=_json(
                 {
+                    "selected_item_count": selected_item_count,
                     "expanded_track_count": normalized.expanded_track_count,
                 }
             ),

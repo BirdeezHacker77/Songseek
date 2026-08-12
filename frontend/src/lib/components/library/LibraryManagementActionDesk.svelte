@@ -60,7 +60,6 @@
 	);
 	const requestRun = requestLibraryRun();
 
-	const scanActivity = $derived(activityQuery.data?.items.find((item) => item.kind === 'scan'));
 	const identificationActivity = $derived(
 		activityQuery.data?.items.find((item) => item.kind === 'identification')
 	);
@@ -227,12 +226,6 @@
 						).toLocaleString()} albums</span
 					>
 				</div>
-				{#if runsQuery.data?.active}<progress
-						class="progress progress-primary w-full"
-						value={scanActivity?.processed ?? 0}
-						max={Math.max(1, scanActivity?.total ?? 1)}
-						aria-label="Current scan progress"
-					></progress>{/if}
 			{/if}
 			<p class="library-action-explainer">
 				Finds new, changed, and missing files · updates the catalog · queues album identification.

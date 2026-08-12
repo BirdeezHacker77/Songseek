@@ -4,7 +4,7 @@ import { render } from 'vitest-browser-svelte';
 import '../../../app.css';
 
 const h = vi.hoisted(() => ({
-	activity: { data: { items: [] }, isError: false },
+	activity: { data: { items: [], work_items: [] }, isError: false },
 	runs: {
 		data: { active: null as Record<string, unknown> | null, queued: null },
 		isError: false

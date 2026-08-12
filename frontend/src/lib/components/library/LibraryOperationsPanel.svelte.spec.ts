@@ -4,7 +4,10 @@ import { render } from 'vitest-browser-svelte';
 import type { LibraryActivityItem, ScanRun } from '$lib/queries/library/LibraryOperationsTypes';
 
 const h = vi.hoisted(() => ({
-	activity: { data: { items: [] }, isLoading: false, isError: false } as Record<string, unknown>,
+	activity: { data: { items: [], work_items: [] }, isLoading: false, isError: false } as Record<
+		string,
+		unknown
+	>,
 	runs: { data: { active: null, queued: null }, isLoading: false, isError: false } as Record<
 		string,
 		unknown

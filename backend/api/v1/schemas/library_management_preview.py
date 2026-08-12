@@ -172,6 +172,7 @@ class LibraryManagementBaselinePurgeResponse(AppStruct):
 
 
 class LibraryManagementPreviewSummaryResponse(AppStruct):
+    selected_item_count: int | None = None
     item_count: int = 0
     bundle_count: int = 0
     eligible_count: int = 0

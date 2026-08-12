@@ -340,6 +340,7 @@ export interface LibraryManagementTagEditPreviewRequest {
 }
 
 export interface LibraryManagementPreviewSummary {
+	selected_item_count: number | null;
 	item_count: number;
 	bundle_count: number;
 	eligible_count: number;
