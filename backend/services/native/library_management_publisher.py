@@ -19,6 +19,10 @@ from pathlib import Path, PurePosixPath
 
 import msgspec
 
+from api.v1.schemas.library_management import (
+    picard_style_organizer_profile,
+    settings_revision,
+)
 from core.exceptions import (
     ConflictError,
     LibraryManagementDestinationConflictError,
@@ -57,7 +61,11 @@ from models.library_management import (
     LibraryManagementPublishedImportFile,
     ManagementBlobKind,
 )
-from models.library_management_planning import PinnedLibraryManagementProfile
+from models.library_management_planning import (
+    PinnedLibraryManagementProfile,
+    naming_policy_revision,
+    pin_library_management_profile,
+)
 from services.native.artwork_projection_service import merge_embedded_artwork
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.file_revision import revision_from_stat
@@ -68,9 +76,11 @@ from services.native.library_filesystem_coordinator import (
     unlink_rooted,
 )
 from services.native.library_policy_resolver import LibraryPolicyResolver
+from services.native.library_management_profile_service import (
+    LibraryManagementProfileService,
+)
 from services.native.recycle_bin import recycle
 from services.preferences_service import PreferencesService
-from api.v1.schemas.library_management import picard_style_organizer_profile
 
 logger = logging.getLogger(__name__)
 _JOURNAL_NAMESPACE = uuid.UUID("c646c2dd-f0cc-4c9d-8b2c-feb0a8a660c9")
@@ -438,6 +448,7 @@ class LibraryManagementPublisher:
                     self._root_paths(bundle.policy_revision)
                     for value in prepared:
                         await self._recover_import_publish_boundary(value, roots)
+                    self._validate_automatic_import_configuration(bundle)
                     await asyncio.to_thread(
                         self._recheck_import_bundle, prepared, roots
                     )
@@ -447,6 +458,7 @@ class LibraryManagementPublisher:
                     published = tuple(
                         [await self._published_import_file(value) for value in prepared]
                     )
+                    self._validate_automatic_import_configuration(bundle)
                     committed = await catalog_commit(bundle_id, published)
                     if len(committed) != len(prepared):
                         raise ValidationError(
@@ -645,6 +657,17 @@ class LibraryManagementPublisher:
                 raise ValidationError(
                     "An automatic import needs an authoritative release-track mapping."
                 )
+            if value.pinned_profile is not None:
+                expected_naming_revision = naming_policy_revision(value.pinned_profile)
+                if value.naming_policy_revision is None:
+                    if value.pinned_profile.multi_disc_naming_script is not None:
+                        raise ValidationError(
+                            "A multi-disc automatic import needs sealed naming-policy evidence."
+                        )
+                elif value.naming_policy_revision != expected_naming_revision:
+                    raise ValidationError(
+                        "An automatic import naming-policy revision is invalid."
+                    )
             for artifact in value.artifacts:
                 if (artifact.source_path is None) == (artifact.content is None):
                     raise ValidationError(
@@ -2459,21 +2482,110 @@ class LibraryManagementPublisher:
         profile = next(
             (value for value in current.profiles if value.id == pinned.profile.id), None
         )
-        naming = next(
-            (
-                value
-                for value in current.naming_scripts
-                if value.id == pinned.naming_script.id
-            ),
-            None,
+        current_scripts = {value.id: value for value in current.naming_scripts}
+        current_standard = current_scripts.get(pinned.naming_script.id)
+        current_multi = (
+            current_scripts.get(pinned.multi_disc_naming_script.id)
+            if pinned.multi_disc_naming_script is not None
+            else None
         )
         if (
             profile is None
-            or profile.revision != snapshot.profile_revision
-            or naming is None
-            or naming.revision != snapshot.naming_revision
+            or pinned.profile.revision != snapshot.profile_revision
+            or current_standard is None
+            or current_standard.revision != pinned.naming_script.revision
+            or (
+                pinned.multi_disc_naming_script is not None
+                and (
+                    current_multi is None
+                    or current_multi.revision
+                    != pinned.multi_disc_naming_script.revision
+                )
+            )
+            or naming_policy_revision(pinned) != snapshot.naming_revision
         ):
             raise StaleRevisionError("The management profile changed after preview.")
+
+    def _validate_automatic_import_configuration(
+        self, bundle: LibraryManagementImportBundle
+    ) -> None:
+        managed = [value for value in bundle.files if value.pinned_profile is not None]
+        if not managed:
+            return
+        current = self._preferences.get_library_management_settings_raw()
+        if {value.settings_revision for value in managed} != {
+            settings_revision(current)
+        }:
+            raise StaleRevisionError(
+                "Library Management settings changed before automatic publication."
+            )
+        policy = LibraryPolicyResolver(
+            self._preferences.get_typed_library_settings_raw()
+        )
+        if policy.policy_revision != bundle.policy_revision:
+            raise StaleRevisionError(
+                "Library policy changed before automatic publication."
+            )
+        assignments = {value.root_id: value for value in current.root_assignments}
+        trigger_field = (
+            "automatic_acquisitions"
+            if bundle.origin == "acquisition"
+            else "automatic_drop_imports"
+        )
+        for request in managed:
+            assignment = assignments.get(request.destination_root_id)
+            if (
+                assignment is None
+                or not assignment.enabled
+                or not getattr(assignment, trigger_field)
+            ):
+                raise StaleRevisionError(
+                    "Automatic Library Management is no longer enabled for this root."
+                )
+            profile_id = assignment.profile_id or current.default_profile_id
+            source = next(
+                (value for value in current.profiles if value.id == profile_id), None
+            )
+            if source is None or request.pinned_profile is None:
+                raise StaleRevisionError(
+                    "The automatic Library Management profile changed."
+                )
+            effective = LibraryManagementProfileService._effective_profile(
+                current, assignment
+            )
+            try:
+                current_pinned = pin_library_management_profile(current, effective)
+            except ValueError as error:
+                raise StaleRevisionError(
+                    "The automatic Library Management profile changed."
+                ) from error
+            expected = naming_policy_revision(current_pinned)
+            request_naming_revision = request.naming_policy_revision
+            if (
+                request_naming_revision is None
+                and request.pinned_profile.multi_disc_naming_script is None
+            ):
+                request_naming_revision = naming_policy_revision(request.pinned_profile)
+            activated = assignment.activation_naming_policy_revision
+            activation_matches = activated == expected or (
+                activated is None and current_pinned.multi_disc_naming_script is None
+            )
+            if (
+                request_naming_revision != expected
+                or request_naming_revision
+                != naming_policy_revision(request.pinned_profile)
+                or msgspec.json.encode(request.pinned_profile)
+                != msgspec.json.encode(current_pinned)
+                or assignment.activation_profile_revision != effective.revision
+                or not activation_matches
+                or assignment.activation_policy_revision != policy.policy_revision
+                or not assignment.activation_preview_token
+                or not assignment.activation_preview_hash
+                or assignment.activation_confirmed_at is None
+            ):
+                raise StaleRevisionError(
+                    "Automatic Library Management activation is stale."
+                )
 
     async def _validate_subject_revision(
         self,

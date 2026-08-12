@@ -44,6 +44,7 @@ from models.library_management_planning import (
     LibraryManagementPreviewHandle,
     LibraryManagementRootScope,
     NormalizedLibraryManagementSelection,
+    naming_policy_revision,
 )
 from services.native.library_management_planner import LibraryManagementPlanner
 from services.native.library_management_preview_service import (
@@ -154,6 +155,7 @@ def _service_fixture(
         expand_album_bundles=True,
     )
     token = "activation-token"
+    pinned = LibraryManagementPlanner.pin_profile(current, profile)
     snapshot = LibraryManagementJobSnapshot(
         job_id="job-1",
         mode="preview",
@@ -163,12 +165,10 @@ def _service_fixture(
         profile_revision=profile.revision,
         settings_revision=settings_revision(current),
         proposed_settings_revision=proposed_settings_revision,
-        naming_revision=current.naming_scripts[0].revision,
+        naming_revision=naming_policy_revision(pinned),
         policy_revision=policy_revision,
         catalog_revision=0,
-        profile_snapshot_json=_json(
-            LibraryManagementPlanner.pin_profile(current, profile)
-        ),
+        profile_snapshot_json=_json(pinned),
         preview_token_hash=hashlib.sha256(token.encode()).hexdigest(),
         preview_created_at=90.0,
         preview_expires_at=200.0,

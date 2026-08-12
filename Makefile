@@ -71,6 +71,7 @@ NPM    ?= pnpm
 	backend-test-monitoring-cache \
 	backend-test-navidrome \
 	backend-test-multidisc \
+	test-library-management-multidisc-naming \
 	backend-test-performance \
 	backend-test-preferences \
 	backend-test-plex \
@@ -453,6 +454,28 @@ backend-test-monitoring-cache: $(BACKEND_VENV_STAMP) ## Run artist monitoring ca
 
 backend-test-multidisc: $(BACKEND_VENV_STAMP) ## Run multi-disc album tests
 	$(PYTEST) tests/services/test_album_utils.py tests/services/test_album_service.py tests/infrastructure/test_cache_layer_followups.py
+
+test-library-management-multidisc-naming: $(BACKEND_VENV_STAMP) ## Run dynamic Library Management multi-disc naming tests
+	$(PYTEST) \
+		tests/schemas/test_library_management_settings.py \
+		tests/services/test_preferences_library_management.py \
+		tests/services/native/test_canonical_release_metadata_service.py \
+		tests/services/native/test_artwork_projection_service.py \
+		tests/services/native/test_management_script_engines.py \
+		tests/services/native/test_library_management_naming_policy.py \
+		tests/services/native/test_library_management_profile_service.py \
+		tests/services/native/test_library_management_preview_service.py \
+		tests/services/native/test_library_management_planner.py \
+		tests/services/native/test_library_management_publisher.py \
+		tests/services/native/test_automatic_import_management_service.py \
+		tests/services/native/test_target_import_library_service.py \
+		tests/services/native/test_automatic_scan_management_service.py \
+		tests/services/native/test_library_management_duplicate_service.py \
+		tests/services/native/test_library_management_baseline_service.py \
+		tests/services/native/test_library_management_recovery_service.py \
+		tests/services/native/test_library_management_undo_service.py \
+		tests/routes/test_library_management_routes.py
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsLibraryManagement.svelte.spec.ts
 
 backend-test-navidrome: $(BACKEND_VENV_STAMP) ## Run all Navidrome integration backend tests
 	$(PYTEST) tests/repositories/test_navidrome_repository.py tests/services/test_navidrome_library_service.py tests/services/test_navidrome_playback_service.py tests/services/test_navidrome_cache_invalidation.py tests/services/test_navidrome_stream_proxy.py tests/routes/test_navidrome_routes.py -v

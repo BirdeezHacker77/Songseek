@@ -57,6 +57,7 @@ from api.v1.schemas.library_management import (
     LibraryManagementSettings,
     LibraryManagementSettingsResponse,
     build_initial_library_management_settings,
+    migrate_library_management_presets,
     normalize_library_management_settings,
     settings_revision as library_management_settings_revision,
     to_library_management_response,
@@ -1135,34 +1136,36 @@ class PreferencesService:
     def _library_management_settings_section(self) -> LibraryManagementSettings:
         """Return typed management policy, seeding inert presets exactly once."""
 
-        config = self._load_config()
-        data = config.get("library_management")
-        if data:
-            try:
-                parsed = msgspec.convert(data, type=LibraryManagementSettings)
-                normalized = normalize_library_management_settings(parsed)
-            except (
-                msgspec.ValidationError,
-                ScriptValidationError,
-                TypeError,
-                ValueError,
-            ) as e:
-                logger.error("Failed to parse Library Management settings: %s", e)
-                raise ConfigurationError(
-                    "Library Management settings are invalid."
-                ) from e
-            if to_jsonable(normalized) != data:
-                new_config = config.copy()
-                new_config["library_management"] = to_jsonable(normalized)
-                self._save_config(new_config)
-            return normalized
+        with self._cache_lock:
+            config = self._load_config()
+            data = config.get("library_management")
+            if data:
+                try:
+                    parsed = msgspec.convert(data, type=LibraryManagementSettings)
+                    migrated = migrate_library_management_presets(parsed)
+                    normalized = normalize_library_management_settings(migrated)
+                except (
+                    msgspec.ValidationError,
+                    ScriptValidationError,
+                    TypeError,
+                    ValueError,
+                ) as e:
+                    logger.error("Failed to parse Library Management settings: %s", e)
+                    raise ConfigurationError(
+                        "Library Management settings are invalid."
+                    ) from e
+                if to_jsonable(normalized) != data:
+                    new_config = config.copy()
+                    new_config["library_management"] = to_jsonable(normalized)
+                    self._save_config(new_config)
+                return normalized
 
-        legacy_template = self._typed_library_settings_section().naming_template
-        migrated = build_initial_library_management_settings(legacy_template)
-        new_config = self._load_config().copy()
-        new_config["library_management"] = to_jsonable(migrated)
-        self._save_config(new_config)
-        return migrated
+            legacy_template = self._typed_library_settings_section().naming_template
+            migrated = build_initial_library_management_settings(legacy_template)
+            new_config = self._load_config().copy()
+            new_config["library_management"] = to_jsonable(migrated)
+            self._save_config(new_config)
+            return migrated
 
     def get_library_management_settings(
         self,
@@ -1195,6 +1198,7 @@ class PreferencesService:
                     "Library Management settings changed. Refresh this page and try again."
                 )
             try:
+                settings.preset_catalog_version = current.preset_catalog_version
                 normalized = normalize_library_management_settings(settings)
                 self._save_section("library_management", normalized)
             except (ScriptValidationError, ValueError) as e:

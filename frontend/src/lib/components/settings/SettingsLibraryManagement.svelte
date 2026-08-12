@@ -286,6 +286,7 @@
 			automatic_drop_imports: false,
 			automatic_scan_discovered: false,
 			activation_profile_revision: null,
+			activation_naming_policy_revision: null,
 			activation_policy_revision: null,
 			activation_settings_revision: null,
 			activation_preview_token: null,
@@ -305,7 +306,9 @@
 			move_sidecars: null,
 			source_cleanup: null,
 			preserve_timestamps: null,
-			naming_script_id: null
+			naming_script_id: null,
+			multi_disc_naming_mode: 'inherit',
+			multi_disc_naming_script_id: null
 		};
 	}
 
@@ -1084,6 +1087,49 @@
 														>{/each}</select
 												></label
 											>
+											<label class="grid gap-1 text-xs">
+												<span>Multi-disc naming</span>
+												<select
+													class="select select-bordered select-sm bg-base-100"
+													value={assignment.overrides.multi_disc_naming_mode}
+													onchange={(event) => {
+														const mode = event.currentTarget.value as
+															| 'inherit'
+															| 'standard'
+															| 'script';
+														updateOverrides(root.id, {
+															multi_disc_naming_mode: mode,
+															multi_disc_naming_script_id:
+																mode === 'script'
+																	? (assignment.overrides?.multi_disc_naming_script_id ??
+																		draft?.naming_scripts[0]?.id ??
+																		null)
+																	: null
+														});
+													}}
+												>
+													<option value="inherit">Inherit profile</option>
+													<option value="standard">Use effective single-disc script</option>
+													<option value="script">Use selected script</option>
+												</select>
+											</label>
+											{#if assignment.overrides.multi_disc_naming_mode === 'script'}
+												<label class="grid gap-1 text-xs">
+													<span>Selected multi-disc script</span>
+													<select
+														class="select select-bordered select-sm bg-base-100"
+														value={assignment.overrides.multi_disc_naming_script_id ?? ''}
+														onchange={(event) =>
+															updateOverrides(root.id, {
+																multi_disc_naming_script_id: event.currentTarget.value || null
+															})}
+													>
+														{#each draft.naming_scripts as script (script.id)}
+															<option value={script.id}>{script.name}</option>
+														{/each}
+													</select>
+												</label>
+											{/if}
 											<label class="grid gap-1 text-xs"
 												><span>Source cleanup</span><select
 													class="select select-bordered select-sm bg-base-100"

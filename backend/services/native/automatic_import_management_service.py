@@ -61,6 +61,7 @@ from models.library_management_enrichment import (
     ReplayGainTrackResult,
 )
 from models.library_management_canonical import IncomingTrackManagementMapping
+from models.library_management_planning import naming_policy_revision
 from services.native.artwork_projection_service import (
     ArtworkProjectionService,
     desired_embedded_artwork,
@@ -74,6 +75,10 @@ from services.native.effective_metadata_projection_service import (
 )
 from services.native.genre_projection_service import GenreProjectionService
 from services.native.library_management_planner import LibraryManagementPlanner
+from services.native.library_management_naming_policy import (
+    management_naming_context,
+    select_naming_script,
+)
 from services.native.library_management_profile_service import (
     LibraryManagementProfileService,
 )
@@ -149,14 +154,15 @@ class AutomaticImportManagementService:
                     "One import unit cannot cross automatic and unmanaged root assignments."
                 )
             groups: dict[
-                tuple[str, str, str, str], list[LibraryManagementImportFile]
+                tuple[str, str, str, str, str, str],
+                list[LibraryManagementImportFile],
             ] = {}
             for request in bundle.files:
                 resolved = automatic.get(request.ordinal)
                 if resolved is None:
                     continue
-                _settings, values = resolved
-                profile, _policy, _pinned = values
+                request_settings, values = resolved
+                profile, _policy, pinned = values
                 if (
                     not request.authoritative_mapping
                     or not request.release_group_mbid
@@ -171,6 +177,8 @@ class AutomaticImportManagementService:
                         request.release_group_mbid,
                         request.release_mbid,
                         profile_revision(profile),
+                        settings_revision(request_settings),
+                        naming_policy_revision(pinned),
                     ),
                     [],
                 ).append(request)
@@ -294,6 +302,8 @@ class AutomaticImportManagementService:
                         desired_metadata,
                         pinned,
                         root,
+                        projection.document,
+                        canonical_track,
                     )
                     artifacts: list[LibraryManagementImportArtifact] = []
                     if request.ordinal == first_output_ordinal:
@@ -333,6 +343,7 @@ class AutomaticImportManagementService:
                         metadata_snapshot_id=projection.metadata_snapshot_id,
                         projection_hash=projection.payload_sha256,
                         settings_revision=settings_revision(settings),
+                        naming_policy_revision=naming_policy_revision(pinned),
                         undo_retention_days=settings.undo_retention_days,
                         management_warnings=management_warnings,
                         artifacts=tuple(artifacts),
@@ -589,18 +600,30 @@ class AutomaticImportManagementService:
         return desired_metadata, desired, artwork.external, warnings
 
     def _destination_relative(
-        self, request, current, metadata, pinned, root: Path
+        self,
+        request,
+        current,
+        metadata,
+        pinned,
+        root: Path,
+        canonical_release,
+        canonical_track,
     ) -> str:  # noqa: ANN001
         organization = pinned.profile.organization
         if not organization.rename_enabled and not organization.move_enabled:
             return request.destination_relative_path
         named = msgspec.structs.replace(current, metadata=metadata)
+        naming_context = management_naming_context(canonical_release, canonical_track)
+        naming_script = select_naming_script(
+            pinned, naming_context.organization_audio_medium_count
+        )
         rendered = self._naming.format_management_path(
-            pinned.naming_script.source,
+            naming_script.source,
             named,
             organization.compatibility,
-            script_name=pinned.naming_script.name,
+            script_name=naming_script.name,
             root=root,
+            naming_context=naming_context,
         )
         rendered_path = PurePosixPath(rendered.relative_path)
         original = PurePosixPath(request.destination_relative_path)

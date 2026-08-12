@@ -5,12 +5,22 @@ import sqlite3
 import msgspec
 import pytest
 
-from api.v1.schemas.library_management import PICARD_ORGANIZER_PROFILE_ID
+from api.v1.schemas.library_management import (
+    PICARD_ORGANIZER_PROFILE_ID,
+    NamingScriptSettings,
+    build_initial_library_management_settings,
+)
 from api.v1.schemas.library_management_preview import (
     LibraryManagementUndoPreviewRequest,
 )
 from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
+from models.library_management import UNDO_EXPIRED
+from models.library_management_planning import (
+    LibraryManagementSelection,
+    PinnedLibraryManagementProfile,
+    pin_library_management_profile,
+)
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
 from services.native.library_management_preview_service import (
@@ -22,8 +32,6 @@ from services.native.library_management_profile_service import (
 from services.native.library_management_publisher import LibraryManagementPublisher
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.native.library_policy_resolver import LibraryPolicyResolver
-from models.library_management_planning import LibraryManagementSelection
-from models.library_management import UNDO_EXPIRED
 from tests.services.native.test_library_management_publisher import (
     _external_artwork_configuration,
     _ready_apply_operation,
@@ -41,6 +49,25 @@ def _semantic_value(value) -> dict:
     encoded.pop("technical")
     encoded.pop("file_attributes")
     return encoded
+
+
+def test_legacy_snapshot_options_remain_decodable_for_undo() -> None:
+    settings = build_initial_library_management_settings()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    payload = msgspec.to_builtins(pin_library_management_profile(settings, profile))
+    payload["profile"]["metadata"]["fields"][0]["mode"] = "preserve"
+    payload["profile"]["metadata"]["artist_credits"]["standardization"] = "variations"
+    payload["profile"]["artwork"]["providers"].append("audiodb")
+
+    decoded = msgspec.json.decode(
+        msgspec.json.encode(payload), type=PinnedLibraryManagementProfile
+    )
+
+    assert decoded.profile.metadata.fields[0].mode == "preserve"
+    assert decoded.profile.metadata.artist_credits.standardization == "variations"
+    assert decoded.profile.artwork.providers[-1] == "audiodb"
 
 
 @pytest.mark.asyncio
@@ -74,14 +101,16 @@ async def test_undo_restores_real_audio_path_tags_and_management_state(
         )
 
     def change_naming(settings, profile) -> None:
-        script = next(
-            value
-            for value in settings.naming_scripts
-            if value.id == profile.organization.naming_script_id
+        script = NamingScriptSettings(
+            id="44444444-4444-4444-8444-444444444444",
+            name="Undo test naming",
+            source=(
+                "B/{albumartist}/{album} ({year})/"
+                "{disc:02d}{track:02d} {title}.{ext}"
+            ),
         )
-        script.source = (
-            "B/{albumartist}/{album} ({year})/" "{disc:02d}{track:02d} {title}.{ext}"
-        )
+        settings.naming_scripts.append(script)
+        profile.organization.naming_script_id = script.id
 
     _update_profile(first_publisher._preferences, change_naming)
     current = first_publisher._preferences.get_library_management_settings()

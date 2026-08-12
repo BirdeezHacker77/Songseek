@@ -20018,6 +20018,7 @@ class NativeLibraryStore(PersistenceBase):
             request.pinned_profile is None
             or msgspec.json.encode(request.pinned_profile).decode() != profile_json
             or request.settings_revision != first_request.settings_revision
+            or request.naming_policy_revision != first_request.naming_policy_revision
             or request.projection_hash != first_request.projection_hash
             or request.metadata_snapshot_id != first_request.metadata_snapshot_id
             or request.release_group_mbid != first_request.release_group_mbid
@@ -20166,7 +20167,7 @@ class NativeLibraryStore(PersistenceBase):
                 selection_json,
                 pinned.profile.revision,
                 first_request.settings_revision,
-                pinned.naming_script.revision,
+                first_request.naming_policy_revision or pinned.naming_script.revision,
                 policy_revision,
                 catalog_revision,
                 profile_json,
@@ -20501,7 +20502,7 @@ class NativeLibraryStore(PersistenceBase):
                     pinned.profile.id,
                     pinned.profile.revision,
                     request.projection_hash,
-                    pinned.naming_script.revision,
+                    request.naming_policy_revision or pinned.naming_script.revision,
                     override_revision,
                     job_id,
                     request.destination_root_id,

@@ -12,8 +12,11 @@ import msgspec
 import pytest
 
 from api.v1.schemas.library_management import (
+    LibraryManagementRootAssignment,
+    LibraryManagementRootOverrides,
     NamingScriptSettings,
     PICARD_ORGANIZER_PROFILE_ID,
+    profile_revision,
     settings_revision,
 )
 from api.v1.schemas.library_policies import LibraryRootSettings
@@ -45,6 +48,9 @@ from services.native.library_management_publisher import (
     LibraryManagementPublisher,
     _catalog_tag_projection,
 )
+from services.native.library_management_profile_service import (
+    LibraryManagementProfileService,
+)
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.native.target_import_library_service import TargetImportLibraryService
@@ -64,7 +70,11 @@ from models.library_management import (
     LibraryManagementImportFile,
     LibraryManagementMetadataSnapshot,
 )
-from models.library_management_planning import LibraryManagementSelection
+from models.library_management_planning import (
+    LibraryManagementSelection,
+    naming_policy_revision,
+    pin_library_management_profile,
+)
 from repositories.musicbrainz_management_models import MbManagementRelease
 from tests.services.native.test_library_management_planner import _configured, _planner
 from tests.services.native.test_library_management_planner import (
@@ -80,6 +90,33 @@ def _update_profile(preferences, update: Callable) -> None:
         value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
     update(settings, profile)
+    preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=current.settings_revision
+    )
+
+
+def _activate_automatic_acquisitions(preferences, policy_revision: str) -> None:
+    current = preferences.get_library_management_settings()
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    pinned = pin_library_management_profile(settings, profile)
+    settings.root_assignments = [
+        LibraryManagementRootAssignment(
+            root_id="root-1",
+            profile_id=profile.id,
+            enabled=True,
+            automatic_acquisitions=True,
+            activation_profile_revision=profile_revision(profile),
+            activation_policy_revision=policy_revision,
+            activation_settings_revision=current.settings_revision,
+            activation_naming_policy_revision=naming_policy_revision(pinned),
+            activation_preview_token="confirmed",
+            activation_preview_hash="confirmed-hash",
+            activation_confirmed_at=100.0,
+        )
+    ]
     preferences.save_library_management_settings_if_current(
         settings, expected_settings_revision=current.settings_revision
     )
@@ -320,7 +357,7 @@ def _nest_source(root: Path, _preferences, store) -> None:
 def _case_only_source(root: Path, _preferences, store) -> None:
     relative = (
         "Johann Sebastian Bach; Glenn Gould/"
-        "Goldberg Variations, BWV 988 (1982)/0101 ARIA.flac"
+        "Goldberg Variations, BWV 988 (1982)/01 - ARIA.flac"
     )
     source = root / relative
     source.parent.mkdir(parents=True)
@@ -612,6 +649,7 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
     root, catalog_source, preferences, store, _settings, policy_revision = _configured(
         tmp_path
     )
+    _activate_automatic_acquisitions(preferences, policy_revision)
     audio = AudioMetadataEngine()
     filesystem = LibraryFilesystemCoordinator()
     blobs = LibraryManagementBlobStore(tmp_path / "automatic-import-blobs", store)
@@ -679,6 +717,7 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
         metadata_snapshot_id=metadata_snapshot.id,
         projection_hash="c" * 64,
         settings_revision=settings_revision(management),
+        naming_policy_revision=naming_policy_revision(pinned),
         undo_retention_days=management.undo_retention_days,
         management_warnings=("genre:listenbrainz",),
         artifacts=(
@@ -703,12 +742,6 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
         origin="acquisition",
         policy_revision=policy_revision,
         files=(request,),
-    )
-    _update_profile(
-        preferences,
-        lambda _settings, value: setattr(
-            value, "description", "Changed after automatic preparation"
-        ),
     )
     artwork_blob = await blobs.add_bytes(
         artwork_content,
@@ -755,12 +788,14 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
     ).media_metadata_json == sidecar_blob.media_metadata_json
     assert not incoming_sidecar.exists()
     assert state is not None and state.applied_projection_hash == "c" * 64
+    assert state.applied_naming_script_revision == naming_policy_revision(pinned)
     assert identity is not None
     assert identity.release_mbid == "import-release"
     assert identity.tracks[0].release_track_mbid == "release-track-1"
     assert operations[0]["management_mode"] == "automatic_apply"
     assert operations[0]["management_origin"] == "acquisition"
     assert operation_snapshot is not None
+    assert operation_snapshot.naming_revision == naming_policy_revision(pinned)
     assert json.loads(operation_snapshot.warnings_json) == ["genre:listenbrainz"]
     identification_queue.enqueue_album.assert_not_awaited()
 
@@ -838,6 +873,54 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
     assert not (root / "Managed Artist/Managed Album/album.cue").exists()
 
 
+def test_automatic_publication_rejects_a_tampered_pinned_profile(
+    tmp_path: Path,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _activate_automatic_acquisitions(preferences, policy_revision)
+    management = preferences.get_library_management_settings_raw()
+    profile = next(
+        value
+        for value in management.profiles
+        if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    pinned = _planner(tmp_path, store, preferences).pin_profile(management, profile)
+    current_settings_revision = settings_revision(management)
+    pinned.profile.description = "Tampered after preparation"
+    audio = AudioMetadataEngine()
+    request = msgspec.structs.replace(
+        _import_file(
+            audio,
+            source,
+            ordinal=0,
+            relative_path="Managed/01 Track.flac",
+        ),
+        pinned_profile=pinned,
+        settings_revision=current_settings_revision,
+        naming_policy_revision=naming_policy_revision(pinned),
+    )
+    publisher = LibraryManagementPublisher(
+        store,
+        preferences,
+        audio,
+        AudioWritePlanningService(audio),
+        LibraryManagementBlobStore(tmp_path / "tampered-blobs", store),
+        LibraryFilesystemCoordinator(),
+    )
+
+    with pytest.raises(StaleRevisionError, match="activation is stale"):
+        publisher._validate_automatic_import_configuration(
+            LibraryManagementImportBundle(
+                idempotency_key="acquisition:tampered-profile",
+                origin="acquisition",
+                policy_revision=policy_revision,
+                files=(request,),
+            )
+        )
+
+
 @pytest.mark.asyncio
 async def test_automatic_managed_upgrade_preserves_baseline_and_undo_state(
     tmp_path: Path,
@@ -845,6 +928,7 @@ async def test_automatic_managed_upgrade_preserves_baseline_and_undo_state(
     root, original_path, preferences, store, _settings, policy_revision = _configured(
         tmp_path
     )
+    _activate_automatic_acquisitions(preferences, policy_revision)
     audio = AudioMetadataEngine()
     filesystem = LibraryFilesystemCoordinator()
     blobs = LibraryManagementBlobStore(tmp_path / "managed-upgrade-blobs", store)
@@ -913,6 +997,7 @@ async def test_automatic_managed_upgrade_preserves_baseline_and_undo_state(
             metadata_snapshot_id=metadata_snapshot.id,
             projection_hash=projection_hash,
             settings_revision=settings_revision(management),
+            naming_policy_revision=naming_policy_revision(pinned),
             undo_retention_days=management.undo_retention_days,
             replacement_local_track_id="track-1",
             replacement_root_id="root-1",
@@ -1430,11 +1515,26 @@ async def test_import_bundle_catalog_failure_restores_every_source(
 
 
 @pytest.mark.asyncio
-async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
-    tmp_path: Path,
+async def test_legacy_standard_only_request_compensates_after_a_late_settings_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, catalog_source, preferences, store, _settings, policy_revision = _configured(
         tmp_path
+    )
+    _activate_automatic_acquisitions(preferences, policy_revision)
+    current = preferences.get_library_management_settings()
+    standard_only = preferences.get_library_management_settings_raw()
+    assignment = standard_only.root_assignments[0]
+    assignment.overrides = LibraryManagementRootOverrides(
+        multi_disc_naming_mode="standard"
+    )
+    effective = LibraryManagementProfileService._effective_profile(
+        standard_only, assignment
+    )
+    assignment.activation_profile_revision = profile_revision(effective)
+    assignment.activation_naming_policy_revision = None
+    preferences.save_library_management_settings_if_current(
+        standard_only, expected_settings_revision=current.settings_revision
     )
     audio = AudioMetadataEngine()
     filesystem = LibraryFilesystemCoordinator()
@@ -1447,13 +1547,6 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
         filesystem,
         clock=lambda: 110.0,
     )
-    service = TargetImportLibraryService(
-        store,
-        lambda: LibraryPolicyResolver(preferences.get_typed_library_settings_raw()),
-        AsyncMock(),
-        filesystem_coordinator=filesystem,
-        management_publisher=publisher,
-    )
     sources = [
         tmp_path / "automatic-rollback-1.flac",
         tmp_path / "automatic-rollback-2.flac",
@@ -1462,14 +1555,14 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
         shutil.copy2(catalog_source, source)
     artwork = b"temporary artwork"
     management = preferences.get_library_management_settings_raw()
-    profile = next(
-        value
-        for value in management.profiles
-        if value.id == PICARD_ORGANIZER_PROFILE_ID
+    assignment = management.root_assignments[0]
+    effective = LibraryManagementProfileService._effective_profile(
+        management, assignment
     )
     pinned_profile = _planner(tmp_path, store, preferences).pin_profile(
-        management, profile
+        management, effective
     )
+    assert pinned_profile.multi_disc_naming_script is None
     metadata_snapshot = await store.put_management_metadata_snapshot(
         LibraryManagementMetadataSnapshot(
             id="automatic-rollback-snapshot",
@@ -1507,6 +1600,7 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
             metadata_snapshot_id=metadata_snapshot.id,
             projection_hash="d" * 64,
             settings_revision=settings_revision(management),
+            naming_policy_revision=None,
             undo_retention_days=management.undo_retention_days,
             artifacts=(
                 LibraryManagementImportArtifact(
@@ -1528,11 +1622,37 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
         policy_revision=policy_revision,
         files=requests,
     )
+    legacy_payload = msgspec.to_builtins(bundle)
+    for request_payload in legacy_payload["files"]:
+        request_payload.pop("naming_policy_revision")
+    bundle = msgspec.convert(legacy_payload, type=LibraryManagementImportBundle)
+    assert all(request.naming_policy_revision is None for request in bundle.files)
 
-    with pytest.raises(OSError, match="catalog failure"):
-        await publisher.publish_import_bundle(
-            bundle, AsyncMock(side_effect=OSError("catalog failure"))
-        )
+    original_project = publisher._published_import_file
+    projection_started = asyncio.Event()
+    resume_projection = asyncio.Event()
+
+    async def paused_project(value):
+        projection_started.set()
+        await resume_projection.wait()
+        return await original_project(value)
+
+    monkeypatch.setattr(publisher, "_published_import_file", paused_project)
+    catalog_commit = AsyncMock()
+    publication = asyncio.create_task(
+        publisher.publish_import_bundle(bundle, catalog_commit)
+    )
+    await projection_started.wait()
+    current = preferences.get_library_management_settings()
+    changed = preferences.get_library_management_settings_raw()
+    changed.root_assignments[0].automatic_acquisitions = False
+    preferences.save_library_management_settings_if_current(
+        changed, expected_settings_revision=current.settings_revision
+    )
+    resume_projection.set()
+    with pytest.raises(StaleRevisionError, match="settings changed"):
+        await publication
+    catalog_commit.assert_not_awaited()
 
     with sqlite3.connect(store.db_path) as connection:
         references = int(
@@ -1559,17 +1679,6 @@ async def test_failed_automatic_import_releases_provisional_snapshot_blobs(
     assert all(journal.baseline_blob_sha256 is None for journal in journals)
     assert all(journal.baseline_ancillary_snapshot_json == "[]" for journal in journals)
     assert not list(root.rglob(".droppedneedle-management-*"))
-
-    published = await service.publish_import_bundle(bundle)
-    repeated = await service.publish_import_bundle(bundle)
-
-    assert len(published.local_track_ids) == 2
-    assert all(
-        (root / request.destination_relative_path).is_file() for request in requests
-    )
-    assert (root / "Managed/cover.jpg").read_bytes() == artwork
-    assert all(not source.exists() for source in sources)
-    assert repeated.repeated is True
 
 
 @pytest.mark.asyncio
@@ -1737,7 +1846,7 @@ async def test_publisher_moves_validated_real_audio_and_is_idempotent(
 
     destination = root / (
         "Johann Sebastian Bach; Glenn Gould/"
-        "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
+        "Goldberg Variations, BWV 988 (1982)/01 - Aria.flac"
     )
     document = audio.read(destination)
     row = await store.get_target_track("track-1")
@@ -1772,7 +1881,7 @@ async def test_publisher_breaks_hardlinks_without_mutating_the_other_name(
 
     destination = root / (
         "Johann Sebastian Bach; Glenn Gould/"
-        "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
+        "Goldberg Variations, BWV 988 (1982)/01 - Aria.flac"
     )
     assert sibling.read_bytes() == original
     assert sibling.stat().st_ino == original_inode
@@ -2015,7 +2124,7 @@ async def test_publisher_rolls_back_published_move_when_catalog_cas_fails(
 
     journals = await store.list_file_mutation_journals_for_bundle(job_id, 0)
     assert source.read_bytes() == original
-    assert not list(root.rglob("0101 Aria.flac"))
+    assert not list(root.rglob("01 - Aria.flac"))
     assert [journal.state for journal in journals] == ["rolled_back"]
 
 
@@ -2116,9 +2225,9 @@ async def test_publisher_applies_case_only_rename_of_source(tmp_path: Path) -> N
     )
     source = root / (
         "Johann Sebastian Bach; Glenn Gould/"
-        "Goldberg Variations, BWV 988 (1982)/0101 ARIA.flac"
+        "Goldberg Variations, BWV 988 (1982)/01 - ARIA.flac"
     )
-    destination = source.with_name("0101 Aria.flac")
+    destination = source.with_name("01 - Aria.flac")
 
     result = await publisher.publish_bundle(job_id, 0, "apply-worker")
 

@@ -64,6 +64,7 @@ from models.library_management_planning import (
     LibraryManagementSelection,
     NormalizedLibraryManagementSelection,
     PinnedLibraryManagementProfile,
+    naming_policy_revision,
 )
 from services.native.library_management_planner import LibraryManagementPlanner
 from services.native.library_management_profile_service import (
@@ -771,6 +772,7 @@ class LibraryManagementPreviewService:
         for proof, effective, snapshot in validated:
             assignment = assignments_by_root[proof.root_id]
             assignment.activation_profile_revision = profile_revision(effective)
+            assignment.activation_naming_policy_revision = snapshot.naming_revision
             assignment.activation_policy_revision = snapshot.policy_revision
             assignment.activation_settings_revision = request.expected_settings_revision
             assignment.activation_preview_token = proof.preview_token
@@ -826,6 +828,7 @@ class LibraryManagementPreviewService:
         expected_pinned = self._planner.pin_profile(settings, effective_profile)
         if (
             snapshot.profile_revision != profile_revision(effective_profile)
+            or snapshot.naming_revision != naming_policy_revision(expected_pinned)
             or snapshot.proposed_settings_revision != settings_revision(settings)
             or snapshot.profile_snapshot_json != _stable_json(expected_pinned)
             or snapshot.settings_revision

@@ -1,4 +1,4 @@
-export type ManagementFieldMode = 'disabled' | 'replace' | 'fill_missing' | 'merge' | 'preserve';
+export type ManagementFieldMode = 'disabled' | 'replace' | 'fill_missing' | 'merge';
 export type ManagementGenreMode = 'replace' | 'merge' | 'fill_missing';
 export type ManagementSelectionKind = 'roots' | 'artists' | 'albums' | 'tracks' | 'filter';
 export type ManagementEligibility = 'eligible' | 'warning' | 'blocked' | 'stale';
@@ -25,7 +25,7 @@ export interface ManagedFieldSettings {
 }
 
 export interface ArtistCreditSettings {
-	standardization: 'credited' | 'variations' | 'canonical';
+	standardization: 'credited' | 'canonical';
 	translate_names: boolean;
 	preferred_locales: string[];
 }
@@ -52,7 +52,6 @@ export interface FormatCompatibilitySettings {
 	mp3_apev2_policy: 'preserve' | 'remove';
 	raw_aac_tag_policy: 'save_apev2' | 'do_not_write' | 'remove_apev2';
 	wav_tag_policy: 'id3' | 'riff_info' | 'preserve_existing';
-	constrained_genres_primary_only: boolean;
 }
 
 export interface MetadataManagementSettings {
@@ -95,8 +94,7 @@ export type ArtworkProvider =
 	| 'cover_art_archive_release'
 	| 'cover_art_archive_release_group'
 	| 'local_files'
-	| 'embedded'
-	| 'audiodb';
+	| 'embedded';
 export type ArtworkImageType =
 	| 'front'
 	| 'back'
@@ -146,6 +144,7 @@ export interface OrganizationManagementSettings {
 	rename_enabled: boolean;
 	move_enabled: boolean;
 	naming_script_id: string;
+	multi_disc_naming_script_id: string | null;
 	compatibility: PathCompatibilitySettings;
 	move_sidecars: boolean;
 	sidecar_patterns: string[];
@@ -193,7 +192,6 @@ export interface LibraryManagementProfile {
 	file_behavior: FileBehaviorSettings;
 	enrichment: EnrichmentManagementSettings;
 	notification: {
-		refresh_droppedneedle: boolean;
 		refresh_external_servers: boolean;
 	};
 }
@@ -218,6 +216,8 @@ export interface LibraryManagementRootOverrides {
 	source_cleanup: 'keep' | 'remove_after_confirmed_move' | null;
 	preserve_timestamps: boolean | null;
 	naming_script_id: string | null;
+	multi_disc_naming_mode: 'inherit' | 'standard' | 'script';
+	multi_disc_naming_script_id: string | null;
 }
 
 export interface LibraryManagementRootAssignment {
@@ -229,6 +229,7 @@ export interface LibraryManagementRootAssignment {
 	automatic_drop_imports: boolean;
 	automatic_scan_discovered: boolean;
 	activation_profile_revision: string | null;
+	activation_naming_policy_revision: string | null;
 	activation_policy_revision: string | null;
 	activation_settings_revision: string | null;
 	activation_preview_token: string | null;
@@ -238,6 +239,7 @@ export interface LibraryManagementRootAssignment {
 
 export interface LibraryManagementSettings {
 	schema_version: number;
+	preset_catalog_version: number;
 	profiles: LibraryManagementProfile[];
 	default_profile_id: string;
 	root_assignments: LibraryManagementRootAssignment[];
@@ -276,6 +278,7 @@ export interface LibraryManagementPresetDiff {
 	preset_version: number | null;
 	differs: boolean;
 	changed_groups: string[];
+	version_upgrade_groups: string[];
 	preset_profile: LibraryManagementProfile | null;
 }
 

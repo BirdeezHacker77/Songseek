@@ -186,6 +186,34 @@ describe('Library Management route page', () => {
 			.toHaveAttribute('aria-current', 'location');
 	});
 
+	it('keeps a clicked section active at its scroll-margin landing position', async () => {
+		for (const [id, top, scrollMarginTop] of [
+			['operations', -1000, '112px'],
+			['scanning-controls', -100, '144px'],
+			['management-controls', 144, '144px']
+		] as const) {
+			const section = document.createElement('section');
+			section.id = id;
+			section.style.scrollMarginTop = scrollMarginTop;
+			vi.spyOn(section, 'getBoundingClientRect').mockReturnValue(viewportRect(top));
+			document.body.append(section);
+			scrollSections.push(section);
+		}
+
+		render(LibraryManagementPage);
+		vi.spyOn(
+			page.getByRole('region', { name: 'Profiles & automation' }).element(),
+			'getBoundingClientRect'
+		).mockReturnValue(viewportRect(10_000));
+		const navigation = page.getByRole('navigation', { name: 'Library Management sections' });
+		const link = navigation.getByRole('link', { name: 'Manage files' });
+		await link.click();
+		window.dispatchEvent(new Event('scroll'));
+		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+		await expect.element(link).toHaveAttribute('aria-current', 'location');
+	});
+
 	it('mounts profile and automation settings with the saved roots and policy revision', async () => {
 		render(LibraryManagementPage);
 		const details = page.getByRole('region', { name: 'Profiles & automation' });

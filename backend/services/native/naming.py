@@ -28,6 +28,7 @@ from core.management_script_language import (
 from models.audio import AudioTag
 from models.audio_metadata import ReadAudioDocument
 from models.library_management_scripts import NamingRenderResult
+from models.library_management_planning import ManagementNamingContext
 
 # Leaves a 3-byte margin under the common 255-byte filename limit so a final
 # multi-byte character truncation never overflows.
@@ -85,6 +86,9 @@ class NamingTemplateEngine:
             "ext",
             "extension",
             "medium",
+            "album_disambiguation",
+            "medium_format",
+            "medium_number",
             "musicbrainz_id",
             "artist_mbid",
             "codec",
@@ -157,6 +161,7 @@ class NamingTemplateEngine:
                     "disc_number",
                     "total_tracks",
                     "total_discs",
+                    "medium_number",
                 }:
                     raise ScriptValidationError(
                         f"Variable {variable} does not support a numeric format.",
@@ -189,6 +194,7 @@ class NamingTemplateEngine:
         artwork_comment: str = "",
         artwork_extension: str = "",
         artwork_format: str = "",
+        naming_context: ManagementNamingContext | None = None,
     ) -> NamingRenderResult:
         self.validate_management_script(source, script_name=script_name)
         variables = self._management_variables(
@@ -198,6 +204,7 @@ class NamingTemplateEngine:
             artwork_comment=artwork_comment,
             artwork_extension=artwork_extension,
             artwork_format=artwork_format,
+            naming_context=naming_context,
         )
         budget = EvaluationBudget(script_name=script_name)
         rendered: list[str] = []
@@ -420,6 +427,7 @@ class NamingTemplateEngine:
         artwork_comment: str,
         artwork_extension: str,
         artwork_format: str,
+        naming_context: ManagementNamingContext | None,
     ) -> dict[str, ScriptValue]:
         metadata = document.metadata
         variables: dict[str, ScriptValue] = {
@@ -481,6 +489,11 @@ class NamingTemplateEngine:
             artwork_comment=artwork_comment,
             artwork_extension=artwork_extension,
             artwork_format=artwork_format,
+            album_disambiguation=(
+                naming_context.album_disambiguation if naming_context else ""
+            ),
+            medium_format=(naming_context.medium_format if naming_context else ""),
+            medium_number=(naming_context.medium_number if naming_context else 0),
         )
         return variables
 

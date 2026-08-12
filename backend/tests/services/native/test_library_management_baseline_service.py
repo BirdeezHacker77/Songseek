@@ -5,7 +5,10 @@ import sqlite3
 import msgspec
 import pytest
 
-from api.v1.schemas.library_management import PICARD_ORGANIZER_PROFILE_ID
+from api.v1.schemas.library_management import (
+    PICARD_ORGANIZER_PROFILE_ID,
+    NamingScriptSettings,
+)
 from api.v1.schemas.library_policies import LibraryRootSettings
 from api.v1.schemas.library_management_preview import (
     LibraryManagementBaselinePurgeRequest,
@@ -168,14 +171,16 @@ async def test_baseline_restore_returns_a_to_original_after_a_then_b(tmp_path) -
     _finish_job(store, first_job_id, 115.0)
 
     def change_naming(settings, profile) -> None:
-        script = next(
-            value
-            for value in settings.naming_scripts
-            if value.id == profile.organization.naming_script_id
+        script = NamingScriptSettings(
+            id="33333333-3333-4333-8333-333333333333",
+            name="Baseline test naming",
+            source=(
+                "B/{albumartist}/{album} ({year})/"
+                "{disc:02d}{track:02d} {title}.{ext}"
+            ),
         )
-        script.source = (
-            "B/{albumartist}/{album} ({year})/" "{disc:02d}{track:02d} {title}.{ext}"
-        )
+        settings.naming_scripts.append(script)
+        profile.organization.naming_script_id = script.id
 
     _update_profile(publisher._preferences, change_naming)
     management = publisher._preferences.get_library_management_settings()

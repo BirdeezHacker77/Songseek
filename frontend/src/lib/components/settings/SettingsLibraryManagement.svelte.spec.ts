@@ -92,11 +92,13 @@ vi.mock('$lib/queries/library-management/LibraryManagementMutations.svelte', () 
 import SettingsLibraryManagement from './SettingsLibraryManagement.svelte';
 
 const profileId = 'c2741223-da7c-5231-bcf5-7cead27b07d9';
-const namingScriptId = 'f66f6409-ba0c-5b9a-9258-8fb91eefcb0b';
+const namingScriptId = '69202666-cb88-52b0-bac2-0afc62b1e909';
+const multiDiscNamingScriptId = '5b2bd6e2-4179-53bf-94aa-cfec47de8ab0';
 
 function baseSettings(): LibraryManagementSettingsResponse {
 	return {
 		schema_version: 1,
+		preset_catalog_version: 1,
 		profiles: [
 			{
 				id: profileId,
@@ -107,7 +109,7 @@ function baseSettings(): LibraryManagementSettingsResponse {
 				revision: 'profile-1',
 				metadata: {
 					enabled: true,
-					fields: [{ field: 'title', mode: 'merge', clear_when_canonical_missing: false }],
+					fields: [{ field: 'title', mode: 'fill_missing', clear_when_canonical_missing: false }],
 					artist_credits: {
 						standardization: 'credited',
 						translate_names: false,
@@ -125,8 +127,7 @@ function baseSettings(): LibraryManagementSettingsResponse {
 						remove_id3_from_flac: false,
 						mp3_apev2_policy: 'preserve',
 						raw_aac_tag_policy: 'save_apev2',
-						wav_tag_policy: 'id3',
-						constrained_genres_primary_only: false
+						wav_tag_policy: 'id3'
 					}
 				},
 				genres: {
@@ -172,6 +173,7 @@ function baseSettings(): LibraryManagementSettingsResponse {
 					rename_enabled: true,
 					move_enabled: true,
 					naming_script_id: namingScriptId,
+					multi_disc_naming_script_id: multiDiscNamingScriptId,
 					compatibility: {
 						windows_compatible: true,
 						replace_non_ascii: false,
@@ -207,7 +209,7 @@ function baseSettings(): LibraryManagementSettingsResponse {
 					},
 					replaygain: { enabled: false, mode: 'preserve', album_aware: true, required: false }
 				},
-				notification: { refresh_droppedneedle: true, refresh_external_servers: false }
+				notification: { refresh_external_servers: false }
 			}
 		],
 		default_profile_id: profileId,
@@ -215,11 +217,21 @@ function baseSettings(): LibraryManagementSettingsResponse {
 		naming_scripts: [
 			{
 				id: namingScriptId,
-				name: 'Picard-style folders',
-				source: '{albumartist}/{album} ({year})/{track:02} {title}.{ext}',
+				name: 'Picard-style: single disc',
+				source:
+					'{albumartist}/{album}{conditional(is_empty(year), "", concat(" (", year, ")"))}{conditional(is_empty(album_disambiguation), "", concat(" (", album_disambiguation, ")"))}/{track:02d} - {title}.{ext}',
 				revision: 'script-1',
 				preset_origin: 'picard_style_organizer',
 				preset_version: 1
+			},
+			{
+				id: multiDiscNamingScriptId,
+				name: 'Picard-style: multiple discs',
+				source:
+					'{albumartist}/{album}{conditional(is_empty(year), "", concat(" (", year, ")"))}{conditional(is_empty(album_disambiguation), "", concat(" (", album_disambiguation, ")"))}/{default(medium_format, "Disc")} {medium_number:02d}/{track:02d} - {title}.{ext}',
+				revision: 'script-multi-1',
+				preset_origin: 'picard_style_organizer',
+				preset_version: 3
 			}
 		],
 		tagging_scripts: [],
@@ -285,6 +297,7 @@ beforeEach(() => {
 			preset_version: 1,
 			differs: true,
 			changed_groups: ['metadata', 'organization'],
+			version_upgrade_groups: ['organization'],
 			preset_profile: presetProfile
 		},
 		isLoading: false,
@@ -373,7 +386,7 @@ describe('SettingsLibraryManagement', () => {
 		await expect.element(profileDialog.getByText('1 managed field')).toBeVisible();
 		await expect
 			.element(profileDialog.getByRole('combobox', { name: 'Mode for title' }))
-			.toHaveValue('merge');
+			.toHaveValue('fill_missing');
 
 		await profileDialog.getByText('Lyrics and loudness').click();
 		const lyricsToggle = profileDialog.getByRole('checkbox', {
@@ -421,6 +434,244 @@ describe('SettingsLibraryManagement', () => {
 		await expect
 			.element(profileDialog.getByRole('checkbox', { name: /Refresh DroppedNeedle/ }))
 			.not.toBeInTheDocument();
+	});
+
+	it('edits both naming slots and explains the multi-disc defaults', async () => {
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('button', { name: 'Edit' }).click();
+		const profileDialog = page.getByRole('dialog', { name: 'Picard-style Organizer' });
+		await profileDialog.getByText('File naming and organization').click();
+
+		await expect
+			.element(profileDialog.getByRole('combobox', { name: 'Single-disc naming script' }))
+			.toHaveValue(namingScriptId);
+		const multiDisc = profileDialog.getByRole('combobox', {
+			name: 'Multi-disc naming script'
+		});
+		await expect.element(multiDisc).toHaveValue(multiDiscNamingScriptId);
+		await multiDisc.selectOptions('');
+		await expect.element(multiDisc).toHaveValue('');
+		await expect
+			.element(profileDialog.getByText('Anthony Green/Avalon (2008)/03 - Drugdealer.flac'))
+			.toBeVisible();
+		await expect
+			.element(profileDialog.getByText('Artist/Album (2023)/Disc 01/01 - Track.flac'))
+			.toBeVisible();
+
+		await profileDialog.getByText('Language reference').click();
+		const valuesHelp = profileDialog.getByText(/Common values: title, album, album_disambiguation/);
+		await expect.element(valuesHelp).toHaveTextContent('medium_format');
+		await expect.element(valuesHelp).toHaveTextContent('medium_number');
+		await expect.element(profileDialog.getByText(/concat, is_empty/)).toBeVisible();
+		await expect
+			.element(profileDialog.getByText(baseSettings().naming_scripts[1].source, { exact: true }))
+			.toBeVisible();
+		await profileDialog.getByRole('button', { name: 'Save profile' }).click();
+		expect(h.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				settings: expect.objectContaining({
+					profiles: [
+						expect.objectContaining({
+							organization: expect.objectContaining({
+								multi_disc_naming_script_id: null
+							})
+						})
+					]
+				})
+			})
+		);
+	});
+
+	it('shows both inert presets while keeping Picard-style as the library default', async () => {
+		const settings = baseSettings();
+		const complete = structuredClone(settings.profiles[0]);
+		complete.id = '4c012b0e-509b-5f23-a759-65552c84db85';
+		complete.name = 'Complete Library Organizer';
+		complete.preset_origin = 'complete_library_organizer';
+		complete.preset_version = 1;
+		complete.enrichment.lyrics.enabled = true;
+		complete.enrichment.replaygain.enabled = true;
+		complete.enrichment.replaygain.mode = 'replace';
+		settings.profiles.push(complete);
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		await expect
+			.element(page.getByText('Complete Library Organizer', { exact: true }))
+			.toBeVisible();
+		await expect
+			.element(page.getByRole('radio', { name: 'Make Picard-style Organizer the library default' }))
+			.toBeChecked();
+		await expect
+			.element(
+				page.getByRole('radio', { name: 'Make Complete Library Organizer the library default' })
+			)
+			.not.toBeChecked();
+		await expect.element(page.getByText('Off everywhere')).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Choose Management profile for Archive' }))
+			.toHaveTextContent(/Inherited from library default.*Picard-style Organizer/);
+	});
+
+	it('offers only implemented editor choices and contextual safety guidance', async () => {
+		const settings = baseSettings();
+		settings.profiles[0].metadata.fields = [
+			{ field: 'title', mode: 'replace', clear_when_canonical_missing: true },
+			{ field: 'artist', mode: 'merge', clear_when_canonical_missing: false }
+		];
+		settings.profiles[0].artwork.providers = [
+			'cover_art_archive_release',
+			'cover_art_archive_release_group',
+			'local_files',
+			'embedded'
+		];
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('button', { name: 'Edit' }).click();
+		const profileDialog = page.getByRole('dialog', { name: 'Picard-style Organizer' });
+
+		await profileDialog.getByText('Metadata fields').click();
+		const titleMode = profileDialog.getByRole('combobox', { name: 'Mode for title' });
+		const artistMode = profileDialog.getByRole('combobox', { name: 'Mode for artist' });
+		await expect.element(titleMode).not.toHaveTextContent('Merge');
+		await expect.element(titleMode).not.toHaveTextContent('Preserve');
+		await expect.element(artistMode).toHaveTextContent('Merge');
+		await expect
+			.element(
+				profileDialog.getByRole('checkbox', {
+					name: 'Clear title when canonical value is missing'
+				})
+			)
+			.toBeVisible();
+		await titleMode.selectOptions('fill_missing');
+		await expect
+			.element(
+				profileDialog.getByRole('checkbox', {
+					name: 'Clear title when canonical value is missing'
+				})
+			)
+			.not.toBeInTheDocument();
+
+		await profileDialog.getByText('Credits and genres').click();
+		await expect.element(profileDialog.getByText('Artist variations')).not.toBeInTheDocument();
+		await profileDialog.getByText('Advanced genre rules').click();
+		await expect
+			.element(profileDialog.getByText('Primary genre on constrained formats'))
+			.toBeVisible();
+
+		await profileDialog.getByText('Artwork', { exact: true }).click();
+		await expect.element(profileDialog.getByText('TheAudioDB')).not.toBeInTheDocument();
+		const priority = profileDialog.getByRole('list', { name: 'Artwork source priority' });
+		await expect
+			.element(priority)
+			.toHaveTextContent(
+				/Exact-release artwork.*Release-group fallback.*Local files.*Existing embedded art/
+			);
+		await profileDialog.getByRole('button', { name: 'Move Exact-release artwork later' }).click();
+		await expect
+			.element(priority)
+			.toHaveTextContent(
+				/Release-group fallback.*Exact-release artwork.*Local files.*Existing embedded art/
+			);
+		await profileDialog.getByText('Advanced artwork rules').click();
+		await expect.element(profileDialog.getByText(/A size of 0 means unlimited/)).toBeVisible();
+		await expect
+			.element(
+				profileDialog
+					.getByRole('group', { name: 'Preserve existing image types' })
+					.getByRole('checkbox', { name: 'Front cover' })
+			)
+			.toBeVisible();
+		await expect
+			.element(profileDialog.getByRole('combobox', { name: 'External artwork naming script' }))
+			.toHaveTextContent('Default album filenames (cover.jpg, back.jpg, …)');
+
+		await profileDialog.getByText('Preservation and format safety').click();
+		await profileDialog.getByText('Format compatibility').click();
+		const id3Version = profileDialog.getByRole('combobox', { name: 'ID3 version' });
+		const id3Encoding = profileDialog.getByRole('combobox', { name: 'ID3 text encoding' });
+		await id3Version.selectOptions('2.3');
+		await expect.element(id3Encoding).toHaveValue('utf16');
+		await expect
+			.element(profileDialog.getByRole('textbox', { name: 'ID3v2.3 list delimiter' }))
+			.toBeVisible();
+		await expect.element(id3Encoding).not.toHaveTextContent('UTF-8');
+		await id3Version.selectOptions('2.4');
+		await expect
+			.element(profileDialog.getByRole('textbox', { name: 'ID3v2.3 list delimiter' }))
+			.not.toBeInTheDocument();
+		await expect.element(id3Encoding).toHaveTextContent('UTF-8');
+		await expect.element(profileDialog.getByText(/Remove deletes the complete MP3/)).toBeVisible();
+		await expect.element(profileDialog.getByText(/Do not write preserves raw AAC/)).toBeVisible();
+		await expect.element(profileDialog.getByText(/may convert the active WAV/)).toBeVisible();
+
+		await profileDialog.getByText('File naming and organization').click();
+		await profileDialog.getByText('Path compatibility').click();
+		await expect
+			.element(profileDialog.getByText(/NFC preserves character distinctions/))
+			.toBeVisible();
+		await expect
+			.element(profileDialog.getByText(/Changes only the filename extension/))
+			.toBeVisible();
+	});
+
+	it('round-trips the explicit per-root multi-disc script mode', async () => {
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByText('Per-root profile overrides').click();
+		await page.getByRole('checkbox', { name: /Override selected profile values/ }).click();
+
+		const mode = page.getByRole('combobox', { name: 'Multi-disc naming' });
+		await expect.element(mode).toHaveValue('inherit');
+		await expect
+			.element(page.getByRole('combobox', { name: 'Selected multi-disc script' }))
+			.not.toBeInTheDocument();
+		await mode.selectOptions('script');
+		const selectedScript = page.getByRole('combobox', { name: 'Selected multi-disc script' });
+		await expect.element(selectedScript).toBeVisible();
+		await selectedScript.selectOptions(multiDiscNamingScriptId);
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+
+		expect(h.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				settings: expect.objectContaining({
+					root_assignments: [
+						expect.objectContaining({
+							overrides: expect.objectContaining({
+								multi_disc_naming_mode: 'script',
+								multi_disc_naming_script_id: multiDiscNamingScriptId
+							})
+						})
+					]
+				})
+			})
+		);
+	});
+
+	it('serializes the per-root effective-standard mode without a script ID', async () => {
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+		await page.getByText('Per-root profile overrides').click();
+		await page.getByRole('checkbox', { name: /Override selected profile values/ }).click();
+		await page.getByRole('combobox', { name: 'Multi-disc naming' }).selectOptions('standard');
+		await page.getByRole('button', { name: 'Validate and save' }).click();
+
+		expect(h.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				settings: expect.objectContaining({
+					root_assignments: [
+						expect.objectContaining({
+							overrides: expect.objectContaining({
+								multi_disc_naming_mode: 'standard',
+								multi_disc_naming_script_id: null
+							})
+						})
+					]
+				})
+			})
+		);
 	});
 
 	it('sets the library default from the profile cards and updates inherited roots', async () => {
@@ -487,6 +738,7 @@ describe('SettingsLibraryManagement', () => {
 				automatic_drop_imports: false,
 				automatic_scan_discovered: false,
 				activation_profile_revision: null,
+				activation_naming_policy_revision: null,
 				activation_policy_revision: null,
 				activation_settings_revision: null,
 				activation_preview_token: null,
@@ -546,6 +798,7 @@ describe('SettingsLibraryManagement', () => {
 				automatic_drop_imports: false,
 				automatic_scan_discovered: false,
 				activation_profile_revision: null,
+				activation_naming_policy_revision: null,
 				activation_policy_revision: null,
 				activation_settings_revision: null,
 				activation_preview_token: null,
@@ -740,6 +993,102 @@ describe('SettingsLibraryManagement', () => {
 		await expect.element(profileDialog).toBeVisible();
 	});
 
+	it('does not advance the preset version when resetting metadata', async () => {
+		const settings = baseSettings();
+		settings.profiles[0].preset_version = 2;
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+		const presetProfile = structuredClone(settings.profiles[0]);
+		presetProfile.preset_version = 3;
+		presetProfile.metadata.fields[0].mode = 'replace';
+		h.presetDiff = {
+			data: {
+				profile_id: profileId,
+				preset_origin: 'picard_style_organizer',
+				preset_version: 3,
+				differs: true,
+				changed_groups: ['metadata'],
+				version_upgrade_groups: ['organization'],
+				preset_profile: presetProfile
+			},
+			isLoading: false,
+			isError: false
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('button', { name: 'Edit' }).click();
+		const profileDialog = page.getByRole('dialog', { name: 'Picard-style Organizer' });
+		await profileDialog.getByRole('button', { name: 'Reset Metadata' }).click();
+		await page
+			.getByRole('dialog', { name: 'Reset Metadata?' })
+			.getByRole('button', { name: 'Reset section' })
+			.click();
+		await profileDialog.getByRole('button', { name: 'Save profile' }).click();
+
+		expect(h.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				settings: expect.objectContaining({
+					profiles: [
+						expect.objectContaining({
+							preset_version: 2,
+							metadata: expect.objectContaining({
+								fields: [expect.objectContaining({ mode: 'replace' })]
+							})
+						})
+					]
+				})
+			})
+		);
+	});
+
+	it('advances the preset version when resetting file organization only', async () => {
+		const settings = baseSettings();
+		settings.profiles[0].artwork.embedded_maximum_size = 777;
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+		const presetProfile = structuredClone(settings.profiles[0]);
+		presetProfile.preset_version = 3;
+		presetProfile.organization.move_enabled = false;
+		h.presetDiff = {
+			data: {
+				profile_id: profileId,
+				preset_origin: 'picard_style_organizer',
+				preset_version: 3,
+				differs: true,
+				changed_groups: ['organization'],
+				version_upgrade_groups: ['organization'],
+				preset_profile: presetProfile
+			},
+			isLoading: false,
+			isError: false
+		};
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('button', { name: 'Edit' }).click();
+		const profileDialog = page.getByRole('dialog', { name: 'Picard-style Organizer' });
+		await profileDialog.getByRole('button', { name: 'Reset File organization' }).click();
+		await page
+			.getByRole('dialog', { name: 'Reset File organization?' })
+			.getByRole('button', { name: 'Reset section' })
+			.click();
+		await profileDialog.getByRole('button', { name: 'Save profile' }).click();
+
+		expect(h.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				settings: expect.objectContaining({
+					profiles: [
+						expect.objectContaining({
+							preset_version: 3,
+							metadata: expect.objectContaining({
+								fields: [expect.objectContaining({ mode: 'fill_missing' })]
+							}),
+							artwork: expect.objectContaining({ embedded_maximum_size: 777 }),
+							organization: expect.objectContaining({ move_enabled: false })
+						})
+					]
+				})
+			})
+		);
+	});
+
 	it('requires a current dry run and exact phrase before first automatic activation', async () => {
 		h.impact.mockResolvedValue({
 			current_settings_revision: 'settings-1',
@@ -813,6 +1162,7 @@ describe('SettingsLibraryManagement', () => {
 				automatic_drop_imports: false,
 				automatic_scan_discovered: false,
 				activation_profile_revision: 'profile-1',
+				activation_naming_policy_revision: 'script-1',
 				activation_policy_revision: 'policy-1',
 				activation_settings_revision: 'settings-1',
 				activation_preview_token: 'verified',

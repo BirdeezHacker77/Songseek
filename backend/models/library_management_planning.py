@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Literal
 
 import msgspec
 
 from api.v1.schemas.library_management import (
     LibraryManagementProfile,
+    LibraryManagementSettings,
     NamingScriptSettings,
     TaggingScriptSettings,
 )
@@ -49,9 +52,73 @@ class NormalizedLibraryManagementSelection(msgspec.Struct, frozen=True, kw_only=
 class PinnedLibraryManagementProfile(msgspec.Struct, frozen=True, kw_only=True):
     profile: LibraryManagementProfile
     naming_script: NamingScriptSettings
+    multi_disc_naming_script: NamingScriptSettings | None = None
     external_artwork_naming_script: NamingScriptSettings | None = None
     tagging_scripts: tuple[TaggingScriptSettings, ...] = ()
     recycle_bin_path: str = ""
+
+
+class ManagementNamingContext(msgspec.Struct, frozen=True, kw_only=True):
+    album_disambiguation: str = ""
+    medium_format: str = ""
+    medium_number: int = 0
+    organization_audio_medium_count: int = 1
+
+
+def naming_policy_revision(pinned: PinnedLibraryManagementProfile) -> str:
+    if pinned.multi_disc_naming_script is None:
+        return pinned.naming_script.revision
+    payload = {
+        "policy_version": 1,
+        "standard": {
+            "id": pinned.naming_script.id,
+            "revision": pinned.naming_script.revision,
+        },
+        "multi_disc": {
+            "id": pinned.multi_disc_naming_script.id,
+            "revision": pinned.multi_disc_naming_script.revision,
+        },
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def pin_library_management_profile(
+    settings: LibraryManagementSettings,
+    profile: LibraryManagementProfile,
+) -> PinnedLibraryManagementProfile:
+    naming_scripts = {script.id: script for script in settings.naming_scripts}
+    tagging_scripts = {script.id: script for script in settings.tagging_scripts}
+    try:
+        standard = naming_scripts[profile.organization.naming_script_id]
+        multi_disc = (
+            naming_scripts[profile.organization.multi_disc_naming_script_id]
+            if profile.organization.multi_disc_naming_script_id is not None
+            else None
+        )
+        external = (
+            naming_scripts[profile.artwork.external_naming_script_id]
+            if profile.artwork.external_naming_script_id is not None
+            else None
+        )
+        tagging = tuple(
+            tagging_scripts[script_id]
+            for script_id in profile.metadata.tagging_script_ids
+        )
+    except KeyError as error:
+        raise ValueError(
+            "A profile references an unknown management script."
+        ) from error
+    return PinnedLibraryManagementProfile(
+        profile=profile,
+        naming_script=standard,
+        multi_disc_naming_script=multi_disc,
+        external_artwork_naming_script=external,
+        tagging_scripts=tagging,
+        recycle_bin_path=settings.recycle_bin_path,
+    )
 
 
 class LibraryManagementSelectionCursor(msgspec.Struct, frozen=True, kw_only=True):

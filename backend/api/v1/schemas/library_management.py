@@ -26,12 +26,41 @@ from core.exceptions import ScriptValidationError
 from infrastructure.msgspec_fastapi import AppStruct
 
 LIBRARY_MANAGEMENT_SCHEMA_VERSION = 1
-PICARD_ORGANIZER_PRESET_VERSION = 2
+PICARD_ORGANIZER_PRESET_VERSION = 4
+PRESET_CATALOG_VERSION = 1
 
 PICARD_ORGANIZER_PROFILE_ID = "c2741223-da7c-5231-bcf5-7cead27b07d9"
-PICARD_ORGANIZER_NAMING_SCRIPT_ID = "f66f6409-ba0c-5b9a-9258-8fb91eefcb0b"
+PICARD_ORGANIZER_V2_NAMING_SCRIPT_ID = "f66f6409-ba0c-5b9a-9258-8fb91eefcb0b"
+PICARD_ORGANIZER_V3_NAMING_SCRIPT_ID = "aff47e61-1154-589e-976b-47795ee5b4de"
+PICARD_ORGANIZER_V3_MULTI_DISC_NAMING_SCRIPT_ID = "9f4a8c7e-d6bb-5896-b684-c38d796dc106"
+PICARD_ORGANIZER_NAMING_SCRIPT_ID = "69202666-cb88-52b0-bac2-0afc62b1e909"
+PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID = "5b2bd6e2-4179-53bf-94aa-cfec47de8ab0"
+COMPLETE_LIBRARY_ORGANIZER_PROFILE_ID = "4c012b0e-509b-5f23-a759-65552c84db85"
 LEGACY_NAMING_PROFILE_ID = "b9b1f9b4-752d-54ff-bc67-24f75cb67847"
 LEGACY_NAMING_SCRIPT_ID = "ec7b9d83-00f7-5a78-93c7-20d117bef008"
+
+PICARD_ORGANIZER_STANDARD_NAMING_SOURCE = (
+    '{albumartist}/{album}{conditional(is_empty(year), "", concat(" (", year, ")"))}'
+    '{conditional(is_empty(album_disambiguation), "", '
+    'concat(" (", album_disambiguation, ")"))}/{track:02d} - {title}.{ext}'
+)
+PICARD_ORGANIZER_MULTI_DISC_NAMING_SOURCE = (
+    '{albumartist}/{album}{conditional(is_empty(year), "", concat(" (", year, ")"))}'
+    '{conditional(is_empty(album_disambiguation), "", '
+    'concat(" (", album_disambiguation, ")"))}/'
+    '{default(medium_format, "Disc")} {medium_number:02d}/'
+    "{track:02d} - {title}.{ext}"
+)
+PICARD_ORGANIZER_V3_STANDARD_NAMING_SOURCE = (
+    '{albumartist}/{album}{conditional(is_empty(album_disambiguation), "", '
+    'concat(" (", album_disambiguation, ")"))}/{track:02d} - {title}.{ext}'
+)
+PICARD_ORGANIZER_V3_MULTI_DISC_NAMING_SOURCE = (
+    '{albumartist}/{album}{conditional(is_empty(album_disambiguation), "", '
+    'concat(" (", album_disambiguation, ")"))}/'
+    '{default(medium_format, "Disc")} {medium_number:02d}/'
+    "{track:02d} - {title}.{ext}"
+)
 
 MAX_SCRIPT_SOURCE_LENGTH = 32_768
 MAX_SIDE_CAR_PATTERNS = 100
@@ -316,6 +345,7 @@ class OrganizationManagementSettings(AppStruct):
     rename_enabled: bool = True
     move_enabled: bool = True
     naming_script_id: str = PICARD_ORGANIZER_NAMING_SCRIPT_ID
+    multi_disc_naming_script_id: str | None = None
     compatibility: PathCompatibilitySettings = msgspec.field(
         default_factory=PathCompatibilitySettings
     )
@@ -441,6 +471,8 @@ class LibraryManagementRootOverrides(AppStruct):
     source_cleanup: SourceCleanupMode | None = None
     preserve_timestamps: bool | None = None
     naming_script_id: str | None = None
+    multi_disc_naming_mode: Literal["inherit", "standard", "script"] = "inherit"
+    multi_disc_naming_script_id: str | None = None
 
 
 class LibraryManagementRootAssignment(AppStruct):
@@ -452,6 +484,7 @@ class LibraryManagementRootAssignment(AppStruct):
     automatic_drop_imports: bool = False
     automatic_scan_discovered: bool = False
     activation_profile_revision: str | None = None
+    activation_naming_policy_revision: str | None = None
     activation_policy_revision: str | None = None
     activation_settings_revision: str | None = None
     activation_preview_token: str | None = None
@@ -470,6 +503,7 @@ class ExternalRefreshSettings(AppStruct):
 
 class LibraryManagementSettings(AppStruct):
     schema_version: int = LIBRARY_MANAGEMENT_SCHEMA_VERSION
+    preset_catalog_version: int = 0
     profiles: list[LibraryManagementProfile] = msgspec.field(default_factory=list)
     default_profile_id: str = ""
     root_assignments: list[LibraryManagementRootAssignment] = msgspec.field(
@@ -510,6 +544,7 @@ class LibraryManagementPresetDiff(AppStruct):
     preset_version: int | None = None
     differs: bool = False
     changed_groups: list[str] = msgspec.field(default_factory=list)
+    version_upgrade_groups: list[str] = msgspec.field(default_factory=list)
     preset_profile: LibraryManagementProfile | None = None
 
 
@@ -543,12 +578,21 @@ def _remove_default_lyrics_preservation(profile: dict[str, object]) -> None:
         lyrics.pop("preserve_existing")
 
 
+def _remove_default_multi_disc_naming(profile: dict[str, object]) -> None:
+    organization = profile.get("organization")
+    if not isinstance(organization, dict):
+        return
+    if organization.get("multi_disc_naming_script_id") is None:
+        organization.pop("multi_disc_naming_script_id", None)
+
+
 def profile_revision(profile: LibraryManagementProfile) -> str:
     payload = msgspec.to_builtins(profile)
     if not isinstance(payload, dict):
         raise TypeError("Profile revision input must be a struct object.")
     payload.pop("revision", None)
     _remove_default_lyrics_preservation(payload)
+    _remove_default_multi_disc_naming(payload)
     return _stable_hash(payload)
 
 
@@ -569,6 +613,7 @@ def settings_revision(settings: LibraryManagementSettings) -> str:
         for profile in profiles:
             if isinstance(profile, dict):
                 _remove_default_lyrics_preservation(profile)
+                _remove_default_multi_disc_naming(profile)
     return _stable_hash(payload)
 
 
@@ -630,6 +675,9 @@ def _validate_naming_language(source: str, script_name: str) -> None:
         "ext",
         "extension",
         "medium",
+        "album_disambiguation",
+        "medium_format",
+        "medium_number",
         "musicbrainz_id",
         "artist_mbid",
         "codec",
@@ -676,6 +724,7 @@ def _validate_naming_language(source: str, script_name: str) -> None:
                 "disc_number",
                 "total_tracks",
                 "total_discs",
+                "medium_number",
             }:
                 _script_error(
                     f"Variable {segment.legacy_variable} does not support a numeric format.",
@@ -805,6 +854,8 @@ def normalize_library_management_settings(
 
     if settings.schema_version != LIBRARY_MANAGEMENT_SCHEMA_VERSION:
         raise ValueError("Unsupported Library Management settings version.")
+    if not 0 <= settings.preset_catalog_version <= PRESET_CATALOG_VERSION:
+        raise ValueError("Unsupported Library Management preset catalog version.")
     if not 1 <= settings.undo_retention_days <= 3650:
         raise ValueError("Undo retention must be between 1 and 3650 days.")
     if not 1 <= settings.preview_retention_hours <= 168:
@@ -874,6 +925,10 @@ def normalize_library_management_settings(
 
         field_names: set[str] = set()
         for field in profile.metadata.fields:
+            if field.mode == "preserve":
+                field.mode = "disabled"
+            if field.mode != "replace":
+                field.clear_when_canonical_missing = False
             if field.field not in allowed_fields:
                 raise ValueError(f"Unknown managed field: {field.field}")
             if field.field in field_names:
@@ -897,6 +952,13 @@ def normalize_library_management_settings(
         profile.metadata.artist_credits.preferred_locales = _normalize_unique_strings(
             profile.metadata.artist_credits.preferred_locales, "Preferred locales"
         )
+        if profile.metadata.artist_credits.standardization == "variations":
+            profile.metadata.artist_credits.standardization = "credited"
+        compatibility = profile.metadata.format_compatibility
+        if compatibility.constrained_genres_primary_only:
+            profile.genres.write_primary_only_for_constrained_formats = True
+            compatibility.constrained_genres_primary_only = False
+        profile.notification.refresh_droppedneedle = True
         if len(profile.metadata.format_compatibility.id3v23_join_delimiter) > 8:
             raise ValueError("The ID3v2.3 join delimiter is too long.")
         if (
@@ -955,6 +1017,9 @@ def normalize_library_management_settings(
             alias_sources.add(folded_alias)
 
         artwork = profile.artwork
+        artwork.providers = [
+            provider for provider in artwork.providers if provider != "audiodb"
+        ]
         if len(set(artwork.providers)) != len(artwork.providers):
             raise ValueError("Artwork providers cannot contain duplicates.")
         if len(set(artwork.image_types)) != len(artwork.image_types):
@@ -989,6 +1054,13 @@ def normalize_library_management_settings(
         organization = profile.organization
         if organization.naming_script_id not in script_ids:
             raise ValueError("A profile references an unknown naming script.")
+        if (
+            organization.multi_disc_naming_script_id is not None
+            and organization.multi_disc_naming_script_id not in script_ids
+        ):
+            raise ValueError(
+                "A profile references an unknown multi-disc naming script."
+            )
         if len(organization.sidecar_patterns) > MAX_SIDE_CAR_PATTERNS:
             raise ValueError("A profile has too many sidecar patterns.")
         organization.sidecar_patterns = [
@@ -1034,6 +1106,18 @@ def normalize_library_management_settings(
             and assignment.overrides.naming_script_id not in script_ids
         ):
             raise ValueError("A root override references an unknown naming script.")
+        if assignment.overrides is not None:
+            mode = assignment.overrides.multi_disc_naming_mode
+            multi_script_id = assignment.overrides.multi_disc_naming_script_id
+            if mode == "script":
+                if multi_script_id is None or multi_script_id not in script_ids:
+                    raise ValueError(
+                        "A root multi-disc script override references an unknown naming script."
+                    )
+            elif multi_script_id is not None:
+                raise ValueError(
+                    "A root multi-disc script ID is allowed only in selected-script mode."
+                )
 
     settings.naming_scripts.sort(key=lambda value: value.id)
     settings.tagging_scripts.sort(key=lambda value: value.id)
@@ -1064,7 +1148,285 @@ def picard_style_organizer_profile() -> LibraryManagementProfile:
         preset_origin="picard_style_organizer",
         preset_version=PICARD_ORGANIZER_PRESET_VERSION,
         metadata=MetadataManagementSettings(fields=fields),
+        organization=OrganizationManagementSettings(
+            naming_script_id=PICARD_ORGANIZER_NAMING_SCRIPT_ID,
+            multi_disc_naming_script_id=PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
+        ),
     )
+
+
+def complete_library_organizer_profile() -> LibraryManagementProfile:
+    profile = picard_style_organizer_profile()
+    profile.id = COMPLETE_LIBRARY_ORGANIZER_PROFILE_ID
+    profile.name = "Complete Library Organizer"
+    profile.description = (
+        "Best-effort metadata, genres, artwork, lyrics, ReplayGain, and same-root "
+        "organization."
+    )
+    profile.preset_origin = "complete_library_organizer"
+    profile.preset_version = 1
+    profile.genres.sources = ["musicbrainz", "listenbrainz", "lastfm"]
+    profile.artwork.providers = [
+        "cover_art_archive_release",
+        "cover_art_archive_release_group",
+        "local_files",
+        "embedded",
+    ]
+    profile.artwork.image_types = [
+        "front",
+        "back",
+        "booklet",
+        "medium",
+        "tray",
+        "obi",
+        "spine",
+        "track",
+        "other",
+    ]
+    profile.artwork.local_file_patterns = [
+        "*.jpg",
+        "*.jpeg",
+        "*.png",
+        "*.webp",
+        "*.gif",
+        "*.pdf",
+    ]
+    profile.artwork.approved_only = True
+    profile.artwork.download_size = "full"
+    profile.artwork.embedded_front_only = True
+    profile.artwork.external_front_only = False
+    profile.artwork.never_replace_with_smaller = True
+    profile.artwork.overwrite_external_files = False
+    profile.enrichment.lyrics.enabled = True
+    profile.enrichment.lyrics.write_plain = True
+    profile.enrichment.lyrics.write_synced = True
+    profile.enrichment.lyrics.preserve_existing = False
+    profile.enrichment.lyrics.required = False
+    profile.enrichment.replaygain.enabled = True
+    profile.enrichment.replaygain.mode = "replace"
+    profile.enrichment.replaygain.album_aware = True
+    profile.enrichment.replaygain.required = False
+    return profile
+
+
+def preset_profile_for_origin(origin: str) -> LibraryManagementProfile | None:
+    builders = {
+        "picard_style_organizer": picard_style_organizer_profile,
+        "complete_library_organizer": complete_library_organizer_profile,
+    }
+    builder = builders.get(origin)
+    return builder() if builder is not None else None
+
+
+def _unique_preset_name(base: str, used_names: set[str]) -> str:
+    if base.casefold() not in used_names:
+        return base
+    candidate = f"{base} (built-in)"
+    suffix = 2
+    while candidate.casefold() in used_names:
+        candidate = f"{base} (built-in {suffix})"
+        suffix += 1
+    return candidate
+
+
+def _current_picard_preset_scripts(
+    settings: LibraryManagementSettings,
+) -> tuple[NamingScriptSettings, NamingScriptSettings]:
+    preset_ids = {
+        PICARD_ORGANIZER_NAMING_SCRIPT_ID,
+        PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
+    }
+    used_names = {
+        script.name.casefold()
+        for script in settings.naming_scripts
+        if script.id not in preset_ids
+    }
+    scripts: list[NamingScriptSettings] = []
+    for script_id, base_name, source in (
+        (
+            PICARD_ORGANIZER_NAMING_SCRIPT_ID,
+            "Picard-style: single disc",
+            PICARD_ORGANIZER_STANDARD_NAMING_SOURCE,
+        ),
+        (
+            PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
+            "Picard-style: multiple discs",
+            PICARD_ORGANIZER_MULTI_DISC_NAMING_SOURCE,
+        ),
+    ):
+        name = _unique_preset_name(base_name, used_names)
+        used_names.add(name.casefold())
+        scripts.append(
+            NamingScriptSettings(
+                id=script_id,
+                name=name,
+                source=source,
+                preset_origin="picard_style_organizer",
+                preset_version=PICARD_ORGANIZER_PRESET_VERSION,
+            )
+        )
+    return scripts[0], scripts[1]
+
+
+def _script_matches_known(
+    script: NamingScriptSettings | None,
+    *,
+    preset_version: int,
+    name: str,
+    source: str,
+) -> bool:
+    known_name = bool(
+        script is not None
+        and (
+            script.name == name
+            or script.name == f"{name} (built-in)"
+            or (
+                script.name.startswith(f"{name} (built-in ")
+                and script.name.endswith(")")
+                and script.name.removeprefix(f"{name} (built-in ")
+                .removesuffix(")")
+                .isdigit()
+            )
+        )
+    )
+    return bool(
+        script is not None
+        and known_name
+        and script.preset_origin == "picard_style_organizer"
+        and script.preset_version == preset_version
+        and script.source == source
+    )
+
+
+def _profile_has_known_picard_organization(
+    profile: LibraryManagementProfile,
+    scripts_by_id: dict[str, NamingScriptSettings],
+) -> bool:
+    version = profile.preset_version
+    if version in {1, 2}:
+        organization = OrganizationManagementSettings(
+            naming_script_id=PICARD_ORGANIZER_V2_NAMING_SCRIPT_ID
+        )
+        return bool(
+            msgspec.to_builtins(profile.organization)
+            == msgspec.to_builtins(organization)
+            and _script_matches_known(
+                scripts_by_id.get(PICARD_ORGANIZER_V2_NAMING_SCRIPT_ID),
+                preset_version=version,
+                name="Picard-style folders",
+                source=DEFAULT_NAMING_TEMPLATE,
+            )
+        )
+    if version == 3:
+        organization = OrganizationManagementSettings(
+            naming_script_id=PICARD_ORGANIZER_V3_NAMING_SCRIPT_ID,
+            multi_disc_naming_script_id=PICARD_ORGANIZER_V3_MULTI_DISC_NAMING_SCRIPT_ID,
+        )
+        return bool(
+            msgspec.to_builtins(profile.organization)
+            == msgspec.to_builtins(organization)
+            and _script_matches_known(
+                scripts_by_id.get(PICARD_ORGANIZER_V3_NAMING_SCRIPT_ID),
+                preset_version=3,
+                name="Picard-style single-disc folders",
+                source=PICARD_ORGANIZER_V3_STANDARD_NAMING_SOURCE,
+            )
+            and _script_matches_known(
+                scripts_by_id.get(PICARD_ORGANIZER_V3_MULTI_DISC_NAMING_SCRIPT_ID),
+                preset_version=3,
+                name="Picard-style multi-disc folders",
+                source=PICARD_ORGANIZER_V3_MULTI_DISC_NAMING_SOURCE,
+            )
+        )
+    return False
+
+
+def _install_complete_preset(settings: LibraryManagementSettings) -> None:
+    existing = next(
+        (
+            profile
+            for profile in settings.profiles
+            if profile.id == COMPLETE_LIBRARY_ORGANIZER_PROFILE_ID
+        ),
+        None,
+    )
+    if settings.preset_catalog_version >= PRESET_CATALOG_VERSION:
+        if existing is not None and (
+            existing.preset_origin != "complete_library_organizer"
+            or existing.preset_version != 1
+        ):
+            raise ValueError(
+                "A built-in Library Management preset ID is occupied by different content."
+            )
+        return
+    if existing is not None:
+        raise ValueError(
+            "A built-in Library Management preset ID is occupied by different content."
+        )
+    used_names = {profile.name.casefold() for profile in settings.profiles}
+    complete = complete_library_organizer_profile()
+    complete.name = _unique_preset_name(complete.name, used_names)
+    settings.profiles.append(complete)
+    settings.preset_catalog_version = PRESET_CATALOG_VERSION
+
+
+def migrate_library_management_presets(
+    settings: LibraryManagementSettings,
+) -> LibraryManagementSettings:
+    """Ratchet inert built-in presets without adopting customized organization."""
+
+    picard_profile = next(
+        (
+            profile
+            for profile in settings.profiles
+            if profile.id == PICARD_ORGANIZER_PROFILE_ID
+        ),
+        None,
+    )
+    if (
+        picard_profile is not None
+        and picard_profile.preset_origin != "picard_style_organizer"
+    ):
+        raise ValueError(
+            "A built-in Library Management preset ID is occupied by different content."
+        )
+
+    standard_script, multi_disc_script = _current_picard_preset_scripts(settings)
+    scripts_by_id = {script.id: script for script in settings.naming_scripts}
+    for expected in (standard_script, multi_disc_script):
+        existing = scripts_by_id.get(expected.id)
+        if existing is None:
+            settings.naming_scripts.append(expected)
+            scripts_by_id[expected.id] = expected
+            continue
+        comparable_existing = msgspec.to_builtins(existing)
+        comparable_expected = msgspec.to_builtins(expected)
+        comparable_existing.pop("revision", None)
+        comparable_expected.pop("revision", None)
+        installed_current_preset = (
+            existing.preset_origin == expected.preset_origin
+            and existing.preset_version == PICARD_ORGANIZER_PRESET_VERSION
+        )
+        if comparable_existing != comparable_expected and not installed_current_preset:
+            raise ValueError(
+                "A built-in naming preset ID is occupied by different content."
+            )
+
+    for profile in settings.profiles:
+        if (
+            profile.id == PICARD_ORGANIZER_PROFILE_ID
+            and profile.name == "Picard-style Organizer"
+            and profile.preset_origin == "picard_style_organizer"
+            and profile.preset_version in {1, 2, 3}
+            and _profile_has_known_picard_organization(profile, scripts_by_id)
+        ):
+            profile.organization = msgspec.convert(
+                msgspec.to_builtins(picard_style_organizer_profile().organization),
+                type=OrganizationManagementSettings,
+            )
+            profile.preset_version = PICARD_ORGANIZER_PRESET_VERSION
+    _install_complete_preset(settings)
+    return settings
 
 
 def build_initial_library_management_settings(
@@ -1074,8 +1436,15 @@ def build_initial_library_management_settings(
 
     picard_script = NamingScriptSettings(
         id=PICARD_ORGANIZER_NAMING_SCRIPT_ID,
-        name="Picard-style folders",
-        source=DEFAULT_NAMING_TEMPLATE,
+        name="Picard-style: single disc",
+        source=PICARD_ORGANIZER_STANDARD_NAMING_SOURCE,
+        preset_origin="picard_style_organizer",
+        preset_version=PICARD_ORGANIZER_PRESET_VERSION,
+    )
+    picard_multi_disc_script = NamingScriptSettings(
+        id=PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
+        name="Picard-style: multiple discs",
+        source=PICARD_ORGANIZER_MULTI_DISC_NAMING_SOURCE,
         preset_origin="picard_style_organizer",
         preset_version=PICARD_ORGANIZER_PRESET_VERSION,
     )
@@ -1111,10 +1480,15 @@ def build_initial_library_management_settings(
     )
     return normalize_library_management_settings(
         LibraryManagementSettings(
-            profiles=[picard_style_organizer_profile(), legacy_profile],
+            preset_catalog_version=PRESET_CATALOG_VERSION,
+            profiles=[
+                picard_style_organizer_profile(),
+                complete_library_organizer_profile(),
+                legacy_profile,
+            ],
             default_profile_id=PICARD_ORGANIZER_PROFILE_ID,
             root_assignments=[],
-            naming_scripts=[picard_script, legacy_script],
+            naming_scripts=[picard_script, picard_multi_disc_script, legacy_script],
         )
     )
 

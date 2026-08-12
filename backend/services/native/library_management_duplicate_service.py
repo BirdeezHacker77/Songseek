@@ -39,7 +39,10 @@ from models.library_management import (
     LibraryManagementJobSnapshot,
     LibraryManagementPlanItem,
 )
-from models.library_management_planning import PinnedLibraryManagementProfile
+from models.library_management_planning import (
+    PinnedLibraryManagementProfile,
+    naming_policy_revision,
+)
 from models.library_work import OperationJob
 from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
 from services.native.library_policy_resolver import LibraryPolicyResolver
@@ -162,7 +165,7 @@ class LibraryManagementDuplicateService:
             selection_json=_json(selection),
             profile_revision=pinned.profile.revision,
             settings_revision=management_revision,
-            naming_revision=pinned.naming_script.revision,
+            naming_revision=naming_policy_revision(pinned),
             policy_revision=policy.policy_revision,
             catalog_revision=catalog_revision,
             profile_snapshot_json=msgspec.json.encode(pinned).decode(),

@@ -17,7 +17,10 @@ from api.v1.schemas.library_management import (
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.library_management import LibraryManagementJobSnapshot
 from models.library_management_canonical import AcceptedAlbumManagementIdentity
-from models.library_management_planning import LibraryManagementSelection
+from models.library_management_planning import (
+    LibraryManagementSelection,
+    naming_policy_revision,
+)
 from services.native.identification_revisions import album_input_revisions
 from services.native.library_management_planner import LibraryManagementPlanner
 from services.native.library_management_profile_service import (
@@ -168,6 +171,8 @@ class AutomaticScanManagementService:
             actor_user_id=None,
             idempotency_key=idempotency_key,
             origin="scan_discovered",
+            settings_snapshot=settings,
+            effective_profile=profile,
         )
         return handle.job_id
 
@@ -200,16 +205,8 @@ class AutomaticScanManagementService:
         policy_revision: str,
     ) -> bool:
         profile_hash = profile_revision(profile)
-        naming_script = next(
-            (
-                value
-                for value in settings.naming_scripts
-                if value.id == profile.organization.naming_script_id
-            ),
-            None,
-        )
-        if naming_script is None:
-            return False
+        pinned = self._planner.pin_profile(settings, profile)
+        current_naming_revision = naming_policy_revision(pinned)
         roots = {root.id: root for root in policy.settings.library_roots}
         identity_tracks = {value.local_track_id: value for value in identity.tracks}
         operation_cache: dict[
@@ -225,7 +222,7 @@ class AutomaticScanManagementService:
                 or state.applied_profile_id != profile.id
                 or state.applied_profile_revision != profile_hash
                 or not state.applied_projection_hash
-                or state.applied_naming_script_revision != naming_script.revision
+                or state.applied_naming_script_revision != current_naming_revision
                 or state.managed_root_id != str(track["root_id"])
             ):
                 return False

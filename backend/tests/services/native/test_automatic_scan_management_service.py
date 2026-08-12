@@ -2,15 +2,23 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 
 from api.v1.schemas.library_management import (
+    PICARD_ORGANIZER_NAMING_SCRIPT_ID,
     PICARD_ORGANIZER_PROFILE_ID,
     LibraryManagementRootAssignment,
+    LibraryManagementRootOverrides,
     profile_revision,
 )
 from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from infrastructure.library_management_blob_store import LibraryManagementBlobStore
+from models.library_management_planning import (
+    PinnedLibraryManagementProfile,
+    naming_policy_revision,
+    pin_library_management_profile,
+)
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.automatic_scan_management_service import (
     AutomaticScanManagementService,
@@ -32,26 +40,34 @@ from services.native.library_management_worker import LibraryManagementWorker
 from tests.services.native.test_library_management_planner import _configured, _planner
 
 
-def _activate_scan(preferences, policy_revision: str) -> None:  # noqa: ANN001
+def _activate_scan(
+    preferences,
+    policy_revision: str,
+    *,
+    overrides: LibraryManagementRootOverrides | None = None,
+) -> None:
     current = preferences.get_library_management_settings()
     settings = preferences.get_library_management_settings_raw()
     profile = next(
         value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
-    settings.root_assignments = [
-        LibraryManagementRootAssignment(
-            root_id="root-1",
-            profile_id=profile.id,
-            enabled=True,
-            automatic_scan_discovered=True,
-            activation_profile_revision=profile_revision(profile),
-            activation_policy_revision=policy_revision,
-            activation_settings_revision=current.settings_revision,
-            activation_preview_token="confirmed",
-            activation_preview_hash="confirmed-hash",
-            activation_confirmed_at=100.0,
-        )
-    ]
+    assignment = LibraryManagementRootAssignment(
+        root_id="root-1",
+        profile_id=profile.id,
+        overrides=overrides,
+        enabled=True,
+        automatic_scan_discovered=True,
+        activation_policy_revision=policy_revision,
+        activation_settings_revision=current.settings_revision,
+        activation_preview_token="confirmed",
+        activation_preview_hash="confirmed-hash",
+        activation_confirmed_at=100.0,
+    )
+    effective = LibraryManagementProfileService._effective_profile(settings, assignment)
+    pinned = pin_library_management_profile(settings, effective)
+    assignment.activation_profile_revision = profile_revision(effective)
+    assignment.activation_naming_policy_revision = naming_policy_revision(pinned)
+    settings.root_assignments = [assignment]
     preferences.save_library_management_settings_if_current(
         settings, expected_settings_revision=current.settings_revision
     )
@@ -100,6 +116,42 @@ async def test_scan_trigger_is_independent_and_deduplicates_exact_input(
     assert snapshot.origin == "scan_discovered"
     assert snapshot.mode == "preview"
     assert snapshot.phase == "planning"
+
+
+@pytest.mark.asyncio
+async def test_scan_preview_pins_the_effective_root_multi_disc_override(
+    tmp_path: Path,
+) -> None:
+    _root, _source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _record_applied_policy(tmp_path / "library.db", policy_revision)
+    _activate_scan(
+        preferences,
+        policy_revision,
+        overrides=LibraryManagementRootOverrides(
+            multi_disc_naming_mode="script",
+            multi_disc_naming_script_id=PICARD_ORGANIZER_NAMING_SCRIPT_ID,
+        ),
+    )
+    service = AutomaticScanManagementService(
+        store,
+        LibraryManagementProfileService(preferences),
+        _planner(tmp_path, store, preferences),
+    )
+
+    job_id = await service.schedule_scanned_album("album-1")
+    assert job_id is not None
+    snapshot = await store.get_library_management_job_snapshot(job_id)
+    assert snapshot is not None
+    pinned = msgspec.json.decode(
+        snapshot.profile_snapshot_json.encode(),
+        type=PinnedLibraryManagementProfile,
+    )
+
+    assert pinned.multi_disc_naming_script is not None
+    assert pinned.multi_disc_naming_script.id == PICARD_ORGANIZER_NAMING_SCRIPT_ID
+    assert snapshot.proposed_settings_revision is None
 
 
 @pytest.mark.asyncio

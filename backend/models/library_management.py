@@ -71,6 +71,7 @@ class LibraryManagementImportFile(AppStruct):
     metadata_snapshot_id: str | None = None
     projection_hash: str | None = None
     settings_revision: str | None = None
+    naming_policy_revision: str | None = None
     undo_retention_days: int | None = None
     management_warnings: tuple[str, ...] = ()
     artifacts: tuple[LibraryManagementImportArtifact, ...] = ()

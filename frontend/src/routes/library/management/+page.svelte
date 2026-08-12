@@ -83,11 +83,13 @@
 
 	function updateActiveSection(): void {
 		scrollFrame = null;
-		const marker = (jumpNav?.getBoundingClientRect().bottom ?? 140) + 12;
+		const stickyMarker = (jumpNav?.getBoundingClientRect().bottom ?? 140) + 12;
 		let nextSection: WorkspaceSectionId = 'operations';
 		for (const sectionId of workspaceSectionIds) {
 			const section = document.getElementById(sectionId);
 			if (!section) continue;
+			const scrollMarginTop = Number.parseFloat(getComputedStyle(section).scrollMarginTop) || 0;
+			const marker = Math.max(stickyMarker, scrollMarginTop);
 			if (section.getBoundingClientRect().top <= marker) nextSection = sectionId;
 			else break;
 		}

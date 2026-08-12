@@ -64,6 +64,20 @@ _RELATIONSHIP_ROLE = {
     "remixer": "remixer",
     "vocal": "performer",
 }
+# Matches Lidarr SkyHook's organizer media filter at develop commit
+# d88cbcec050c04b3064c9f36221edac152e241e2, verified 2026-08-12.
+_NON_AUDIO_ORGANIZATION_FORMATS = frozenset(
+    {"DVD", "DVD-Video", "Blu-ray", "HD-DVD", "VCD", "SVCD", "UMD", "VHS"}
+)
+
+
+def _organization_audio_medium_count(release: MbManagementRelease) -> int:
+    return sum(
+        1
+        for medium in release.media
+        if medium.format not in _NON_AUDIO_ORGANIZATION_FORMATS
+        and any(track.title != "[data track]" for track in medium.tracks)
+    )
 
 
 def _canonical_json(value: object) -> str:
@@ -639,6 +653,8 @@ class CanonicalReleaseMetadataService:
                 if genre.name
             ),
             media=tuple(projected_media),
+            album_disambiguation=release.release_group.disambiguation.strip(),
+            organization_audio_medium_count=_organization_audio_medium_count(release),
         )
 
     @staticmethod

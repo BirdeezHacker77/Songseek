@@ -12,6 +12,7 @@ const session: LibraryManagementActivationSession = {
 	policyRevision: 'policy-1',
 	draft: {
 		schema_version: 1,
+		preset_catalog_version: 1,
 		profiles: [],
 		default_profile_id: '',
 		root_assignments: [],
@@ -31,6 +32,7 @@ const session: LibraryManagementActivationSession = {
 	},
 	activationDraft: {
 		schema_version: 1,
+		preset_catalog_version: 1,
 		profiles: [],
 		default_profile_id: '',
 		root_assignments: [],

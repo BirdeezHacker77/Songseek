@@ -60,6 +60,7 @@ from models.library_management_planning import (
     LibraryManagementSelectionCursor,
     LibraryManagementSelectionSubject,
     NormalizedLibraryManagementSelection,
+    naming_policy_revision,
 )
 from models.library_work import OperationJob
 from services.native.library_filesystem_coordinator import LibraryFilesystemCoordinator
@@ -270,7 +271,7 @@ class LibraryManagementBaselineService:
             selection_json=msgspec.json.encode(selection).decode(),
             profile_revision=profile.revision,
             settings_revision=management_revision,
-            naming_revision=pinned.naming_script.revision,
+            naming_revision=naming_policy_revision(pinned),
             policy_revision=resolver.policy_revision,
             catalog_revision=catalog_revision,
             profile_snapshot_json=msgspec.json.encode(pinned).decode(),

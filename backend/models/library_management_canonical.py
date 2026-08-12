@@ -115,6 +115,8 @@ class CanonicalReleaseDocument(ImmutableManagementStruct):
     labels: tuple[CanonicalLabel, ...]
     genres: tuple[CanonicalGenre, ...]
     media: tuple[CanonicalMedium, ...]
+    album_disambiguation: str = ""
+    organization_audio_medium_count: int = 1
 
 
 class AcceptedTrackManagementIdentity(ImmutableManagementStruct):

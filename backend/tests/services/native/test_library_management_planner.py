@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import hashlib
 from io import BytesIO
 import json
@@ -270,7 +271,13 @@ class _InitiallyFailingArtworkRepository(_ArtworkRepository):
 
 
 def _add_second_track(
-    database: Path, source: Path, *, release_track_mbid: str, recording_mbid: str
+    database: Path,
+    source: Path,
+    *,
+    release_track_mbid: str,
+    recording_mbid: str,
+    medium_position: int = 1,
+    release_track_position: int = 2,
 ) -> None:
     metadata = source.stat()
     with sqlite3.connect(database) as connection:
@@ -288,7 +295,7 @@ def _add_second_track(
             "VALUES ('track-2', 'album-1', 'root-1', ?, 'source-2.flac', ?, ?, ?, ?, "
             "'exact', 'tag-2', 'Management Track Two', 'management track two', "
             "'Alpha', 'alpha', 'Management Album', 'management album', 'Alpha', "
-            "'alpha', 1, 2, 2024, 'Electronic', 'electronic', 'flac', 'scan', 1, "
+            "'alpha', ?, ?, 2024, 'Electronic', 'electronic', 'flac', 'scan', 1, "
             "'automatic')",
             (
                 str(source),
@@ -296,6 +303,8 @@ def _add_second_track(
                 metadata.st_size,
                 metadata.st_mtime_ns,
                 f"{metadata.st_size}:{metadata.st_mtime_ns}",
+                medium_position,
+                release_track_position,
             ),
         )
         connection.execute(
@@ -303,8 +312,13 @@ def _add_second_track(
             "(local_track_id, provider, recording_mbid, release_mbid, "
             "release_track_mbid, medium_position, release_track_position, "
             "decision_source, selected_at) VALUES ('track-2', 'musicbrainz', ?, "
-            "'aff0622e-7bd3-4fb6-9ca3-0fa19dd2340b', ?, 1, 2, 'manual', 1)",
-            (recording_mbid, release_track_mbid),
+            "'aff0622e-7bd3-4fb6-9ca3-0fa19dd2340b', ?, ?, ?, 'manual', 1)",
+            (
+                recording_mbid,
+                release_track_mbid,
+                medium_position,
+                release_track_position,
+            ),
         )
 
 
@@ -447,7 +461,7 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
     assert json.loads(plan[0].capability_json)["album_artwork_version"] == 7
     assert plan[0].destination_relative_path == (
         "Johann Sebastian Bach; Glenn Gould/"
-        "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
+        "Goldberg Variations, BWV 988 (1982)/01 - Aria.flac"
     )
     desired = json.loads(plan[0].desired_document_json)
     catalog = json.loads(str(plan[0].catalog_document_json))
@@ -470,8 +484,105 @@ async def test_preview_is_pinned_durable_and_never_mutates_library_files(
     assert catalog["artist_display"] == "Glenn Gould"
     assert catalog["album_artist_display"] == "Johann Sebastian Bach; Glenn Gould"
     assert source.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_partial_selection_uses_exact_release_multi_disc_policy(
+    tmp_path: Path,
+) -> None:
+    (
+        root,
+        _source,
+        preferences,
+        store,
+        settings_revision,
+        policy_revision,
+    ) = _configured(tmp_path)
+    release = msgspec.json.decode(
+        (FIXTURES / "musicbrainz" / "management_release.json").read_bytes(),
+        type=MbManagementRelease,
+    )
+    release.release_group.disambiguation = "Deluxe Edition"
+    second = copy.deepcopy(release.media[0])
+    second.position = 2
+    second.tracks[0].id = "99999999-9999-4999-8999-999999999999"
+    second.tracks[0].recording.id = "88888888-8888-4888-8888-888888888888"
+    release.media.append(second)
+    planner = _planner(tmp_path, store, preferences, canonical_release=release)
+
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="tracks", ids=("track-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="multi-disc-partial",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    await planner.run_claimed_preview(claimed, "worker-1")
+    item = (await store.list_library_management_plan_items(handle.job_id))[0]
+
+    assert item.destination_relative_path == (
+        "Johann Sebastian Bach; Glenn Gould/"
+        "Goldberg Variations, BWV 988 (1982) (Deluxe Edition)/CD 01/01 - Aria.flac"
+    )
     assert sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == [
         "source.flac"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_two_disc_preview_resets_track_names_inside_each_medium(
+    tmp_path: Path,
+) -> None:
+    root, _source, preferences, store, settings_revision, policy_revision = _configured(
+        tmp_path
+    )
+    second_source = root / "source-2.flac"
+    shutil.copy2(FIXTURES / "library" / "management_full.flac", second_source)
+    release = msgspec.json.decode(
+        (FIXTURES / "musicbrainz" / "management_release.json").read_bytes(),
+        type=MbManagementRelease,
+    )
+    second = copy.deepcopy(release.media[0])
+    second.position = 2
+    second.tracks[0].id = "99999999-9999-4999-8999-999999999999"
+    second.tracks[0].position = 1
+    second.tracks[0].recording.id = "88888888-8888-4888-8888-888888888888"
+    second.tracks[0].title = "Second Disc Opener"
+    release.media.append(second)
+    _add_second_track(
+        tmp_path / "library.db",
+        second_source,
+        release_track_mbid=second.tracks[0].id,
+        recording_mbid=second.tracks[0].recording.id,
+        medium_position=2,
+        release_track_position=1,
+    )
+    planner = _planner(tmp_path, store, preferences, canonical_release=release)
+    handle = await planner.create_preview(
+        selection=LibraryManagementSelection(kind="albums", ids=("album-1",)),
+        profile_id=PICARD_ORGANIZER_PROFILE_ID,
+        expected_settings_revision=settings_revision,
+        expected_policy_revision=policy_revision,
+        actor_user_id="admin",
+        idempotency_key="two-disc-preview",
+    )
+    claimed = await store.claim_operation_job(
+        "worker-1", now=100, lease_seconds=60, kind="library_management"
+    )
+    assert claimed is not None
+
+    await planner.run_claimed_preview(claimed, "worker-1")
+    items = await store.list_library_management_plan_items(handle.job_id)
+
+    assert [item.destination_relative_path for item in items] == [
+        "Johann Sebastian Bach; Glenn Gould/Goldberg Variations, BWV 988 (1982)/CD 01/01 - Aria.flac",
+        "Johann Sebastian Bach; Glenn Gould/Goldberg Variations, BWV 988 (1982)/CD 02/01 - Second Disc Opener.flac",
     ]
 
 
@@ -1953,7 +2064,7 @@ async def test_preview_blocks_destination_collision_without_overwrite(
     ) = _configured(tmp_path)
     destination = root / (
         "Johann Sebastian Bach; Glenn Gould/"
-        "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
+        "Goldberg Variations, BWV 988 (1982)/01 - Aria.flac"
     )
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"occupied")
@@ -1982,7 +2093,7 @@ async def test_preview_blocks_destination_collision_without_overwrite(
             "classification": "same_path_different_content",
             "existing_relative_path": (
                 "Johann Sebastian Bach; Glenn Gould/"
-                "Goldberg Variations, BWV 988 (1982)/0101 Aria.flac"
+                "Goldberg Variations, BWV 988 (1982)/01 - Aria.flac"
             ),
             "existing_root_id": "root-1",
         }

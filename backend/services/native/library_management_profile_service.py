@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import copy
 import os
-from pathlib import Path
-from collections.abc import Callable
 import uuid
+from collections.abc import Callable
+from pathlib import Path
 
 import msgspec
 
@@ -20,7 +20,7 @@ from api.v1.schemas.library_management import (
     LibraryManagementSettings,
     LibraryManagementSettingsResponse,
     normalize_library_management_settings,
-    picard_style_organizer_profile,
+    preset_profile_for_origin,
     profile_revision,
     settings_revision,
 )
@@ -28,6 +28,14 @@ from core.exceptions import (
     ConfigurationError,
     ScriptValidationError,
     StaleRevisionError,
+)
+from models.library_management_planning import (
+    PinnedLibraryManagementProfile,
+    naming_policy_revision,
+    pin_library_management_profile,
+)
+from services.native.library_management_naming_policy import (
+    activation_naming_policy_matches,
 )
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.preferences_service import PreferencesService
@@ -350,13 +358,17 @@ class LibraryManagementProfileService:
     def preset_diff(self, profile_id: str) -> LibraryManagementPresetDiff:
         settings = self._preferences.get_library_management_settings_raw()
         profile = self._find_profile(settings, profile_id)
-        if profile.preset_origin != "picard_style_organizer":
+        preset = (
+            preset_profile_for_origin(profile.preset_origin)
+            if profile.preset_origin is not None
+            else None
+        )
+        if preset is None:
             return LibraryManagementPresetDiff(
                 profile_id=profile.id,
                 preset_origin=profile.preset_origin,
                 preset_version=profile.preset_version,
             )
-        preset = picard_style_organizer_profile()
         changed = [
             group
             for group in (
@@ -371,12 +383,19 @@ class LibraryManagementProfileService:
             if msgspec.to_builtins(getattr(profile, group))
             != msgspec.to_builtins(getattr(preset, group))
         ]
+        version_upgrade_groups = (
+            ["organization"]
+            if profile.preset_origin == "picard_style_organizer"
+            and (profile.preset_version or 0) < (preset.preset_version or 0)
+            else []
+        )
         return LibraryManagementPresetDiff(
             profile_id=profile.id,
             preset_origin=profile.preset_origin,
             preset_version=profile.preset_version,
             differs=bool(changed),
             changed_groups=changed,
+            version_upgrade_groups=version_upgrade_groups,
             preset_profile=preset,
         )
 
@@ -426,8 +445,19 @@ class LibraryManagementProfileService:
                 effective_profile_revision = profile_revision(
                     self._effective_profile(normalized, assignment)
                 )
+                pinned = self._pin_effective_profile(normalized, assignment)
+                expected_activation_naming_revision = naming_policy_revision(pinned)
+                activation_naming_matches = (
+                    assignment.activation_naming_policy_revision
+                    == expected_activation_naming_revision
+                    or (
+                        assignment.activation_naming_policy_revision is None
+                        and pinned.multi_disc_naming_script is None
+                    )
+                )
                 if (
                     assignment.activation_profile_revision != effective_profile_revision
+                    or not activation_naming_matches
                     or assignment.activation_policy_revision != policy.policy_revision
                     or assignment.activation_settings_revision != current_revision
                     or not assignment.activation_preview_token
@@ -510,6 +540,13 @@ class LibraryManagementProfileService:
             raise ConfigurationError(
                 "The manual preview references an unknown naming script."
             )
+        if (
+            effective.organization.multi_disc_naming_script_id is not None
+            and effective.organization.multi_disc_naming_script_id not in naming_ids
+        ):
+            raise ConfigurationError(
+                "The manual preview references an unknown multi-disc naming script."
+            )
         return settings, effective
 
     def prepare_automatic_profile(
@@ -553,8 +590,10 @@ class LibraryManagementProfileService:
         ):
             return None
         effective = self._effective_profile(settings, assignment)
+        pinned = self._pin_effective_profile(settings, assignment)
         if (
             assignment.activation_profile_revision != profile_revision(effective)
+            or not activation_naming_policy_matches(assignment, pinned)
             or assignment.activation_policy_revision != policy.policy_revision
             or not assignment.activation_preview_token
             or not assignment.activation_preview_hash
@@ -712,7 +751,27 @@ class LibraryManagementProfileService:
             effective.organization.source_cleanup = overrides.source_cleanup
         if overrides.naming_script_id is not None:
             effective.organization.naming_script_id = overrides.naming_script_id
+        if overrides.multi_disc_naming_mode == "standard":
+            effective.organization.multi_disc_naming_script_id = None
+        elif overrides.multi_disc_naming_mode == "script":
+            effective.organization.multi_disc_naming_script_id = (
+                overrides.multi_disc_naming_script_id
+            )
+        effective.revision = profile_revision(effective)
         return effective
+
+    @classmethod
+    def _pin_effective_profile(
+        cls,
+        settings: LibraryManagementSettings,
+        assignment: LibraryManagementRootAssignment,
+    ) -> PinnedLibraryManagementProfile:
+        try:
+            return pin_library_management_profile(
+                settings, cls._effective_profile(settings, assignment)
+            )
+        except ValueError as error:
+            raise ConfigurationError(str(error)) from error
 
     @classmethod
     def _effective_scope_payload(
@@ -727,6 +786,15 @@ class LibraryManagementProfileService:
         payload["_naming_script_revision"] = naming_scripts[
             profile.organization.naming_script_id
         ].revision
+        multi_disc_script_id = profile.organization.multi_disc_naming_script_id
+        payload["_multi_disc_naming_script_revision"] = (
+            naming_scripts[multi_disc_script_id].revision
+            if multi_disc_script_id is not None
+            else None
+        )
+        payload["_naming_policy_revision"] = naming_policy_revision(
+            cls._pin_effective_profile(settings, assignment)
+        )
         external_script_id = profile.artwork.external_naming_script_id
         payload["_external_artwork_script_revision"] = (
             naming_scripts[external_script_id].revision

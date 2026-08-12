@@ -4,13 +4,22 @@ from pathlib import Path
 import pytest
 
 from api.v1.schemas.library_management import (
+    COMPLETE_LIBRARY_ORGANIZER_PROFILE_ID,
     LEGACY_NAMING_PROFILE_ID,
+    PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
+    PICARD_ORGANIZER_NAMING_SCRIPT_ID,
     PICARD_ORGANIZER_PROFILE_ID,
     LibraryManagementRootAssignment,
+    LibraryManagementRootOverrides,
+    NamingScriptSettings,
     profile_revision,
 )
 from core.config import Settings
-from core.exceptions import ConfigurationError
+from core.exceptions import ConfigurationError, StaleRevisionError
+from models.library_management_planning import (
+    naming_policy_revision,
+    pin_library_management_profile,
+)
 from services.native.library_management_profile_service import (
     LibraryManagementProfileService,
 )
@@ -54,9 +63,10 @@ def _activation_assignment(
     profile_revision_value: str | None = None,
 ) -> LibraryManagementRootAssignment:
     root_id = prefs.get_typed_library_settings_raw().library_roots[0].id
+    management_settings = prefs.get_library_management_settings_raw()
     profile = next(
         value
-        for value in prefs.get_library_management_settings_raw().profiles
+        for value in management_settings.profiles
         if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
     policy_revision = LibraryPolicyResolver(
@@ -67,6 +77,9 @@ def _activation_assignment(
         enabled=True,
         automatic_acquisitions=True,
         activation_profile_revision=(profile_revision_value or profile.revision),
+        activation_naming_policy_revision=naming_policy_revision(
+            pin_library_management_profile(management_settings, profile)
+        ),
         activation_policy_revision=policy_revision,
         activation_settings_revision=settings_revision,
         activation_preview_token="verified",
@@ -264,6 +277,121 @@ def test_automatic_enablement_requires_bound_verified_activation(
     assert saved.root_assignments[0].automatic_scan_discovered is False
 
 
+def test_root_standard_mode_follows_the_effective_standard_script(
+    tmp_path: Path,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs)
+    settings = prefs.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    first_id = "88888888-8888-4888-8888-888888888888"
+    second_id = "99999999-9999-4999-8999-999999999999"
+    settings.naming_scripts.extend(
+        [
+            NamingScriptSettings(
+                id=first_id, name="First standard", source="First/{title}.{ext}"
+            ),
+            NamingScriptSettings(
+                id=second_id, name="Second standard", source="Second/{title}.{ext}"
+            ),
+        ]
+    )
+    profile.organization.naming_script_id = first_id
+    assignment = LibraryManagementRootAssignment(
+        root_id="root-1",
+        profile_id=profile.id,
+        overrides=LibraryManagementRootOverrides(multi_disc_naming_mode="standard"),
+    )
+
+    first = service._effective_profile(settings, assignment)
+    profile.organization.naming_script_id = second_id
+    changed_profile = service._effective_profile(settings, assignment)
+    assert assignment.overrides is not None
+    assignment.overrides.naming_script_id = first_id
+    changed_override = service._effective_profile(settings, assignment)
+
+    assert first.organization.naming_script_id == first_id
+    assert changed_profile.organization.naming_script_id == second_id
+    assert changed_override.organization.naming_script_id == first_id
+    assert first.organization.multi_disc_naming_script_id is None
+    assert changed_profile.organization.multi_disc_naming_script_id is None
+    assert changed_override.organization.multi_disc_naming_script_id is None
+
+
+@pytest.mark.parametrize(
+    "script_id",
+    [
+        PICARD_ORGANIZER_NAMING_SCRIPT_ID,
+        PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
+    ],
+)
+def test_editing_either_activated_naming_script_stales_automatic_work(
+    tmp_path: Path, script_id: str
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs, validate=True)
+    _activate(service, prefs)
+    current = service.get_settings()
+    changed = prefs.get_library_management_settings_raw()
+    script = next(value for value in changed.naming_scripts if value.id == script_id)
+    script.source = f"Changed-{script_id[:4]}/{{title}}.{{ext}}"
+    prefs.save_library_management_settings_if_current(
+        changed, expected_settings_revision=current.settings_revision
+    )
+    assignment = prefs.get_library_management_settings_raw().root_assignments[0]
+
+    with pytest.raises(StaleRevisionError, match="activation is stale"):
+        service.prepare_automatic_profile(
+            root_id=assignment.root_id,
+            trigger="acquisition",
+            expected_policy_revision=assignment.activation_policy_revision or "",
+        )
+
+
+def test_standard_only_activation_without_naming_evidence_remains_compatible(
+    tmp_path: Path,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs, validate=True)
+    current = service.get_settings()
+    settings = prefs.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == LEGACY_NAMING_PROFILE_ID
+    )
+    root_id = prefs.get_typed_library_settings_raw().library_roots[0].id
+    policy_revision = LibraryPolicyResolver(
+        prefs.get_typed_library_settings_raw()
+    ).policy_revision
+    settings.root_assignments = [
+        LibraryManagementRootAssignment(
+            root_id=root_id,
+            profile_id=profile.id,
+            enabled=True,
+            automatic_acquisitions=True,
+            activation_profile_revision=profile.revision,
+            activation_naming_policy_revision=None,
+            activation_policy_revision=policy_revision,
+            activation_settings_revision=current.settings_revision,
+            activation_preview_token="verified",
+            activation_preview_hash="preview-hash",
+            activation_confirmed_at=1.0,
+        )
+    ]
+    service.save_settings(
+        settings, expected_settings_revision=current.settings_revision
+    )
+
+    prepared = service.prepare_automatic_profile(
+        root_id=root_id,
+        trigger="acquisition",
+        expected_policy_revision=policy_revision,
+    )
+
+    assert prepared is not None
+
+
 def test_no_validator_keeps_automatic_activation_inert(tmp_path: Path) -> None:
     prefs = _preferences(tmp_path)
     service = _service(prefs)
@@ -376,6 +504,35 @@ def test_picard_preset_diff_names_changed_groups(tmp_path: Path) -> None:
     assert diff.changed_groups == ["genres"]
     assert diff.preset_profile is not None
     assert diff.preset_profile.genres.maximum_count != 9
+
+
+def test_preset_diff_is_generalized_and_names_version_upgrade_groups(
+    tmp_path: Path,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs)
+
+    complete = service.preset_diff(COMPLETE_LIBRARY_ORGANIZER_PROFILE_ID)
+    assert complete.differs is False
+    assert complete.preset_origin == "complete_library_organizer"
+    assert complete.version_upgrade_groups == []
+    assert complete.preset_profile is not None
+    assert complete.preset_profile.enrichment.replaygain.mode == "replace"
+
+    current = service.get_settings()
+    proposed = prefs.get_library_management_settings_raw()
+    picard = next(
+        profile
+        for profile in proposed.profiles
+        if profile.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    picard.preset_version = 3
+    picard.organization.move_enabled = False
+    service.update_profile(picard, expected_settings_revision=current.settings_revision)
+
+    older = service.preset_diff(PICARD_ORGANIZER_PROFILE_ID)
+    assert older.changed_groups == ["organization"]
+    assert older.version_upgrade_groups == ["organization"]
 
 
 @pytest.mark.parametrize("location", ["inside", "parent", "same"])

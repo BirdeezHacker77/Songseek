@@ -17,6 +17,15 @@
 
 	const selectedScript = $derived(scripts.find((script) => script.id === editorScriptId) ?? null);
 	const attached = $derived(selectedIds.includes(editorScriptId));
+	const namingAssignment = $derived.by(() => {
+		if (kind !== 'naming') return '';
+		const single = selectedIds[0] === editorScriptId;
+		const multi = selectedIds[1] === editorScriptId;
+		if (single && multi) return 'Assigned to single-disc and multi-disc';
+		if (single) return 'Assigned to single-disc';
+		if (multi) return 'Assigned to multi-disc';
+		return 'Not assigned';
+	});
 	const localProblem = $derived(validateLocally(selectedScript));
 
 	function validateLocally(script: ManagementScriptSettings | null): string {
@@ -53,7 +62,7 @@
 			copySource && selectedScript
 				? selectedScript.source
 				: kind === 'naming'
-					? '{albumartist}/{album} ({year})/{disc:02}-{track:02} {title}.{ext}'
+					? '{albumartist}/{album}{conditional(is_empty(year), "", concat(" (", year, ")"))}/{track:02d} - {title}.{ext}'
 					: 'set title = title(title)';
 		const script: ManagementScriptSettings = {
 			id: createUuid(),
@@ -64,15 +73,12 @@
 			preset_version: null
 		};
 		editorScriptId = script.id;
-		onchange([...scripts, script], kind === 'naming' ? [script.id] : selectedIds);
+		onchange([...scripts, script], selectedIds);
 	}
 
 	function toggleAttached(): void {
 		if (!selectedScript) return;
-		if (kind === 'naming') {
-			onchange(scripts, [selectedScript.id]);
-			return;
-		}
+		if (kind === 'naming') return;
 		onchange(
 			scripts,
 			attached
@@ -94,7 +100,7 @@
 <div class="management-script-editor">
 	<div class="management-script-toolbar">
 		<label class="grid min-w-0 flex-1 gap-1 text-xs">
-			<span class="font-semibold">Named {kind} script</span>
+			<span class="font-semibold">Script currently being edited</span>
 			<select class="select select-bordered select-sm bg-base-100" bind:value={editorScriptId}>
 				{#each scripts as script (script.id)}
 					<option value={script.id}>{script.name}</option>
@@ -123,15 +129,13 @@
 					</span>
 				</div>
 				<div class="flex items-center gap-1">
-					<button class="btn btn-ghost btn-xs" onclick={toggleAttached} aria-pressed={attached}>
-						{kind === 'naming'
-							? attached
-								? 'Selected'
-								: 'Use this script'
-							: attached
-								? 'Attached'
-								: 'Attach'}
-					</button>
+					{#if kind === 'naming'}<span class="badge badge-ghost badge-sm">{namingAssignment}</span
+						>{/if}
+					{#if kind === 'tagging'}
+						<button class="btn btn-ghost btn-xs" onclick={toggleAttached} aria-pressed={attached}>
+							{attached ? 'Attached' : 'Attach'}
+						</button>
+					{/if}
 					{#if kind === 'tagging' && attached}
 						<button
 							class="btn btn-ghost btn-xs btn-square"
@@ -173,16 +177,25 @@
 					Basic structure is valid. Full language validation runs before save.
 				</p>
 			{/if}
+			{#if kind === 'naming'}
+				<div class="mt-3 rounded-lg border border-base-content/10 bg-base-100 p-3 text-xs">
+					<strong>Built-in Picard-style examples</strong>
+					<p class="mt-1 font-mono">Anthony Green/Avalon (2008)/03 - Drugdealer.flac</p>
+					<p class="font-mono">Artist/Album (2023)/CD 01/01 - Track.flac</p>
+					<p class="font-mono">Artist/Album (2023)/Disc 01/01 - Track.flac</p>
+				</div>
+			{/if}
 
 			<details class="mt-3 text-xs text-base-content/60">
 				<summary class="cursor-pointer font-semibold">Language reference</summary>
 				{#if kind === 'naming'}
 					<p class="mt-2">
-						Common values: title, album, artist, albumartist, year, disc, track, genre, ext, codec.
+						Common values: title, album, album_disambiguation, artist, albumartist, year, disc,
+						track, medium_format, medium_number, genre, ext, codec.
 					</p>
 					<p class="mt-1">
-						Functions: default, conditional, pad, replace, lower, upper, title, join, ascii_fold,
-						path_safe.
+						Functions: default, conditional, concat, is_empty, pad, replace, lower, upper, title,
+						join, ascii_fold, path_safe.
 					</p>
 					<p class="mt-1">
 						Only literal / characters create directories. Actual paths and collisions appear in a
@@ -195,11 +208,11 @@
 							<p class="mt-1">Alpha/Management Track.flac</p>
 						</div>
 						<div class="rounded-lg border border-base-content/10 bg-base-100 p-2">
-							<strong>Multi-disc album</strong>
+							<strong>Built-in multi-disc shape</strong>
 							<code class="mt-1 block break-all"
-								>{'{albumartist}/{album} ({year})/{pad(disc, 2)}-{pad(track, 2)} {title}.{lower(extension)}'}</code
+								>{'{albumartist}/{album}{conditional(is_empty(year), "", concat(" (", year, ")"))}{conditional(is_empty(album_disambiguation), "", concat(" (", album_disambiguation, ")"))}/{default(medium_format, "Disc")} {medium_number:02d}/{track:02d} - {title}.{ext}'}</code
 							>
-							<p class="mt-1">Alpha/Management Album (2024)/01-02 Management Track.flac</p>
+							<p class="mt-1">Alpha/Management Album (2023)/CD 01/02 - Management Track.flac</p>
 						</div>
 					</div>
 				{:else}

@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import shutil
 from pathlib import Path
@@ -33,18 +34,27 @@ from models.library_management import (
     LibraryManagementImportBundle,
     LibraryManagementImportFile,
 )
+from models.library_management_planning import (
+    naming_policy_revision,
+    pin_library_management_profile,
+)
 from models.library_management_artwork import ArtworkOutput, ArtworkProjection
 from models.library_management_enrichment import (
     ReplayGainAnalysis,
     ReplayGainTrackResult,
 )
+from repositories.musicbrainz_management_models import MbManagementRelease
 from services.native.automatic_import_management_service import (
     AutomaticImportManagementService,
 )
 from services.native.library_management_profile_service import (
     LibraryManagementProfileService,
 )
-from tests.services.native.test_library_management_planner import _configured, _planner
+from tests.services.native.test_library_management_planner import (
+    FIXTURES,
+    _configured,
+    _planner,
+)
 
 
 def _service(  # noqa: ANN001, ANN202
@@ -71,24 +81,33 @@ def _service(  # noqa: ANN001, ANN202
     )
 
 
-def _activate(preferences, policy_revision: str, *, stale: bool = False) -> None:  # noqa: ANN001
+def _activate(
+    preferences,
+    policy_revision: str,
+    *,
+    stale: bool = False,
+    acquisitions: bool = True,
+    drop_imports: bool = False,
+) -> None:
     current = preferences.get_library_management_settings()
     settings = preferences.get_library_management_settings_raw()
     profile = next(
         value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
+    pinned = pin_library_management_profile(settings, profile)
     settings.root_assignments = [
         LibraryManagementRootAssignment(
             root_id="root-1",
             profile_id=profile.id,
             enabled=True,
-            automatic_acquisitions=True,
-            automatic_drop_imports=False,
+            automatic_acquisitions=acquisitions,
+            automatic_drop_imports=drop_imports,
             activation_profile_revision=(
                 "stale-profile" if stale else profile_revision(profile)
             ),
             activation_policy_revision=policy_revision,
             activation_settings_revision=current.settings_revision,
+            activation_naming_policy_revision=naming_policy_revision(pinned),
             activation_preview_token="confirmed",
             activation_preview_hash="confirmed-hash",
             activation_confirmed_at=100.0,
@@ -167,11 +186,46 @@ async def test_acquisition_toggle_pins_full_projection_but_drop_toggle_is_indepe
     assert managed.metadata_snapshot_id is not None
     assert managed.release_track_mbid == "22222222-2222-4222-8222-222222222222"
     assert managed.baseline_relative_path == "Incoming/01 Original.flac"
-    assert managed.destination_relative_path != managed.baseline_relative_path
+    assert managed.destination_relative_path == (
+        "Johann Sebastian Bach; Glenn Gould/Goldberg Variations, BWV 988 (1982)/01 - Aria.flac"
+    )
     assert acquisition_repeat.idempotency_key == acquisition.idempotency_key
     assert msgspec.to_builtins(drop) == msgspec.to_builtins(
         _bundle(tmp_path, source, policy_revision, origin="drop_import")
     )
+
+
+@pytest.mark.asyncio
+async def test_acquisition_and_drop_import_share_the_same_dynamic_multi_disc_path(
+    tmp_path: Path,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _activate(preferences, policy_revision, drop_imports=True)
+    service, planner = _service(tmp_path, preferences, store)
+    release = msgspec.json.decode(
+        (FIXTURES / "musicbrainz" / "management_release.json").read_bytes(),
+        type=MbManagementRelease,
+    )
+    second = copy.deepcopy(release.media[0])
+    second.position = 2
+    second.tracks[0].id = "99999999-9999-4999-8999-999999999999"
+    second.tracks[0].recording.id = "88888888-8888-4888-8888-888888888888"
+    release.media.append(second)
+    planner._canonical._musicbrainz.get_canonical_release.return_value = release
+
+    acquisition = await service.prepare(_bundle(tmp_path, source, policy_revision))
+    drop = await service.prepare(
+        _bundle(tmp_path, source, policy_revision, origin="drop_import")
+    )
+
+    expected = (
+        "Johann Sebastian Bach; Glenn Gould/Goldberg Variations, BWV 988 (1982)/"
+        "CD 01/01 - Aria.flac"
+    )
+    assert acquisition.files[0].destination_relative_path == expected
+    assert drop.files[0].destination_relative_path == expected
 
 
 @pytest.mark.asyncio

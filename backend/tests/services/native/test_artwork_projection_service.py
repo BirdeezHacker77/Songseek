@@ -4,7 +4,10 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
-from api.v1.schemas.library_management import ArtworkManagementSettings
+from api.v1.schemas.library_management import (
+    ArtworkManagementSettings,
+    complete_library_organizer_profile,
+)
 from core.exceptions import ExternalServiceError
 from infrastructure.audio.artwork_processor import ArtworkProcessor
 from infrastructure.queue.priority_queue import RequestPriority
@@ -400,6 +403,43 @@ async def test_local_patterns_are_case_insensitive_and_do_not_follow_symlinks(
     assert len(projection.embedded) == 1
     assert projection.embedded[0].source == "local_files"
     assert projection.embedded[0].width == 64
+
+
+@pytest.mark.asyncio
+async def test_complete_preset_collects_every_local_artwork_type(
+    tmp_path: Path,
+) -> None:
+    album = tmp_path / "album"
+    album.mkdir()
+    filenames = {
+        "front": "cover.png",
+        "back": "back.png",
+        "booklet": "booklet.png",
+        "medium": "disc.png",
+        "tray": "tray.png",
+        "obi": "obi.png",
+        "spine": "spine.png",
+        "track": "track.png",
+        "other": "artist-photo.png",
+    }
+    for index, filename in enumerate(filenames.values(), start=1):
+        (album / filename).write_bytes(_png(64, 64, (index, index, index)))
+    settings = complete_library_organizer_profile().artwork
+
+    projection = await ArtworkProjectionService(
+        StubArtworkRepository(), ArtworkProcessor()
+    ).project(
+        settings=settings,
+        release_mbid=_RELEASE,
+        release_group_mbid=_RG,
+        album_directory=album,
+        existing_embedded=(),
+        existing_external=(),
+        priority=RequestPriority.USER_INITIATED,
+    )
+
+    assert {value.image_type for value in projection.embedded} == {"front"}
+    assert {value.image_type for value in projection.external} == set(filenames)
 
 
 @pytest.mark.asyncio

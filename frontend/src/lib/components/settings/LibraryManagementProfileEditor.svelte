@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import {
 		AudioWaveform,
+		ArrowDown,
+		ArrowUp,
 		Braces,
 		Check,
 		ChevronRight,
@@ -125,23 +127,42 @@
 		{ value: 'existing_local', label: 'Existing local tags' }
 	];
 	const artworkProviders: Array<{ value: ArtworkProvider; label: string }> = [
-		{ value: 'cover_art_archive_release', label: 'Cover Art Archive release' },
-		{ value: 'cover_art_archive_release_group', label: 'Cover Art Archive release group' },
+		{ value: 'cover_art_archive_release', label: 'Exact-release artwork' },
+		{ value: 'cover_art_archive_release_group', label: 'Release-group fallback' },
 		{ value: 'local_files', label: 'Local files' },
-		{ value: 'embedded', label: 'Existing embedded art' },
-		{ value: 'audiodb', label: 'TheAudioDB' }
+		{ value: 'embedded', label: 'Existing embedded art' }
 	];
-	const artworkTypes: ArtworkImageType[] = [
-		'front',
-		'back',
-		'booklet',
-		'medium',
-		'tray',
-		'obi',
-		'spine',
-		'track',
-		'other'
+	const artworkTypes: Array<{ value: ArtworkImageType; label: string }> = [
+		{ value: 'front', label: 'Front cover' },
+		{ value: 'back', label: 'Back cover' },
+		{ value: 'booklet', label: 'Booklet' },
+		{ value: 'medium', label: 'Media label' },
+		{ value: 'tray', label: 'Tray insert' },
+		{ value: 'obi', label: 'Obi strip' },
+		{ value: 'spine', label: 'Spine' },
+		{ value: 'track', label: 'Track artwork' },
+		{ value: 'other', label: 'Other artwork' }
 	];
+	const mergeableFields = new Set([
+		'artist',
+		'album_artist',
+		'artist_sort',
+		'album_artist_sort',
+		'release_type',
+		'label',
+		'catalog_number',
+		'isrc',
+		'musicbrainz_artist_id',
+		'musicbrainz_album_artist_id',
+		'musicbrainz_work_id',
+		'composer',
+		'lyricist',
+		'conductor',
+		'performer',
+		'arranger',
+		'remixer',
+		'producer'
+	]);
 
 	const visibleFields = $derived(
 		draft.metadata.fields.filter((field) =>
@@ -202,9 +223,8 @@
 		heading.focus();
 	});
 
-	function updateNamingScripts(value: ManagementScriptSettings[], selectedIds: string[]): void {
+	function updateNamingScripts(value: ManagementScriptSettings[]): void {
 		scripts = value;
-		if (selectedIds[0]) draft.organization.naming_script_id = selectedIds[0];
 	}
 
 	function updateTaggingScripts(value: ManagementScriptSettings[], selectedIds: string[]): void {
@@ -231,6 +251,24 @@
 		draft.genres.aliases = [...draft.genres.aliases, { source: '', target: '' }];
 	}
 
+	function addArtworkProvider(value: string): void {
+		const provider = value as ArtworkProvider;
+		if (!provider || draft.artwork.providers.includes(provider)) return;
+		draft.artwork.providers = [...draft.artwork.providers, provider];
+	}
+
+	function moveArtworkProvider(index: number, direction: -1 | 1): void {
+		const target = index + direction;
+		if (target < 0 || target >= draft.artwork.providers.length) return;
+		const providers = [...draft.artwork.providers];
+		[providers[index], providers[target]] = [providers[target], providers[index]];
+		draft.artwork.providers = providers;
+	}
+
+	function artworkProviderLabel(provider: ArtworkProvider): string {
+		return artworkProviders.find((option) => option.value === provider)?.label ?? provider;
+	}
+
 	function requestReset(group: PresetGroup, opener: HTMLButtonElement): void {
 		resetGroup = group;
 		resetOpener = opener;
@@ -245,7 +283,8 @@
 	}
 
 	function resetSection(): void {
-		const preset = presetDiffQuery.data?.preset_profile;
+		const presetDiff = presetDiffQuery.data;
+		const preset = presetDiff?.preset_profile;
 		if (!preset || !resetGroup) return;
 		switch (resetGroup) {
 			case 'metadata':
@@ -268,6 +307,9 @@
 				break;
 			case 'notification':
 				draft.notification = structuredClone(preset.notification);
+		}
+		if (presetDiff.version_upgrade_groups.includes(resetGroup)) {
+			draft.preset_version = preset.preset_version;
 		}
 		resetDialog.close();
 	}
@@ -437,21 +479,24 @@
 									>
 										<option value="disabled">Off</option>
 										<option value="replace">Replace</option>
-										<option value="merge">Merge</option>
 										<option value="fill_missing">Fill missing</option>
-										<option value="preserve">Preserve</option>
+										{#if mergeableFields.has(field.field)}<option value="merge">Merge</option>{/if}
 									</select>
-									<span
-										class="tooltip"
-										data-tip="Clear this field when the selected release has no value"
-									>
-										<input
-											type="checkbox"
-											class="checkbox checkbox-xs"
-											bind:checked={field.clear_when_canonical_missing}
-											aria-label={`Clear ${field.field} when canonical value is missing`}
-										/>
-									</span>
+									{#if field.mode === 'replace'}
+										<span
+											class="tooltip"
+											data-tip="Clear this field when the selected release has no value"
+										>
+											<input
+												type="checkbox"
+												class="checkbox checkbox-xs"
+												bind:checked={field.clear_when_canonical_missing}
+												aria-label={`Clear ${field.field} when canonical value is missing`}
+											/>
+										</span>
+									{:else}
+										<span aria-hidden="true"></span>
+									{/if}
 								</label>
 							{/each}
 						</div>
@@ -582,6 +627,10 @@
 									<option value="fill_missing">Fill missing</option>
 									<option value="replace">Replace</option>
 								</select>
+								<p class="text-xs text-base-content/55">
+									Preserve keeps existing ReplayGain tags and performs no loudness analysis. Fill
+									missing and Replace run analysis.
+								</p>
 							</label>
 							<details class="management-editor-advanced">
 								<summary>
@@ -693,7 +742,6 @@
 							bind:value={draft.metadata.artist_credits.standardization}
 						>
 							<option value="credited">Release credits</option>
-							<option value="variations">Artist variations</option>
 							<option value="canonical">Canonical names</option>
 						</select>
 					</label>
@@ -1014,37 +1062,78 @@
 							></span
 						>
 					</label>
-					<div class="management-choice-grid sm:col-span-2" aria-label="Artwork providers">
-						{#each artworkProviders as provider (provider.value)}
-							<label
-								><input
-									type="checkbox"
-									class="checkbox checkbox-xs"
-									checked={draft.artwork.providers.includes(provider.value)}
-									onchange={(event) =>
-										(draft.artwork.providers = toggled(
-											draft.artwork.providers,
-											provider.value,
-											event.currentTarget.checked
-										))}
-								/><span>{provider.label}</span></label
-							>
-						{/each}
-					</div>
+					<section
+						class="sm:col-span-2 rounded-xl border border-base-content/10 bg-base-100/35 p-3"
+					>
+						<div class="flex items-end justify-between gap-3">
+							<div>
+								<strong class="text-sm">Artwork source priority</strong>
+								<p class="text-xs text-base-content/55">Sources are tried from top to bottom.</p>
+							</div>
+							<label class="grid gap-1 text-xs">
+								<span class="sr-only">Add artwork source</span>
+								<select
+									class="select select-bordered select-sm bg-base-100"
+									value=""
+									onchange={(event) => {
+										addArtworkProvider(event.currentTarget.value);
+										event.currentTarget.value = '';
+									}}
+								>
+									<option value="">Add source…</option>
+									{#each artworkProviders.filter((provider) => !draft.artwork.providers.includes(provider.value)) as provider (provider.value)}
+										<option value={provider.value}>{provider.label}</option>
+									{/each}
+								</select>
+							</label>
+						</div>
+						<ol class="mt-3 grid gap-2" aria-label="Artwork source priority">
+							{#each draft.artwork.providers as provider, index (provider)}
+								<li
+									class="flex items-center gap-2 rounded-lg border border-base-content/10 bg-base-100 px-3 py-2"
+								>
+									<span class="badge badge-ghost badge-sm font-mono">{index + 1}</span>
+									<span class="min-w-0 flex-1 text-sm">{artworkProviderLabel(provider)}</span>
+									<button
+										class="btn btn-ghost btn-xs btn-square"
+										aria-label={`Move ${artworkProviderLabel(provider)} earlier`}
+										disabled={index === 0}
+										onclick={() => moveArtworkProvider(index, -1)}
+										><ArrowUp class="h-3.5 w-3.5" /></button
+									>
+									<button
+										class="btn btn-ghost btn-xs btn-square"
+										aria-label={`Move ${artworkProviderLabel(provider)} later`}
+										disabled={index === draft.artwork.providers.length - 1}
+										onclick={() => moveArtworkProvider(index, 1)}
+										><ArrowDown class="h-3.5 w-3.5" /></button
+									>
+									<button
+										class="btn btn-ghost btn-xs btn-square text-error"
+										aria-label={`Remove ${artworkProviderLabel(provider)}`}
+										onclick={() =>
+											(draft.artwork.providers = draft.artwork.providers.filter(
+												(value) => value !== provider
+											))}><X class="h-3.5 w-3.5" /></button
+									>
+								</li>
+							{/each}
+						</ol>
+					</section>
 					<div class="management-choice-grid sm:col-span-2" aria-label="Artwork image types">
-						{#each artworkTypes as imageType (imageType)}
+						{#each artworkTypes as imageType (imageType.value)}
 							<label
 								><input
 									type="checkbox"
 									class="checkbox checkbox-xs"
-									checked={draft.artwork.image_types.includes(imageType)}
+									checked={draft.artwork.image_types.includes(imageType.value)}
 									onchange={(event) =>
 										(draft.artwork.image_types = toggled(
 											draft.artwork.image_types,
-											imageType,
+											imageType.value,
 											event.currentTarget.checked
 										))}
-								/><span>{imageType}</span></label
+								/><span>{imageType.label}</span></label
 							>
 						{/each}
 					</div>
@@ -1058,26 +1147,18 @@
 							<ChevronRight class="h-4 w-4" />
 						</summary>
 						<div class="mt-3 grid gap-3 sm:grid-cols-2">
-							<label class="grid gap-1.5 text-sm">
-								<span>Minimum width</span>
-								<input
+							<p class="sm:col-span-2 text-xs text-base-content/55">
+								A size of 0 means unlimited. Minimum dimensions filter candidates; maximum sizes
+								resize outputs when needed.
+							</p>
+							<label class="grid gap-1.5 text-sm"
+								><span>Minimum width</span><input
 									type="number"
 									min="0"
 									class="input input-bordered bg-base-100"
 									bind:value={draft.artwork.minimum_width}
-								/>
-							</label>
-							<label class="grid gap-1.5 text-sm">
-								<span>Download size</span>
-								<select
-									class="select select-bordered bg-base-100"
-									bind:value={draft.artwork.download_size}
-								>
-									<option value="full">Full</option><option value="1200">1200 px</option><option
-										value="500">500 px</option
-									><option value="250">250 px</option>
-								</select>
-							</label>
+								/></label
+							>
 							<label class="grid gap-1.5 text-sm"
 								><span>Minimum height</span><input
 									type="number"
@@ -1085,6 +1166,14 @@
 									class="input input-bordered bg-base-100"
 									bind:value={draft.artwork.minimum_height}
 								/></label
+							>
+							<label class="grid gap-1.5 text-sm"
+								><span>Download size</span><select
+									class="select select-bordered bg-base-100"
+									bind:value={draft.artwork.download_size}
+									><option value="full">Full size</option><option value="1200">1200 px</option
+									><option value="500">500 px</option><option value="250">250 px</option></select
+								></label
 							>
 							<label class="management-master-toggle"
 								><input
@@ -1097,60 +1186,75 @@
 									></span
 								></label
 							>
-							<label class="grid gap-1.5 text-sm"
-								><span>Embedded maximum size</span><input
-									type="number"
-									min="0"
-									class="input input-bordered bg-base-100"
-									bind:value={draft.artwork.embedded_maximum_size}
-								/></label
-							>
-							<label class="grid gap-1.5 text-sm"
-								><span>Embedded format</span><select
-									class="select select-bordered bg-base-100"
-									bind:value={draft.artwork.embedded_format}
-									><option value="original">Original</option><option value="jpeg">JPEG</option
-									><option value="png">PNG</option><option value="webp">WebP</option></select
-								></label
-							>
-							<label class="grid gap-1.5 text-sm"
-								><span>External maximum size</span><input
-									type="number"
-									min="0"
-									class="input input-bordered bg-base-100"
-									bind:value={draft.artwork.external_maximum_size}
-								/></label
-							>
-							<label class="grid gap-1.5 text-sm"
-								><span>External format</span><select
-									class="select select-bordered bg-base-100"
-									bind:value={draft.artwork.external_format}
-									><option value="original">Original</option><option value="jpeg">JPEG</option
-									><option value="png">PNG</option><option value="webp">WebP</option></select
-								></label
-							>
-							<label class="management-master-toggle"
-								><input
-									type="checkbox"
-									class="toggle toggle-sm"
-									bind:checked={draft.artwork.embedded_front_only}
-								/><span
-									><strong>Embed front art only</strong><small
-										>Do not embed additional image types.</small
-									></span
-								></label
-							>
-							<label class="management-master-toggle"
-								><input
-									type="checkbox"
-									class="toggle toggle-sm"
-									bind:checked={draft.artwork.external_front_only}
-								/><span
-									><strong>External front art only</strong><small
-										>Do not create other image types.</small
-									></span
-								></label
-							>
+							{#if draft.artwork.embedded_enabled}
+								<label class="grid gap-1.5 text-sm"
+									><span>Embedded maximum size</span><input
+										type="number"
+										min="0"
+										class="input input-bordered bg-base-100"
+										bind:value={draft.artwork.embedded_maximum_size}
+									/></label
+								>
+								<label class="grid gap-1.5 text-sm"
+									><span>Embedded format</span><select
+										class="select select-bordered bg-base-100"
+										bind:value={draft.artwork.embedded_format}
+										><option value="original">Original</option><option value="jpeg">JPEG</option
+										><option value="png">PNG</option><option value="webp">WebP</option></select
+									></label
+								>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.artwork.embedded_front_only}
+									/><span
+										><strong>Embed front art only</strong><small
+											>Do not embed additional image types.</small
+										></span
+									></label
+								>
+							{/if}
+							{#if draft.artwork.external_enabled}
+								<label class="grid gap-1.5 text-sm"
+									><span>External maximum size</span><input
+										type="number"
+										min="0"
+										class="input input-bordered bg-base-100"
+										bind:value={draft.artwork.external_maximum_size}
+									/></label
+								>
+								<label class="grid gap-1.5 text-sm"
+									><span>External format</span><select
+										class="select select-bordered bg-base-100"
+										bind:value={draft.artwork.external_format}
+										><option value="original">Original</option><option value="jpeg">JPEG</option
+										><option value="png">PNG</option><option value="webp">WebP</option></select
+									></label
+								>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.artwork.external_front_only}
+									/><span
+										><strong>External front art only</strong><small
+											>Do not create other image types.</small
+										></span
+									></label
+								>
+								<label class="management-master-toggle"
+									><input
+										type="checkbox"
+										class="toggle toggle-sm"
+										bind:checked={draft.artwork.overwrite_external_files}
+									/><span
+										><strong>Overwrite external artwork</strong><small
+											>Leaves existing files untouched and reports naming collisions.</small
+										></span
+									></label
+								>
+							{/if}
 							<label class="management-master-toggle"
 								><input
 									type="checkbox"
@@ -1162,17 +1266,6 @@
 									></span
 								></label
 							>
-							<label class="management-master-toggle"
-								><input
-									type="checkbox"
-									class="toggle toggle-sm"
-									bind:checked={draft.artwork.overwrite_external_files}
-								/><span
-									><strong>Overwrite external artwork</strong><small
-										>Otherwise existing files become collisions.</small
-									></span
-								></label
-							>
 							<label class="grid gap-1.5 text-sm"
 								><span>Local file patterns (one per line)</span><textarea
 									class="textarea textarea-bordered min-h-24 bg-base-100"
@@ -1181,31 +1274,36 @@
 										(draft.artwork.local_file_patterns = lines(event.currentTarget.value))}
 								></textarea></label
 							>
-							<label class="grid gap-1.5 text-sm"
-								><span>Preserve image types (one per line)</span><select
-									multiple
-									class="select select-bordered min-h-28 bg-base-100"
-									value={draft.artwork.preserve_existing_types}
-									onchange={(event) =>
-										(draft.artwork.preserve_existing_types = Array.from(
-											event.currentTarget.selectedOptions,
-											(option) => option.value as ArtworkImageType
-										))}
-									>{#each artworkTypes as imageType (imageType)}<option value={imageType}
-											>{imageType}</option
-										>{/each}</select
-								></label
-							>
-							<label class="grid gap-1.5 text-sm sm:col-span-2"
-								><span>External artwork naming script</span><select
-									class="select select-bordered bg-base-100"
-									bind:value={draft.artwork.external_naming_script_id}
-									><option value={null}>No external naming script</option
-									>{#each scripts as script (script.id)}<option value={script.id}
-											>{script.name}</option
-										>{/each}</select
-								></label
-							>
+							<fieldset class="grid gap-2 text-sm">
+								<legend class="mb-1">Preserve existing image types</legend>
+								{#each artworkTypes as imageType (imageType.value)}
+									<label class="flex items-center gap-2 text-xs"
+										><input
+											type="checkbox"
+											class="checkbox checkbox-xs"
+											checked={draft.artwork.preserve_existing_types.includes(imageType.value)}
+											onchange={(event) =>
+												(draft.artwork.preserve_existing_types = toggled(
+													draft.artwork.preserve_existing_types,
+													imageType.value,
+													event.currentTarget.checked
+												))}
+										/><span>{imageType.label}</span></label
+									>
+								{/each}
+							</fieldset>
+							{#if draft.artwork.external_enabled}
+								<label class="grid gap-1.5 text-sm sm:col-span-2"
+									><span>External artwork naming script</span><select
+										class="select select-bordered bg-base-100"
+										bind:value={draft.artwork.external_naming_script_id}
+										><option value={null}>Default album filenames (cover.jpg, back.jpg, …)</option
+										>{#each scripts as script (script.id)}<option value={script.id}
+												>{script.name}</option
+											>{/each}</select
+									></label
+								>
+							{/if}
 						</div>
 					</details>
 				</div>
@@ -1260,10 +1358,44 @@
 							></label
 						>
 					</div>
+					<p class="text-xs font-semibold uppercase tracking-wider text-base-content/55">
+						Scripts used by this profile
+					</p>
+					<div class="mb-3 grid gap-3 sm:grid-cols-2">
+						<label class="grid gap-1 text-xs">
+							<span class="font-semibold">Single-disc naming script</span>
+							<select
+								class="select select-bordered select-sm bg-base-100"
+								bind:value={draft.organization.naming_script_id}
+							>
+								{#each scripts as script (script.id)}<option value={script.id}>{script.name}</option
+									>{/each}
+							</select>
+						</label>
+						<label class="grid gap-1 text-xs">
+							<span class="font-semibold">Multi-disc naming script</span>
+							<select
+								class="select select-bordered select-sm bg-base-100"
+								bind:value={draft.organization.multi_disc_naming_script_id}
+							>
+								<option value={null}>Use the single-disc script</option>
+								{#each scripts as script (script.id)}<option value={script.id}>{script.name}</option
+									>{/each}
+							</select>
+						</label>
+					</div>
+					<p class="mb-3 text-xs text-base-content/60">
+						Releases with more than one MusicBrainz audio medium use the multi-disc script.
+					</p>
 					<LibraryManagementScriptEditor
 						kind="naming"
 						{scripts}
-						selectedIds={[draft.organization.naming_script_id]}
+						selectedIds={[
+							draft.organization.naming_script_id,
+							...(draft.organization.multi_disc_naming_script_id
+								? [draft.organization.multi_disc_naming_script_id]
+								: [])
+						]}
 						onchange={updateNamingScripts}
 					/>
 					<details class="management-editor-advanced">
@@ -1324,13 +1456,17 @@
 									class="input input-bordered bg-base-100"
 									maxlength="8"
 									bind:value={draft.organization.compatibility.separator_replacement}
-								/></label
+								/><small class="text-base-content/55"
+									>Replaces path separators and characters unsafe for the selected platform rules.</small
+								></label
 							>
 							<label class="grid gap-1.5 text-sm"
 								><span>Unicode normalization</span><select
 									class="select select-bordered bg-base-100"
 									bind:value={draft.organization.compatibility.unicode_normalization}
 									><option value="NFC">NFC</option><option value="NFKC">NFKC</option></select
+								><small class="text-base-content/55"
+									>NFC preserves character distinctions; NFKC also folds compatibility forms.</small
 								></label
 							>
 							<label class="grid gap-1.5 text-sm"
@@ -1339,7 +1475,9 @@
 									min="1"
 									class="input input-bordered bg-base-100"
 									bind:value={draft.organization.compatibility.maximum_component_length}
-								/></label
+								/><small class="text-base-content/55"
+									>Longer folder or file names are shortened safely.</small
+								></label
 							>
 							<label class="grid gap-1.5 text-sm"
 								><span>Maximum path length</span><input
@@ -1347,7 +1485,9 @@
 									min="1"
 									class="input input-bordered bg-base-100"
 									bind:value={draft.organization.compatibility.maximum_path_length}
-								/></label
+								/><small class="text-base-content/55"
+									>A dry run blocks paths that still exceed this full-path limit.</small
+								></label
 							>
 							<label class="grid gap-1.5 text-sm sm:col-span-2"
 								><span>Extension case</span><select
@@ -1355,6 +1495,8 @@
 									bind:value={draft.organization.compatibility.extension_case}
 									><option value="preserve">Preserve</option><option value="lower">Lowercase</option
 									><option value="upper">Uppercase</option></select
+								><small class="text-base-content/55"
+									>Changes only the filename extension, never the audio format.</small
 								></label
 							>
 						</div>
@@ -1385,6 +1527,8 @@
 									><option value="keep">Keep source</option><option
 										value="remove_after_confirmed_move">Remove verified source</option
 									></select
+								><small class="text-base-content/55"
+									>Removal happens only after publication and catalog commit are verified.</small
 								></label
 							>
 							<label class="management-master-toggle sm:mt-6"
@@ -1482,21 +1626,31 @@
 							<label class="grid gap-1.5 text-sm"
 								><span>ID3 version</span><select
 									class="select select-bordered bg-base-100"
-									bind:value={draft.metadata.format_compatibility.id3_version}
+									value={draft.metadata.format_compatibility.id3_version}
+									onchange={(event) => {
+										draft.metadata.format_compatibility.id3_version = event.currentTarget.value as
+											| '2.4'
+											| '2.3';
+										if (event.currentTarget.value === '2.3')
+											draft.metadata.format_compatibility.id3_text_encoding = 'utf16';
+									}}
 									><option value="2.4">ID3v2.4</option><option value="2.3">ID3v2.3</option></select
 								></label
 							>
-							<label class="grid gap-1.5 text-sm"
-								><span>ID3v2.3 list delimiter</span><input
-									class="input input-bordered bg-base-100"
-									bind:value={draft.metadata.format_compatibility.id3v23_join_delimiter}
-								/></label
-							>
+							{#if draft.metadata.format_compatibility.id3_version === '2.3'}<label
+									class="grid gap-1.5 text-sm"
+									><span>ID3v2.3 list delimiter</span><input
+										class="input input-bordered bg-base-100"
+										bind:value={draft.metadata.format_compatibility.id3v23_join_delimiter}
+									/></label
+								>{/if}
 							<label class="grid gap-1.5 text-sm"
 								><span>ID3 text encoding</span><select
 									class="select select-bordered bg-base-100"
 									bind:value={draft.metadata.format_compatibility.id3_text_encoding}
-									><option value="utf8">UTF-8</option><option value="utf16">UTF-16</option></select
+									>{#if draft.metadata.format_compatibility.id3_version === '2.4'}<option
+											value="utf8">UTF-8</option
+										>{/if}<option value="utf16">UTF-16</option></select
 								></label
 							>
 							<label class="grid gap-1.5 text-sm"
@@ -1505,6 +1659,8 @@
 									bind:value={draft.metadata.format_compatibility.mp3_apev2_policy}
 									><option value="preserve">Preserve</option><option value="remove">Remove</option
 									></select
+								><small class="text-warning"
+									>Remove deletes the complete MP3 APEv2 tag container.</small
 								></label
 							>
 							<label class="grid gap-1.5 text-sm"
@@ -1514,6 +1670,9 @@
 									><option value="save_apev2">Save APEv2</option><option value="do_not_write"
 										>Do not write</option
 									><option value="remove_apev2">Remove APEv2</option></select
+								><small class="text-warning"
+									>Do not write preserves raw AAC bytes; Remove APEv2 also removes artwork stored
+									there.</small
 								></label
 							>
 							<label class="grid gap-1.5 text-sm"
@@ -1522,6 +1681,8 @@
 									bind:value={draft.metadata.format_compatibility.wav_tag_policy}
 									><option value="id3">ID3</option><option value="riff_info">RIFF INFO</option
 									><option value="preserve_existing">Preserve existing format</option></select
+								><small class="text-warning"
+									>Choosing ID3 or RIFF INFO may convert the active WAV tag representation.</small
 								></label
 							>
 							<label class="management-master-toggle"
@@ -1532,17 +1693,6 @@
 								/><span
 									><strong>Remove stray ID3 from FLAC</strong><small
 										>Explicit compatibility cleanup.</small
-									></span
-								></label
-							>
-							<label class="management-master-toggle"
-								><input
-									type="checkbox"
-									class="toggle toggle-sm"
-									bind:checked={draft.metadata.format_compatibility.constrained_genres_primary_only}
-								/><span
-									><strong>Primary genre for constrained tags</strong><small
-										>Avoid lossy list flattening.</small
 									></span
 								></label
 							>

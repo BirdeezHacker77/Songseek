@@ -7,7 +7,10 @@ import sqlite3
 
 import pytest
 
-from api.v1.schemas.library_management import PICARD_ORGANIZER_PROFILE_ID
+from api.v1.schemas.library_management import (
+    PICARD_ORGANIZER_PROFILE_ID,
+    NamingScriptSettings,
+)
 from api.v1.schemas.library_management_preview import (
     LibraryManagementDuplicateResolutionPreviewRequest,
     LibraryManagementUndoPreviewRequest,
@@ -50,12 +53,13 @@ def _configure_collision(
     profile = next(
         value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
     )
-    script = next(
-        value
-        for value in settings.naming_scripts
-        if value.id == profile.organization.naming_script_id
+    script = NamingScriptSettings(
+        id="22222222-2222-4222-8222-222222222222",
+        name="Duplicate test naming",
+        source=destination_relative.replace(".flac", ".{ext}"),
     )
-    script.source = destination_relative.replace(".flac", ".{ext}")
+    settings.naming_scripts.append(script)
+    profile.organization.naming_script_id = script.id
     profile.organization.move_sidecars = move_sidecars
     settings.recycle_bin_path = str(recycle) if recycle is not None else ""
     saved = preferences.save_library_management_settings_if_current(

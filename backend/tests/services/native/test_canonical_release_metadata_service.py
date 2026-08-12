@@ -16,6 +16,7 @@ from models.library_management_canonical import (
 from repositories.musicbrainz_management_models import MbManagementRelease
 from services.native.canonical_release_metadata_service import (
     CanonicalReleaseMetadataService,
+    _organization_audio_medium_count,
 )
 
 _FIXTURE = (
@@ -115,6 +116,8 @@ async def test_projects_credited_picard_metadata_and_identity_alignment() -> Non
     assert document.original_date.value == "1956"
     assert document.original_date.precision == "year"
     assert document.total_discs == 1
+    assert document.album_disambiguation == ""
+    assert document.organization_audio_medium_count == 1
     assert track.total_tracks == 1
     assert track.disc_subtitle == "Aria and Variations"
     assert track.track_number_text == "A1"
@@ -138,6 +141,65 @@ async def test_projects_credited_picard_metadata_and_identity_alignment() -> Non
     payload = json.loads(snapshot.canonical_payload_json)
     assert payload["media"][0]["tracks"][0]["local_track_id"] == "track-1"
     assert snapshot.payload_sha256 == projection.payload_sha256
+
+
+def test_organization_medium_count_matches_lidarr_audio_filter() -> None:
+    release = _release()
+    cd = release.media[0]
+    dvd = copy.deepcopy(cd)
+    dvd.position = 2
+    dvd.format = "DVD"
+    data_only = copy.deepcopy(cd)
+    data_only.position = 3
+    data_only.tracks[0].title = "[data track]"
+    empty = copy.deepcopy(cd)
+    empty.position = 4
+    empty.tracks = []
+    dvd_audio = copy.deepcopy(cd)
+    dvd_audio.position = 5
+    dvd_audio.format = "DVD-Audio"
+    release.media = [cd, dvd, data_only, empty, dvd_audio]
+
+    assert _organization_audio_medium_count(release) == 2
+
+
+def test_non_audio_medium_does_not_make_a_single_cd_release_multi_disc() -> None:
+    release = _release()
+    dvd = copy.deepcopy(release.media[0])
+    dvd.position = 2
+    dvd.format = "DVD"
+    release.media.append(dvd)
+
+    assert _organization_audio_medium_count(release) == 1
+
+
+def test_audio_medium_count_preserves_positions_around_non_audio_media() -> None:
+    release = _release()
+    dvd = copy.deepcopy(release.media[0])
+    dvd.position = 2
+    dvd.format = "DVD"
+    third_cd = copy.deepcopy(release.media[0])
+    third_cd.position = 3
+    release.media = [release.media[0], dvd, third_cd]
+
+    assert _organization_audio_medium_count(release) == 2
+    assert [medium.position for medium in release.media] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_release_group_disambiguation_wins_over_exact_release_text() -> None:
+    release = _release()
+    release.disambiguation = "Exact release text"
+    release.release_group.disambiguation = "Release group text"
+    service, _, _ = _service(_identity(), release)
+
+    projection = await service.build(
+        local_album_id="album-1",
+        local_track_ids=("track-1",),
+        profile=picard_style_organizer_profile(),
+    )
+
+    assert projection.document.album_disambiguation == "Release group text"
 
 
 @pytest.mark.asyncio

@@ -99,6 +99,7 @@ from models.library_management_enrichment import (
     ReplayGainTrackResult,
 )
 from models.library_management_planning import (
+    ManagementNamingContext,
     LibraryManagementPreviewHandle,
     LibraryManagementRootScope,
     LibraryManagementSelection,
@@ -106,6 +107,12 @@ from models.library_management_planning import (
     LibraryManagementSelectionSubject,
     NormalizedLibraryManagementSelection,
     PinnedLibraryManagementProfile,
+    naming_policy_revision,
+    pin_library_management_profile,
+)
+from services.native.library_management_naming_policy import (
+    management_naming_context,
+    select_naming_script,
 )
 from models.library_work import OperationJob
 from services.native.artwork_projection_service import (
@@ -322,7 +329,6 @@ class LibraryManagementPlanner:
                     "A cross-root destination must differ from every selected root."
                 )
         pinned = self.pin_profile(settings, profile)
-        naming_script = pinned.naming_script
         catalog_revision = await self._store.get_catalog_revision()
         selected_item_count = await self._store.count_library_management_selection(
             normalized
@@ -349,9 +355,11 @@ class LibraryManagementPlanner:
             profile_revision=profile_revision(profile),
             settings_revision=current_settings_revision,
             proposed_settings_revision=(
-                settings_revision(settings) if settings_snapshot is not None else None
+                settings_revision(settings)
+                if settings_snapshot is not None and origin == "manual"
+                else None
             ),
-            naming_revision=naming_script.revision,
+            naming_revision=naming_policy_revision(pinned),
             policy_revision=resolver.policy_revision,
             catalog_revision=catalog_revision,
             profile_snapshot_json=_json(pinned),
@@ -445,24 +453,10 @@ class LibraryManagementPlanner:
         settings: LibraryManagementSettings,
         profile: LibraryManagementProfile,
     ) -> PinnedLibraryManagementProfile:
-        return PinnedLibraryManagementProfile(
-            profile=profile,
-            naming_script=cls._find_naming_script(
-                settings, profile.organization.naming_script_id
-            ),
-            external_artwork_naming_script=(
-                cls._find_naming_script(
-                    settings, profile.artwork.external_naming_script_id
-                )
-                if profile.artwork.external_naming_script_id is not None
-                else None
-            ),
-            tagging_scripts=tuple(
-                cls._find_tagging_script(settings, script_id)
-                for script_id in profile.metadata.tagging_script_ids
-            ),
-            recycle_bin_path=settings.recycle_bin_path,
-        )
+        try:
+            return pin_library_management_profile(settings, profile)
+        except ValueError as error:
+            raise ConfigurationError(str(error)) from error
 
     @staticmethod
     def normalize_selection(
@@ -1366,12 +1360,16 @@ class LibraryManagementPlanner:
         )
         if destination_reason is not None:
             return self._blocked_item(snapshot, source, destination_reason)
+        naming_context = management_naming_context(canonical_release, canonical_track)
         destination_relative, collision_key = self._destination_relative(
-            pinned.naming_script,
+            select_naming_script(
+                pinned, naming_context.organization_audio_medium_count
+            ),
             profile,
             source,
             desired_metadata,
             Path(destination_root.path),
+            naming_context,
         )
         destination_path = Path(destination_root.path) / PurePosixPath(
             destination_relative
@@ -1771,6 +1769,7 @@ class LibraryManagementPlanner:
         source: _SourceInspection,
         metadata: AudioMetadataDocument,
         destination_root: Path,
+        naming_context: ManagementNamingContext,
     ) -> tuple[str, str]:
         assert source.document is not None
         organization = profile.organization
@@ -1784,6 +1783,7 @@ class LibraryManagementPlanner:
             organization.compatibility,
             script_name=naming_script.name,
             root=destination_root,
+            naming_context=naming_context,
         )
         rendered_path = PurePosixPath(rendered.relative_path)
         source_path = PurePosixPath(source.subject.relative_path)

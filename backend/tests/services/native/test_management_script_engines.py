@@ -1,11 +1,13 @@
 from pathlib import Path
 
+import msgspec
 import pytest
 
 from api.v1.schemas.library_management import (
     LibraryManagementSettings,
     NamingScriptSettings,
     PathCompatibilitySettings,
+    PICARD_ORGANIZER_PROFILE_ID,
     TaggingScriptSettings,
     build_initial_library_management_settings,
     normalize_library_management_settings,
@@ -19,6 +21,7 @@ from core.management_script_language import (
 )
 from infrastructure.audio.metadata_engine import AudioMetadataEngine
 from models.audio_metadata import AudioMetadataDocument, AudioSemanticField
+from models.library_management_planning import ManagementNamingContext
 from models.library_management_scripts import CustomTagValue
 from services.native.naming import NamingTemplateEngine
 from services.native.tagging_scripts import TaggingScriptEngine
@@ -70,6 +73,124 @@ def test_external_artwork_naming_has_explicit_artwork_context() -> None:
     )
 
     assert result.relative_path == ("Alpha/Management Album/back-Booklet scan.png-png")
+
+
+def test_dynamic_disc_defaults_use_canonical_path_context() -> None:
+    settings = build_initial_library_management_settings()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    scripts = {value.id: value for value in settings.naming_scripts}
+    standard = scripts[profile.organization.naming_script_id]
+    multi = scripts[profile.organization.multi_disc_naming_script_id]
+    engine = NamingTemplateEngine()
+
+    single = engine.format_management_path(
+        standard.source,
+        _document(),
+        profile.organization.compatibility,
+        naming_context=ManagementNamingContext(album_disambiguation="Deluxe/Edition"),
+    )
+    missing_format = engine.format_management_path(
+        multi.source,
+        _document(),
+        profile.organization.compatibility,
+        naming_context=ManagementNamingContext(
+            album_disambiguation="Deluxe/Edition",
+            medium_format="",
+            medium_number=1,
+            organization_audio_medium_count=2,
+        ),
+    )
+    known_format = engine.format_management_path(
+        multi.source,
+        _document(),
+        profile.organization.compatibility,
+        naming_context=ManagementNamingContext(
+            medium_format="CD/Audio", medium_number=3, organization_audio_medium_count=2
+        ),
+    )
+    document = _document()
+    without_year = msgspec.structs.replace(
+        document,
+        metadata=msgspec.structs.replace(
+            document.metadata,
+            fields=tuple(
+                field for field in document.metadata.fields if field.name != "date"
+            ),
+        ),
+    )
+    missing_year_and_disambiguation = engine.format_management_path(
+        standard.source,
+        without_year,
+        profile.organization.compatibility,
+    )
+
+    assert (
+        single.relative_path
+        == "Alpha/Management Album (2024) (Deluxe_Edition)/02 - Management Track.flac"
+    )
+    assert (
+        missing_format.relative_path
+        == "Alpha/Management Album (2024) (Deluxe_Edition)/Disc 01/02 - Management Track.flac"
+    )
+    assert (
+        known_format.relative_path
+        == "Alpha/Management Album (2024)/CD_Audio 03/02 - Management Track.flac"
+    )
+    assert (
+        missing_year_and_disambiguation.relative_path
+        == "Alpha/Management Album/02 - Management Track.flac"
+    )
+
+
+def test_picard_v4_single_disc_script_renders_avalon_release_year() -> None:
+    settings = build_initial_library_management_settings()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    script = next(
+        value
+        for value in settings.naming_scripts
+        if value.id == profile.organization.naming_script_id
+    )
+    document = _document()
+    replacements = {
+        "album": "Avalon",
+        "title": "Drugdealer",
+        "track_number": 3,
+        "date": "2008",
+    }
+    metadata = msgspec.structs.replace(
+        document.metadata,
+        fields=tuple(
+            msgspec.structs.replace(field, value=replacements[field.name])
+            if field.name in replacements
+            else field
+            for field in document.metadata.fields
+        ),
+        album_artist_display="Anthony Green",
+    )
+
+    result = NamingTemplateEngine().format_management_path(
+        script.source,
+        msgspec.structs.replace(document, metadata=metadata),
+        profile.organization.compatibility,
+    )
+
+    assert result.relative_path == "Anthony Green/Avalon (2008)/03 - Drugdealer.flac"
+
+
+def test_management_only_path_variables_do_not_enter_legacy_naming_validation() -> None:
+    engine = NamingTemplateEngine()
+
+    assert engine.validate_template(
+        "{album_disambiguation}/{medium_format}/{medium_number}"
+    ) == [
+        "Unknown variable: {album_disambiguation}",
+        "Unknown variable: {medium_format}",
+        "Unknown variable: {medium_number}",
+    ]
 
 
 @pytest.mark.parametrize(
