@@ -81,6 +81,7 @@ export interface LibraryWorkItem {
 export interface LibraryActivityResponse {
 	items: LibraryActivityItem[];
 	work_items: LibraryWorkItem[];
+	revisions?: Record<string, number>;
 }
 
 export type ScanKind = 'incremental' | 'rescan_files' | 'policy_reconcile';

@@ -169,6 +169,8 @@
 						customUrl={np.coverUrl}
 						alt={np.albumName ?? 'Album'}
 						size="full"
+						requestSize={250}
+						responsiveSizes="(max-width: 639px) 30vw, 190px"
 						lazy={false}
 						rounded="none"
 						className="h-full w-full object-cover"

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import '../../app.css';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -240,10 +241,11 @@
 	});
 
 	$effect(() => {
-		if (!authStore.isAuthenticated) return;
+		const sessionUserId = authStore.user?.id;
+		if (!sessionUserId) return;
 		untrack(() => {
 			followingEvents.start();
-			libraryActivityEvents.start(authStore.isAdmin);
+			libraryActivityEvents.start(authStore.isAdmin, sessionUserId);
 			// presence is server-driven now (the backend polls upstream servers itself),
 			// so it no longer waits on integration status
 			nowPlayingStore.start();

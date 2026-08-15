@@ -265,11 +265,9 @@
 	}
 
 	let backdropUrl = $derived(
-		album.cover_url ||
-			album.album_thumb_url ||
-			(album.musicbrainz_id
-				? getApiUrl(`/api/v1/covers/release-group/${album.musicbrainz_id}?size=250`)
-				: null)
+		album.musicbrainz_id
+			? getApiUrl(`/api/v1/covers/release-group/${album.musicbrainz_id}?size=500`)
+			: album.cover_url || album.album_thumb_url || null
 	);
 </script>
 

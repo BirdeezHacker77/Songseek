@@ -301,7 +301,10 @@
 
 				<section id="section-about" class="space-y-4 scroll-mt-24">
 					{#if !lastfmEnrichment?.bio}
-						<ArtistDescription description={artist.description} loading={loadingExtended} />
+						<ArtistDescription
+							description={artist.description}
+							loading={loadingExtended && !artistExtended}
+						/>
 					{/if}
 
 					{#if loadingLastfm || lastfmEnrichment}

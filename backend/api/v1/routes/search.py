@@ -88,7 +88,7 @@ async def search_bucket(
     offset: int = Query(0, ge=0, description="Pagination offset"),
     search_service: SearchService = Depends(get_search_service),
 ):
-    results, top_result = await search_service.search_bucket(
+    results, top_result, status = await search_service.search_bucket(
         bucket=bucket, query=q, limit=limit, offset=offset
     )
     return SearchBucketResponse(
@@ -97,6 +97,7 @@ async def search_bucket(
         offset=offset,
         results=results,
         top_result=top_result,
+        status=status,
     )
 
 

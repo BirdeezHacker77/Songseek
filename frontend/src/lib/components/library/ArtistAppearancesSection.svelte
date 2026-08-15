@@ -102,6 +102,7 @@
 								available={appearance.album.cover_available}
 								alt={`Cover for ${appearance.album.title}`}
 								size="full"
+								requestSize={250}
 								rounded="none"
 								className="h-full w-full transition-transform duration-300 group-hover/cover:scale-[1.03]"
 							/>

@@ -8,6 +8,8 @@
 		coverVersion?: number;
 		alt?: string;
 		size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'hero' | 'full';
+		requestSize?: 250 | 500 | 1200;
+		responsiveSizes?: string;
 		lazy?: boolean;
 		showPlaceholder?: boolean;
 		className?: string;
@@ -27,6 +29,8 @@
 		coverVersion = undefined,
 		alt = 'Album',
 		size = 'md',
+		requestSize = undefined,
+		responsiveSizes = undefined,
 		lazy = true,
 		showPlaceholder = true,
 		className = '',
@@ -51,6 +55,8 @@
 	{mbid}
 	{alt}
 	{size}
+	{requestSize}
+	{responsiveSizes}
 	{lazy}
 	{showPlaceholder}
 	{className}

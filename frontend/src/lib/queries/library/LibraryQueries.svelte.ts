@@ -75,6 +75,7 @@ export const getLibraryMembershipQuery = (getAlbumIds: Getter<string[]>) =>
 export const getLibraryAlbumsQueryOptions = ({ page, sort, q, format }: LibraryAlbumsParams) =>
 	queryOptions({
 		staleTime: CACHE_TTL.LIBRARY_NATIVE,
+		placeholderData: keepPreviousData,
 		queryKey: LibraryQueryKeyFactory.albums(page, sort, q, format),
 		queryFn: ({ signal }) =>
 			api.global.get<NativeAlbumsResponse>(

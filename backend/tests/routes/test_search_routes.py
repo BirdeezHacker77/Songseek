@@ -2,7 +2,6 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from api.v1.schemas.search import (
     EnrichmentResponse,
@@ -17,6 +16,7 @@ from core.dependencies import (
     get_coverart_repository,
     get_search_enrichment_service,
 )
+from tests.helpers import build_test_client
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def client(mock_search_service):
     test_app = FastAPI()
     test_app.include_router(router)
     test_app.dependency_overrides[get_search_service] = lambda: mock_search_service
-    return TestClient(test_app)
+    return build_test_client(test_app)
 
 
 def test_suggest_rejects_single_char_query(client, mock_search_service):
@@ -59,7 +59,32 @@ def test_suggest_accepts_two_char_query(client, mock_search_service):
     response = client.get("/search/suggest?q=ab")
 
     assert response.status_code == 200
-    assert response.json() == {"results": []}
+    assert response.json() == {"results": [], "remote_status": "ok"}
+
+
+def test_suggest_exposes_degraded_remote_status(client, mock_search_service):
+    mock_search_service.suggest.return_value = SuggestResponse(remote_status="timeout")
+
+    response = client.get("/search/suggest?q=unfamiliar")
+
+    assert response.status_code == 200
+    assert response.json() == {"results": [], "remote_status": "timeout"}
+
+
+def test_bucket_exposes_terminal_status(client, mock_search_service):
+    mock_search_service.search_bucket = AsyncMock(return_value=([], None, "timeout"))
+
+    response = client.get("/search/artists?q=unfamiliar&limit=6")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "bucket": "artists",
+        "limit": 6,
+        "offset": 0,
+        "results": [],
+        "top_result": None,
+        "status": "timeout",
+    }
 
 
 def test_suggest_limit_lower_bound(client, mock_search_service):
@@ -95,7 +120,7 @@ def test_suggest_whitespace_padded_short_input_returns_empty(
     response = client.get("/search/suggest?q=%20%20a%20%20")
 
     assert response.status_code == 200
-    assert response.json() == {"results": []}
+    assert response.json() == {"results": [], "remote_status": "ok"}
     mock_search_service.suggest.assert_not_called()
 
 
@@ -147,7 +172,7 @@ def test_search_response_tolerates_additive_score_field():
     test_app.dependency_overrides[get_search_enrichment_service] = (
         lambda: mock_enrichment
     )
-    search_client = TestClient(test_app)
+    search_client = build_test_client(test_app)
 
     response = search_client.get("/search?q=muse")
 
@@ -168,7 +193,7 @@ def test_enrichment_route_forwards_request_disconnect_callback():
     test_app.dependency_overrides[get_search_enrichment_service] = (
         lambda: enrichment_service
     )
-    search_client = TestClient(test_app)
+    search_client = build_test_client(test_app)
 
     response = search_client.post(
         "/search/enrich/batch",

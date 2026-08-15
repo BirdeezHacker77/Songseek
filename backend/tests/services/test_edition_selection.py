@@ -17,6 +17,11 @@ from core.exceptions import (
     ResourceNotFoundError,
     ValidationError,
 )
+from infrastructure.cache.cache_keys import (
+    ALBUM_INFO_PREFIX,
+    ALBUM_TRACKS_INFO_PREFIX,
+    LIBRARY_ALBUM_DETAILS_PREFIX,
+)
 from infrastructure.persistence.album_release_pin_store import AlbumReleasePinStore
 from infrastructure.persistence.library_db import LibraryDB
 from infrastructure.queue.priority_queue import RequestPriority
@@ -287,7 +292,7 @@ async def _seed_unidentified_files(library_db: LibraryDB, count: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_twenty_unidentified_files_select_twenty_track_edition_everywhere(
+async def test_twenty_unidentified_files_render_locally_without_changing_acquisition_edition(
     tmp_path: Path,
 ):
     service, library_db, _pins, *_ = _make_album_service(tmp_path)
@@ -311,7 +316,9 @@ async def test_twenty_unidentified_files_select_twenty_track_edition_everywhere(
 
     assert full.selected_release_mbid == REL_AUTO_20
     assert full.total_tracks == 20
-    assert tracks.selected_release_mbid == REL_AUTO_20
+    # Display tracks are native and therefore do not invent an edition identity.
+    # The edition query and acquisition resolver still agree on the 20-track target.
+    assert tracks.selected_release_mbid is None
     assert tracks.total_tracks == 20
     assert editions["selected_release_mbid"] == REL_AUTO_20
     assert editions["owned_release_mbid"] is None
@@ -423,7 +430,11 @@ async def test_set_pin_validates_edition_and_busts_caches(tmp_path: Path):
     await service.set_edition_pin(RG, REL_DELUXE, "admin-1")
     assert await pins.get(RG) == REL_DELUXE
     disk_cache.delete_album.assert_awaited_with(RG)
-    assert memory_cache.delete.await_count >= 2  # album info + library details keys
+    assert {item.args[0] for item in memory_cache.delete.await_args_list} == {
+        f"{ALBUM_INFO_PREFIX}{RG}",
+        f"{ALBUM_TRACKS_INFO_PREFIX}{RG}",
+        f"{LIBRARY_ALBUM_DETAILS_PREFIX}{RG}",
+    }
 
     memory_cache.delete.reset_mock()
     disk_cache.delete_album.reset_mock()

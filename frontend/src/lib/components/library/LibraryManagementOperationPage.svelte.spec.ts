@@ -445,7 +445,7 @@ describe('LibraryManagementOperationPage', () => {
 			.element(page.getByTestId('management-dossier-artwork'))
 			.toHaveAttribute(
 				'data-src',
-				'/api/v1/covers/release-group/4b6276da-e7c7-36df-8771-34b92f774d3b?size=500'
+				'/api/v1/covers/release-group/4b6276da-e7c7-36df-8771-34b92f774d3b?size=250'
 			);
 		await page.getByRole('button', { name: 'Inspect result evidence for Dear Child' }).click();
 		await expect.element(page.getByRole('heading', { name: 'Dear Child' })).toBeVisible();

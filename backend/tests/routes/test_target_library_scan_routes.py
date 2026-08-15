@@ -248,6 +248,11 @@ def test_activity_is_authenticated_and_redacted(
     response = build_test_client(app).get("/library/activity")
     assert response.status_code == 200
     payload = response.json()
+    assert payload["revisions"] == {
+        "scan": 0,
+        "identification": 0,
+        "operation": 0,
+    }
     assert payload["items"][0]["label"] == "Updating the local library"
     assert payload["items"][0]["processed"] == 4
     assert payload["work_items"][0]["processed"] == 4

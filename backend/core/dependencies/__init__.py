@@ -108,6 +108,7 @@ from .service_providers import (  # noqa: F401
     get_lyrics_projection_service,
     get_replaygain_analysis_service,
     get_artwork_processor,
+    get_cover_delivery_thumbnailer,
     get_artwork_projection_service,
     get_library_policy_transition_lock,
     get_target_library_policy_reconciliation_service,

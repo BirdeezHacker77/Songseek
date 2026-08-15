@@ -1,5 +1,4 @@
 <script lang="ts">
-	import '../app.css';
 	import { page } from '$app/state';
 	import { AUTH_FREE_PATHS } from '$lib/constants';
 	import { loadAuthenticatedAppShell } from '$lib/components/lazyComponentLoaders';

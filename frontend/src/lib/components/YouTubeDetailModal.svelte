@@ -315,6 +315,7 @@
 								customUrl={link.cover_url}
 								alt={link.album_name}
 								size="xl"
+								requestSize={250}
 								rounded="none"
 								className="w-52 h-52"
 							/>
@@ -326,6 +327,7 @@
 								customUrl={link.cover_url}
 								alt={link.album_name}
 								size="xl"
+								requestSize={250}
 								rounded="none"
 								className="w-52 h-52"
 							/>

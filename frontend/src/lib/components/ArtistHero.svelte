@@ -40,7 +40,7 @@
 
 	function onHeroImageLoad() {
 		heroImageLoaded = true;
-		extractDominantColor(getApiUrl(`/api/v1/covers/artist/${artist.musicbrainz_id}?size=250`)).then(
+		extractDominantColor(getApiUrl(`/api/v1/covers/artist/${artist.musicbrainz_id}?size=500`)).then(
 			(gradient) => (heroGradient = gradient)
 		);
 	}

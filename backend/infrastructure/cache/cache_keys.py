@@ -67,6 +67,7 @@ SOURCE_RESOLUTION_PREFIX = "source_resolution"
 
 ARTIST_INFO_PREFIX = "artist_info:"
 ALBUM_INFO_PREFIX = "album_info:"
+ALBUM_TRACKS_INFO_PREFIX = "album_tracks_info:"
 
 ARTIST_DISCOVERY_PREFIX = "artist_discovery:"
 DISCOVER_QUEUE_ENRICH_PREFIX = "discover_queue_enrich:"
@@ -117,6 +118,7 @@ def library_identification_prefixes() -> list[str]:
         LOCAL_FILES_PREFIX,
         ARTIST_INFO_PREFIX,
         ALBUM_INFO_PREFIX,
+        ALBUM_TRACKS_INFO_PREFIX,
         ARTIST_DISCOVERY_PREFIX,
         DISCOVER_QUEUE_ENRICH_PREFIX,
         SOURCE_RESOLUTION_PREFIX,
@@ -157,6 +159,7 @@ def musicbrainz_prefixes() -> list[str]:
         MB_DUPLICATE_SEARCH_PREFIX,
         MB_RELEASE_EDITION_SEARCH_PREFIX,
         MB_MANAGEMENT_RELEASE_PREFIX,
+        ALBUM_TRACKS_INFO_PREFIX,
     ]
 
 

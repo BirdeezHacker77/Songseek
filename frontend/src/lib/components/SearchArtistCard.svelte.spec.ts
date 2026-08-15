@@ -110,6 +110,23 @@ describe('SearchArtistCard.svelte', () => {
 		expect(onenrichmentrequest).toHaveBeenCalledTimes(1);
 	});
 
+	it('does not enrich a local-only artist with a local id', async () => {
+		const onenrichmentrequest = vi.fn();
+		renderComponent({
+			artist: {
+				...baseArtist,
+				musicbrainz_id: 'local-artist-id',
+				local_id: 'local-artist-id',
+				in_library: true
+			},
+			onenrichmentrequest
+		});
+
+		await page.getByText('Radiohead').hover();
+
+		expect(onenrichmentrequest).not.toHaveBeenCalled();
+	});
+
 	it('should singular release for count of 1', async () => {
 		renderComponent({
 			artist: { ...baseArtist, release_group_count: 1 }

@@ -11,6 +11,7 @@ export type Artist = {
 	release_group_count?: number | null;
 	listen_count?: number | null;
 	score?: number;
+	local_id?: string | null;
 };
 
 export type Album = {
@@ -35,6 +36,8 @@ export type Album = {
 	listen_count?: number | null;
 	score?: number;
 	selected_release_mbid?: string | null;
+	local_id?: string | null;
+	cover_available?: boolean;
 };
 
 export interface LibraryMembershipResponse {
@@ -52,6 +55,23 @@ export type SuggestResult = {
 	requested?: boolean;
 	disambiguation?: string | null;
 	score: number;
+	local_id?: string | null;
+};
+
+export type SearchRemoteStatus = 'ok' | 'partial' | 'timeout' | 'error';
+
+export type SearchBucketResponse<T extends Artist | Album> = {
+	bucket: 'artists' | 'albums';
+	limit: number;
+	offset: number;
+	results: T[];
+	top_result?: T | null;
+	status: SearchRemoteStatus;
+};
+
+export type SearchSuggestResponse = {
+	results: SuggestResult[];
+	remote_status: SearchRemoteStatus;
 };
 
 export type EnrichmentSource = 'listenbrainz' | 'lastfm' | 'none';

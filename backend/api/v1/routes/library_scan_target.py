@@ -117,6 +117,7 @@ async def library_activity(
     identification: TargetIdentificationQueueDep,
     administrative_work: LibraryAdministrativeWorkServiceDep,
 ) -> LibraryActivityResponse:
+    revisions = await identification.stream_revisions()
     runs = await coordinator.current()
     recent_history = await coordinator.history(limit=1)
     latest_failure = next(
@@ -384,7 +385,9 @@ async def library_activity(
     if current_user.role == "admin":
         work_items.extend(await administrative_work.active())
     work_items.sort(key=lambda item: (item.priority, -item.updated_at, item.id))
-    return LibraryActivityResponse(items=items, work_items=work_items)
+    return LibraryActivityResponse(
+        items=items, work_items=work_items, revisions=revisions
+    )
 
 
 @router.get("/activity/stream")

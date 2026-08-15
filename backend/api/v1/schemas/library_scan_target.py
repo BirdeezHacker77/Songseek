@@ -79,6 +79,7 @@ class LibraryActivityItem(AppStruct):
 class LibraryActivityResponse(AppStruct):
     items: list[LibraryActivityItem]
     work_items: list[LibraryWorkItem] = msgspec.field(default_factory=list)
+    revisions: dict[str, int] = msgspec.field(default_factory=dict)
 
 
 class IdentificationControlRequestBody(AppStruct):

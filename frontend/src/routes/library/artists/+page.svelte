@@ -236,6 +236,7 @@
 							source="local"
 							alt={artist.name}
 							size="full"
+							requestSize={250}
 							className="h-full w-full transition-transform duration-300 group-hover:scale-105"
 						/>
 						{#if artist.artist_identity_state === 'local_only'}

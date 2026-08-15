@@ -71,6 +71,7 @@
 				available={artist.musicbrainz_artist_id !== null}
 				alt={artist.name}
 				size="xl"
+				requestSize={250}
 				className="shadow-xl"
 			/>
 			<div class="min-w-0 flex-1">

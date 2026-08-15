@@ -2,7 +2,15 @@ import { page } from '@vitest/browser/context';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 
-const h = vi.hoisted(() => ({ fetchNextPage: vi.fn() }));
+const h = vi.hoisted(() => ({
+	fetchNextPage: vi.fn(),
+	extended: {
+		data: {} as { description?: string } | undefined,
+		isLoading: false,
+		isRefetching: false,
+		error: null
+	}
+}));
 
 function emptyComponent() {
 	const Component = function () {};
@@ -16,7 +24,6 @@ vi.mock('$lib/components/ArtistWhereToBuy.svelte', emptyComponent);
 vi.mock('$lib/components/ReleaseList.svelte', emptyComponent);
 vi.mock('$lib/components/Toast.svelte', emptyComponent);
 vi.mock('$lib/components/ArtistHero.svelte', emptyComponent);
-vi.mock('$lib/components/ArtistDescription.svelte', emptyComponent);
 vi.mock('$lib/components/SimilarArtistsCarousel.svelte', emptyComponent);
 vi.mock('$lib/components/TopSongsList.svelte', emptyComponent);
 vi.mock('$lib/components/TopAlbumsList.svelte', emptyComponent);
@@ -42,12 +49,7 @@ vi.mock('$lib/queries/artist/ArtistQueries.svelte', () => ({
 		isRefetching: false,
 		error: null
 	}),
-	getExtendedArtistQuery: () => ({
-		data: {},
-		isLoading: false,
-		isRefetching: false,
-		error: null
-	}),
+	getExtendedArtistQuery: () => h.extended,
 	getSimilarArtistsQuery: () => ({ data: { similar_artists: [] }, isLoading: false }),
 	getArtistTopAlbumsQuery: () => ({ data: { albums: [] }, isLoading: false }),
 	getArtistTopSongsQuery: () => ({ data: { songs: [] }, isLoading: false }),
@@ -94,7 +96,15 @@ vi.mock('$lib/stores/discographyDownload.svelte', () => ({
 
 import ProviderArtistPage from './ProviderArtistPage.svelte';
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+	vi.clearAllMocks();
+	h.extended = {
+		data: {},
+		isLoading: false,
+		isRefetching: false,
+		error: null
+	};
+});
 afterEach(() => vi.useRealTimers());
 
 it('does not fetch a second release page until the user asks for it', async () => {
@@ -111,4 +121,35 @@ it('does not fetch a second release page until the user asks for it', async () =
 
 	await button.click();
 	expect(h.fetchNextPage).toHaveBeenCalledTimes(1);
+});
+
+it('renders available biography data even while the query still reports loading', async () => {
+	h.extended = {
+		data: { description: 'The finished biography.' },
+		isLoading: true,
+		isRefetching: false,
+		error: null
+	};
+
+	render(ProviderArtistPage, {
+		data: { artistId: 'artist-1', primarySource: 'listenbrainz' }
+	});
+
+	await expect.element(page.getByText('The finished biography.')).toBeVisible();
+	await expect.element(page.getByTestId('artist-description-skeleton')).not.toBeInTheDocument();
+});
+
+it('keeps the biography skeleton while extended data is initially unavailable', async () => {
+	h.extended = {
+		data: undefined,
+		isLoading: true,
+		isRefetching: false,
+		error: null
+	};
+
+	render(ProviderArtistPage, {
+		data: { artistId: 'artist-1', primarySource: 'listenbrainz' }
+	});
+
+	await expect.element(page.getByTestId('artist-description-skeleton')).toBeInTheDocument();
 });

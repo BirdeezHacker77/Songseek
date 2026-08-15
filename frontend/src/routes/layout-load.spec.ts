@@ -231,4 +231,21 @@ describe('+layout load session bootstrap', () => {
 		expect(state.apiGet.mock.calls.filter(([url]) => url === '/setup-status')).toHaveLength(1);
 		expect(state.apiGet.mock.calls.filter(([url]) => url === '/me')).toHaveLength(1);
 	});
+
+	it('redirects a configured setup route to login when signed out', async () => {
+		state.initialized = true;
+
+		await expect(loadPage('/setup')).rejects.toMatchObject({ status: 302, location: '/login' });
+		expect(state.apiGet).not.toHaveBeenCalled();
+		expect(state.ensureQueryData).not.toHaveBeenCalled();
+	});
+
+	it('redirects a configured setup route home when already authenticated', async () => {
+		state.initialized = true;
+		state.user = user;
+
+		await expect(loadPage('/setup')).rejects.toMatchObject({ status: 302, location: '/' });
+		expect(state.apiGet).not.toHaveBeenCalled();
+		expect(state.ensureQueryData).not.toHaveBeenCalled();
+	});
 });

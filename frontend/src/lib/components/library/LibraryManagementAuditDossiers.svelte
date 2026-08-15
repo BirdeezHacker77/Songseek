@@ -185,6 +185,7 @@
 								customUrl={dossier.artworkUrl}
 								alt={`${dossier.title} cover`}
 								size="full"
+								requestSize={250}
 								rounded="none"
 								showPlaceholder={true}
 								retryOnError={false}

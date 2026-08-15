@@ -11,6 +11,7 @@ from infrastructure.cache.cache_keys import (
     DAILY_MIX_PREFIX,
     TOP_PICKS_PREFIX,
     ALBUM_INFO_PREFIX,
+    ALBUM_TRACKS_INFO_PREFIX,
     ARTIST_INFO_PREFIX,
     LIBRARY_PREFIX,
     LIBRARY_ALBUM_DETAILS_PREFIX,
@@ -342,6 +343,15 @@ def get_artwork_processor() -> "ArtworkProcessor":
     from infrastructure.audio.artwork_processor import ArtworkProcessor
 
     return ArtworkProcessor()
+
+
+@singleton
+def get_cover_delivery_thumbnailer() -> "CoverDeliveryThumbnailer":
+    from infrastructure.images.cover_delivery_thumbnailer import (
+        CoverDeliveryThumbnailer,
+    )
+
+    return CoverDeliveryThumbnailer()
 
 
 @singleton
@@ -1525,6 +1535,7 @@ def _build_album_service(
     library_repo, library_db, ownership_service=None, release_pin_store=None
 ) -> "AlbumService":
     from services.album_service import AlbumService
+    from .cache_providers import get_native_library_store
 
     mb_repo = get_musicbrainz_repository()
     memory_cache = get_cache()
@@ -1545,6 +1556,7 @@ def _build_album_service(
         browse_queue,
         release_pin_store=release_pin_store or get_album_release_pin_store(),
         ownership_service=ownership_service,
+        native_library_store=get_native_library_store(),
     )
 
 
@@ -1642,6 +1654,7 @@ def _build_scan_invalidation(memory_cache, disk_cache, snapshot_store=None):
         per_album = []
         for rg in changed_rgs:
             per_album.append(memory_cache.delete(f"{ALBUM_INFO_PREFIX}{rg}"))
+            per_album.append(memory_cache.delete(f"{ALBUM_TRACKS_INFO_PREFIX}{rg}"))
             per_album.append(memory_cache.delete(f"{LIBRARY_ALBUM_DETAILS_PREFIX}{rg}"))
         shared = [
             memory_cache.delete(library_raw_albums_key()),
@@ -1670,6 +1683,7 @@ def _build_target_import_invalidation(memory_cache, disk_cache):
             memory_cache.delete(library_requested_mbids_key()),
             memory_cache.clear_prefix(HOME_RESPONSE_PREFIX),
             memory_cache.delete(f"{ALBUM_INFO_PREFIX}{record.musicbrainz_id}"),
+            memory_cache.delete(f"{ALBUM_TRACKS_INFO_PREFIX}{record.musicbrainz_id}"),
             memory_cache.delete(
                 f"{LIBRARY_ALBUM_DETAILS_PREFIX}{record.musicbrainz_id}"
             ),

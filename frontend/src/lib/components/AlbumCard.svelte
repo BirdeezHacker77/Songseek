@@ -40,6 +40,7 @@
 	let isRequested = $derived(
 		!inLibrary && (album.requested || libraryStore.isRequested(album.musicbrainz_id))
 	);
+	let isLocalOnly = $derived(Boolean(album.local_id && album.local_id === album.musicbrainz_id));
 
 	async function handleRequest(e: Event) {
 		e.stopPropagation();
@@ -80,22 +81,26 @@
 >
 	<a
 		href={albumHref(album.musicbrainz_id)}
-		onpointerenter={onenrichmentrequest}
-		onfocus={onenrichmentrequest}
+		onpointerenter={isLocalOnly ? undefined : onenrichmentrequest}
+		onfocus={isLocalOnly ? undefined : onenrichmentrequest}
 		class="block h-full relative z-0 transition-transform active:scale-95"
 		aria-label="Open {album.title}"
 	>
 		<figure class="aspect-square overflow-hidden relative">
 			<AlbumImage
-				mbid={album.musicbrainz_id}
+				mbid={album.local_id ?? album.musicbrainz_id}
 				customUrl={album.cover_url}
 				remoteUrl={album.album_thumb_url ?? null}
+				source={album.local_id ? 'local' : 'provider'}
+				available={album.local_id ? (album.cover_available ?? false) : true}
 				alt={album.title}
 				size="full"
+				requestSize={250}
+				responsiveSizes="(max-width: 639px) calc(50vw - 2.5rem), (max-width: 1023px) calc(25vw - 2rem), 200px"
 				rounded="none"
 				className="w-full h-full"
 			/>
-			{#if inLibrary}
+			{#if inLibrary && !isLocalOnly}
 				<AlbumCardOverlay
 					mbid={album.musicbrainz_id}
 					albumName={album.title}
@@ -148,7 +153,7 @@
 		{#if album.type_info && album.type_info !== 'Album'}
 			<span class="badge badge-sm {getTypeBadgeClass(album.type_info)}">{album.type_info}</span>
 		{/if}
-		{#if $integrationStore.download_client}
+		{#if $integrationStore.download_client && !isLocalOnly}
 			{#if inLibrary}
 				<LibraryBadge
 					status="library"

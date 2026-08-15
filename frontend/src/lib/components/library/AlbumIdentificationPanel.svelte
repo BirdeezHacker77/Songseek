@@ -771,6 +771,7 @@
 										mbid={acceptedCandidate.evidence.release_group_mbid}
 										alt={`Cover for ${acceptedCandidate.evidence.album_title}`}
 										size="full"
+										requestSize={250}
 										rounded="xl"
 										className="h-full w-full"
 										retryOnError={false}
@@ -868,6 +869,7 @@
 										mbid={selectedCandidate.evidence.release_group_mbid}
 										alt={`Cover for ${selectedCandidate.evidence.album_title}`}
 										size="full"
+										requestSize={250}
 										rounded="xl"
 										className="h-full w-full"
 										retryOnError={false}
@@ -1190,6 +1192,7 @@
 							mbid={confirmationCandidate.evidence.release_group_mbid}
 							alt={`Cover for ${confirmationCandidate.evidence.album_title}`}
 							size="full"
+							requestSize={250}
 							rounded="xl"
 							className="h-full w-full"
 							retryOnError={false}

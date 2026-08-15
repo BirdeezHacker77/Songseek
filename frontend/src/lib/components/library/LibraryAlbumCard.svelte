@@ -24,6 +24,7 @@
 				available={album.cover_available}
 				alt={album.title}
 				size="full"
+				requestSize={250}
 				rounded="none"
 				className="w-full h-full"
 			/>

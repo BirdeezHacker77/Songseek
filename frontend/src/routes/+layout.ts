@@ -73,6 +73,9 @@ export const load: LayoutLoad = async ({ url }) => {
 	if (setupRequired && !isAuthFree) {
 		throw redirect(302, '/setup');
 	}
+	if (!setupRequired && path.startsWith('/setup')) {
+		throw redirect(302, authStore.isAuthenticated ? '/' : '/login');
+	}
 
 	// initialized stays true after in-app login; reset persisted caches on account switches
 	if (browser && authStore.user) {

@@ -15,7 +15,10 @@ vi.mock('$lib/api/client', () => ({
 
 vi.mock('../QueryClient', () => ({ setQueryDataWithPersister: vi.fn() }));
 
-import { getArtistReleasesInfiniteQuery } from './ArtistQueries.svelte';
+import {
+	getArtistReleasesInfiniteQuery,
+	getExtendedArtistQueryOptions
+} from './ArtistQueries.svelte';
 
 function releasePage(overrides: Partial<ArtistReleases> = {}): ArtistReleases {
 	return {
@@ -53,5 +56,14 @@ describe('artist release pagination query', () => {
 		expect(query.getNextPageParam(releasePage({ has_more: true, next_offset: null }))).toBe(
 			undefined
 		);
+	});
+});
+
+describe('extended artist query', () => {
+	it('notifies the provider page when a fast result finishes before its lazy fields render', () => {
+		const query = getExtendedArtistQueryOptions('artist-1');
+
+		expect(query.notifyOnChangeProps).toBe('all');
+		expect(query.queryKey).toEqual(['artist', 'artist-1', 'extended']);
 	});
 });

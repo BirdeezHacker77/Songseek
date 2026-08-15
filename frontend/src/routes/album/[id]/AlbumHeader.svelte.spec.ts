@@ -169,16 +169,18 @@ function renderHeader({
 	onrefresh = vi.fn(),
 	libraryTrackCount = 20,
 	libraryBelowCutoff = false,
-	localCopies = []
+	localCopies = [],
+	trackData = tracksInfo
 }: {
 	onrefresh?: () => void;
 	libraryTrackCount?: number;
 	libraryBelowCutoff?: boolean;
 	localCopies?: LibraryAlbumSummary[];
+	trackData?: AlbumTracksInfo;
 } = {}) {
 	render(AlbumHeader, {
 		album,
-		tracksInfo,
+		tracksInfo: trackData,
 		loadingTracks: false,
 		inLibrary: true,
 		isRequested: false,
@@ -266,6 +268,24 @@ describe('AlbumHeader automatic edition selection', () => {
 			});
 			expect(onrefresh).toHaveBeenCalledOnce();
 		});
+	});
+
+	it('uses edition resolution when native tracks have no stored release identity', async () => {
+		const editions = h.editions;
+		expect(editions).toBeDefined();
+		if (!editions) throw new Error('Expected edition data');
+		h.editions = { ...editions, selected_release_mbid: 'release-20' };
+		renderHeader({
+			trackData: { ...tracksInfo, selected_release_mbid: null }
+		});
+
+		await expect
+			.element(
+				page.getByRole('button', {
+					name: 'Edition: Automatic · 2008 · US · 20 tracks'
+				})
+			)
+			.toBeVisible();
 	});
 
 	it('offers to complete a partial edition', async () => {
