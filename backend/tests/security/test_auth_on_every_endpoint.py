@@ -267,6 +267,12 @@ _ADMIN_ENDPOINTS = [
     ("GET", "/api/v1/settings/library/path-mapping", None),
     ("GET", "/api/v1/settings/library", None),
     ("PUT", "/api/v1/settings/library", {"library_roots": []}),
+    ("GET", "/api/v1/settings/library/restorable-roots", None),
+    (
+        "POST",
+        "/api/v1/settings/library/restore-roots",
+        {"expected_policy_revision": "policy"},
+    ),
     ("GET", "/api/v1/settings/library-management", None),
     (
         "PUT",

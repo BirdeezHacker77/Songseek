@@ -514,6 +514,22 @@ export interface LibraryPolicyTreeResponse {
 	warnings: string[];
 }
 
+export interface LibraryRestorableRoot {
+	root_id: string;
+	path: string;
+	indexed_file_count: number;
+}
+
+export interface LibraryRestorableRootsResponse {
+	policy_revision: string;
+	restorable_roots: LibraryRestorableRoot[];
+}
+
+export interface LibraryRestoreRootsRequest {
+	expected_policy_revision: string;
+	paths: Record<string, string> | null;
+}
+
 export interface LibraryPolicyImpactResponse {
 	current_policy_revision: string;
 	proposed_policy_revision: string;

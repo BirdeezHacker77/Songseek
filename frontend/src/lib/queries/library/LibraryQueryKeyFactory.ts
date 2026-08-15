@@ -27,6 +27,7 @@ export const LibraryQueryKeyFactory = {
 	targetSettings: () => [...LibraryQueryKeyFactory.policyPrefix(), 'settings'] as const,
 	policyTree: () => [...LibraryQueryKeyFactory.policyPrefix(), 'tree'] as const,
 	pathMapping: () => [...LibraryQueryKeyFactory.policyPrefix(), 'path-mapping'] as const,
+	restorableRoots: () => [...LibraryQueryKeyFactory.policyPrefix(), 'restorable-roots'] as const,
 	repairsPrefix: () => [...LibraryQueryKeyFactory.operationsPrefix(), 'repairs'] as const,
 	repairs: (cursor: string | undefined) =>
 		[...LibraryQueryKeyFactory.repairsPrefix(), 'history', cursor ?? 'first'] as const,

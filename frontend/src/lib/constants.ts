@@ -450,6 +450,8 @@ export const API = {
 		policyImpact: () => '/api/v1/settings/library/policy-impact',
 		policyApplyPreview: () => '/api/v1/settings/library/policy-apply-preview',
 		pathMapping: () => '/api/v1/settings/library/path-mapping',
+		restorableRoots: () => '/api/v1/settings/library/restorable-roots',
+		restoreRoots: () => '/api/v1/settings/library/restore-roots',
 		addPath: () => '/api/v1/settings/library/paths',
 		removePath: (path: string) => `/api/v1/settings/library/paths?path=${encodeURIComponent(path)}`,
 		removeAlbum: (mbid: string) => `/api/v1/library/album/${mbid}`,

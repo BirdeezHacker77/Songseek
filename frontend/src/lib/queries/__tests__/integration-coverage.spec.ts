@@ -570,6 +570,12 @@ const COVERAGE: Array<[string, string, string]> = [
 	],
 	['library path mapping', API.library.pathMapping(), '/api/v1/settings/library/path-mapping'],
 	[
+		'library restorable roots',
+		API.library.restorableRoots(),
+		'/api/v1/settings/library/restorable-roots'
+	],
+	['library restore roots', API.library.restoreRoots(), '/api/v1/settings/library/restore-roots'],
+	[
 		'resolve unmatched',
 		API.library.resolveUnmatched(1),
 		'/api/v1/library/scan/unmatched/1/resolve'

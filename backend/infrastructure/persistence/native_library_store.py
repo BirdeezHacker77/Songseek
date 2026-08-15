@@ -6,6 +6,7 @@ import asyncio
 import json
 import hashlib
 import logging
+import os
 import sqlite3
 import unicodedata
 import uuid
@@ -29214,6 +29215,67 @@ class NativeLibraryStore(PersistenceBase):
                     "WHERE source_kind = 'root' AND target_kind = 'library_root'"
                 ).fetchall()
             }
+
+        return await self._read(operation)
+
+    async def catalog_has_tracks(self) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM local_tracks LIMIT 1"
+                ).fetchone()
+                is not None
+            )
+
+        return await self._read(operation)
+
+    async def get_restorable_root_paths(
+        self, root_ids: list[str]
+    ) -> dict[str, dict[str, object]]:
+        """Recover a removed root's path from its catalog tracks.
+
+        The migration stores root IDs but not paths. The common ancestor of
+        the sampled files' parents is a heuristic: a root whose tracks all sit
+        in one directory tree comes back one level too deep.
+        """
+        if not root_ids:
+            return {}
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> dict[str, dict[str, object]]:
+            placeholders = ", ".join("?" for _ in root_ids)
+            sampled = connection.execute(
+                "SELECT root_id, file_path FROM ("
+                "SELECT root_id, file_path, "
+                "ROW_NUMBER() OVER (PARTITION BY root_id ORDER BY file_path) AS rn "
+                f"FROM local_tracks WHERE root_id IN ({placeholders})) "
+                "WHERE rn <= 500",
+                root_ids,
+            ).fetchall()
+            counts = dict(
+                connection.execute(
+                    f"SELECT root_id, COUNT(*) FROM local_tracks "
+                    f"WHERE root_id IN ({placeholders}) GROUP BY root_id",
+                    root_ids,
+                ).fetchall()
+            )
+            paths_by_root: dict[str, list[Path]] = {}
+            for row in sampled:
+                paths_by_root.setdefault(str(row["root_id"]), []).append(
+                    Path(str(row["file_path"])).parent
+                )
+            restored: dict[str, dict[str, object]] = {}
+            for root_id, parents in paths_by_root.items():
+                try:
+                    common = os.path.commonpath(parents)
+                except ValueError:
+                    continue
+                restored[root_id] = {
+                    "path": str(common),
+                    "indexed_file_count": int(counts[root_id]),
+                }
+            return restored
 
         return await self._read(operation)
 

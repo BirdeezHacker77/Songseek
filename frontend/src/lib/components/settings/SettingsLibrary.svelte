@@ -1,9 +1,13 @@
 <script lang="ts">
 	import { AlertTriangle, ArrowRight, CheckCircle2, FolderCog, ScanSearch } from 'lucide-svelte';
-	import { getTargetLibrarySettingsQuery } from '$lib/queries/library/LibraryPolicyQueries.svelte';
+	import {
+		getLibraryRestorableRootsQuery,
+		getTargetLibrarySettingsQuery
+	} from '$lib/queries/library/LibraryPolicyQueries.svelte';
 	import {
 		previewLibraryPolicyApply,
 		previewLibraryPolicyImpact,
+		restoreLibraryRoots,
 		saveTargetLibrarySettings
 	} from '$lib/queries/library/LibraryPolicyMutations.svelte';
 	import { requestLibraryRun } from '$lib/queries/library/LibraryOperationMutations.svelte';
@@ -24,8 +28,10 @@
 	} from '$lib/queries/library/LibraryOperationsTypes';
 
 	const settingsQuery = getTargetLibrarySettingsQuery(() => authStore.isAdmin);
+	const restorableQuery = getLibraryRestorableRootsQuery(() => authStore.isAdmin);
 	const impact = previewLibraryPolicyImpact();
 	const save = saveTargetLibrarySettings();
+	const restore = restoreLibraryRoots();
 	const applyPreview = previewLibraryPolicyApply();
 	const requestRun = requestLibraryRun();
 	const policyQuery = getDownloadPolicyQuery(() => authStore.isAdmin);
@@ -39,12 +45,18 @@
 	let savedSettings = $state<TargetLibrarySettingsResponse | null>(null);
 	let impactDialog: HTMLDialogElement;
 	let applyDialog: HTMLDialogElement;
+	let restoreDialog: HTMLDialogElement;
 	let impactHeading: HTMLHeadingElement;
 	let applyHeading: HTMLHeadingElement;
+	let restoreHeading: HTMLHeadingElement;
 	let impactOpener: HTMLButtonElement | null = null;
 	let applyOpener: HTMLButtonElement | null = null;
+	let restoreOpener: HTMLButtonElement | null = null;
+	let restorePaths = $state<Record<string, string>>({});
 	let maxLibraryGb = $state<number | null>(0);
 	let capSeeded = $state(false);
+
+	const restorableRoots = $derived(restorableQuery.data?.restorable_roots ?? []);
 
 	$effect(() => {
 		const data = settingsQuery.data;
@@ -86,6 +98,7 @@
 	async function previewSave(
 		event: MouseEvent & { currentTarget: HTMLButtonElement }
 	): Promise<void> {
+		if (!seeded) return;
 		impactOpener = event.currentTarget;
 		let result;
 		try {
@@ -116,6 +129,37 @@
 		});
 		savedSettings = result;
 		impactDialog.close();
+	}
+
+	function openRestore(event: MouseEvent & { currentTarget: HTMLButtonElement }): void {
+		restoreOpener = event.currentTarget;
+		restorePaths = Object.fromEntries(restorableRoots.map((entry) => [entry.root_id, entry.path]));
+		restoreDialog.showModal();
+		restoreHeading.focus();
+	}
+
+	async function confirmRestore(): Promise<void> {
+		const revision = restorableQuery.data?.policy_revision;
+		if (!revision) return;
+		try {
+			const result = await restore.mutateAsync({
+				expected_policy_revision: revision,
+				paths: restorePaths
+			});
+			const draftIds = new Set(roots.map((root) => root.id));
+			roots = [
+				...roots,
+				...result.library_roots
+					.filter((root) => !draftIds.has(root.id))
+					.map((root) => ({
+						...root,
+						rules: root.rules.map((rule) => ({ ...rule }))
+					}))
+			];
+			restoreDialog.close();
+		} catch {
+			return;
+		}
 	}
 
 	async function previewApply(
@@ -230,6 +274,27 @@
 			</div>
 		{/if}
 
+		{#if restorableRoots.length > 0}
+			<div class="alert alert-warning items-start">
+				<AlertTriangle class="mt-0.5 h-5 w-5" />
+				<div class="min-w-0 flex-1">
+					<strong>Library roots were removed</strong>
+					<p class="text-sm">
+						This page is missing {restorableRoots.length} library
+						{restorableRoots.length === 1 ? 'root' : 'roots'} that the catalog still uses. Restore
+						{restorableRoots.length === 1 ? 'it' : 'them'} to keep your library working without a rescan.
+					</p>
+				</div>
+				<button
+					class="btn btn-warning btn-sm"
+					disabled={restore.isPending}
+					onclick={(event) => openRestore(event)}
+					>{#if restore.isPending}<span class="loading loading-spinner loading-sm"></span>{/if}
+					Restore roots...</button
+				>
+			</div>
+		{/if}
+
 		<section class="card border border-base-300 bg-base-200/55">
 			<div class="card-body gap-6">
 				<LibraryRootPolicyEditor {roots} onchange={(value) => (roots = value)} />
@@ -279,7 +344,7 @@
 					{/if}
 					<button
 						class="btn btn-primary"
-						disabled={impact.isPending || save.isPending}
+						disabled={impact.isPending || save.isPending || !seeded}
 						onclick={(event) => void previewSave(event)}
 						>{#if impact.isPending || save.isPending}<span
 								class="loading loading-spinner loading-sm"
@@ -453,5 +518,55 @@
 	</div>
 	<form method="dialog" class="modal-backdrop">
 		<button aria-label="Close apply policy dialog">close</button>
+	</form>
+</dialog>
+
+<dialog
+	bind:this={restoreDialog}
+	class="modal"
+	aria-labelledby="restore-roots-title"
+	onclose={() => restoreOpener?.focus()}
+>
+	<div class="modal-box max-w-xl">
+		<h2 bind:this={restoreHeading} id="restore-roots-title" tabindex="-1" class="text-lg font-bold">
+			Restore removed library roots
+		</h2>
+		<p class="mt-2 text-sm text-base-content/60">
+			These roots still have files in the catalog but were dropped from the configuration. Restoring
+			keeps their original identities, so nothing is scanned twice.
+		</p>
+		<div class="mt-4 space-y-4">
+			{#each restorableRoots as entry (entry.root_id)}
+				<label class="form-control">
+					<span class="label-text">
+						Root <span class="font-mono text-xs">{entry.root_id.slice(0, 8)}…</span>
+					</span>
+					<input
+						class="input input-bordered w-full font-mono"
+						bind:value={restorePaths[entry.root_id]}
+						aria-label={`Path for ${entry.root_id}`}
+					/>
+					<span class="label-text-alt">
+						{#if entry.indexed_file_count > 0}
+							Recovered from {entry.indexed_file_count.toLocaleString()} catalog
+							{entry.indexed_file_count === 1 ? 'file' : 'files'}.
+						{:else}Check this is the original root path.{/if}
+						A wrong path duplicates your library on the next scan.
+					</span>
+				</label>
+			{/each}
+		</div>
+		<div class="modal-action">
+			<button class="btn btn-ghost" onclick={() => restoreDialog.close()}>Cancel</button><button
+				class="btn btn-warning"
+				disabled={restore.isPending}
+				onclick={() => void confirmRestore()}
+				>{#if restore.isPending}<span class="loading loading-spinner loading-sm"></span>{/if} Restore
+				{restorableRoots.length === 1 ? 'root' : 'roots'}</button
+			>
+		</div>
+	</div>
+	<form method="dialog" class="modal-backdrop">
+		<button aria-label="Close restore roots dialog">close</button>
 	</form>
 </dialog>

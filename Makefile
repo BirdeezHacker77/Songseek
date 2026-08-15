@@ -499,6 +499,15 @@ test-library-management-profile-sharing: $(BACKEND_VENV_STAMP) ## Run portable L
 		src/lib/queries/__tests__/integration-coverage.spec.ts
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsLibraryManagement.svelte.spec.ts
 
+test-library-roots-restore: $(BACKEND_VENV_STAMP) ## Run library roots wipe guard and restore tests
+	$(PYTEST) \
+		tests/services/native/test_target_library_policy_service.py \
+		tests/routes/test_target_library_policy_routes.py \
+		tests/security/test_auth_on_every_endpoint.py
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsLibrary.svelte.spec.ts
+
 test-performance-snapshot-storage: $(BACKEND_VENV_STAMP) ## Run snapshot storage and recovery contract tests
 	$(PYTEST) \
 		tests/infrastructure/test_library_management_snapshot_compaction.py \

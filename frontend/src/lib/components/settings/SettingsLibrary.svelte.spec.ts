@@ -26,6 +26,7 @@ const baseSettings = {
 
 const h = vi.hoisted(() => ({
 	settings: { data: {}, isLoading: false, isError: false } as Record<string, unknown>,
+	restorable: { data: {} } as Record<string, unknown>,
 	impactResult: {
 		current_policy_revision: 'policy-1',
 		proposed_policy_revision: 'policy-2',
@@ -40,6 +41,7 @@ const h = vi.hoisted(() => ({
 	} as Record<string, unknown>,
 	impact: vi.fn(),
 	save: vi.fn(),
+	restore: vi.fn(),
 	applyPreview: vi.fn(),
 	requestRun: vi.fn(),
 	toast: vi.fn(),
@@ -56,6 +58,7 @@ vi.mock('$lib/stores/authStore.svelte', () => ({
 vi.mock('$lib/stores/toast', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/queries/library/LibraryPolicyQueries.svelte', () => ({
 	getTargetLibrarySettingsQuery: () => h.settings,
+	getLibraryRestorableRootsQuery: () => h.restorable,
 	getLibraryPolicyTreeQuery: () => ({
 		data: {
 			roots: [
@@ -82,6 +85,7 @@ vi.mock('$lib/queries/library/LibraryPolicyMutations.svelte', () => ({
 		isPending: false
 	}),
 	saveTargetLibrarySettings: () => ({ mutateAsync: h.save, isPending: false }),
+	restoreLibraryRoots: () => ({ mutateAsync: h.restore, isPending: false }),
 	previewLibraryPolicyApply: () => ({
 		mutateAsync: h.applyPreview,
 		data: {
@@ -118,6 +122,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	h.isAdmin = true;
 	h.settings = { data: structuredClone(baseSettings), isLoading: false, isError: false };
+	h.restorable = { data: { policy_revision: 'policy-1', restorable_roots: [] } };
 	h.impactResult = {
 		current_policy_revision: 'policy-1',
 		proposed_policy_revision: 'policy-2',
@@ -138,6 +143,19 @@ beforeEach(() => {
 		reconciliation_required: true,
 		reconciliation_state: 'awaiting_reconciliation',
 		affected_scope_ids: ['root-1']
+	});
+	h.restore.mockResolvedValue({
+		...structuredClone(baseSettings),
+		policy_revision: 'policy-2',
+		library_roots: [
+			{
+				id: 'root-old',
+				path: '/music',
+				label: 'Music',
+				policy: 'automatic',
+				rules: []
+			}
+		]
 	});
 	h.applyPreview.mockResolvedValue({});
 	h.requestRun.mockResolvedValue({});
@@ -245,5 +263,67 @@ describe('SettingsLibrary target policy UI', () => {
 		expect(h.toast).toHaveBeenCalledWith(
 			expect.objectContaining({ message: expect.stringContaining('Reload this page') })
 		);
+	});
+
+	it('keeps saving disabled until the settings have loaded and seeded', async () => {
+		h.settings = { data: undefined, isLoading: false, isError: false };
+		render(SettingsLibrary);
+		await expect
+			.element(page.getByRole('button', { name: 'Preview and save settings' }))
+			.toBeDisabled();
+		expect(h.impact).not.toHaveBeenCalled();
+		expect(h.save).not.toHaveBeenCalled();
+	});
+
+	it('offers to restore removed roots and keeps their original identities', async () => {
+		h.settings = {
+			data: {
+				...structuredClone(baseSettings),
+				library_roots: [],
+				policy_revision: 'policy-1'
+			},
+			isLoading: false,
+			isError: false
+		};
+		h.restorable = {
+			data: {
+				policy_revision: 'policy-1',
+				restorable_roots: [{ root_id: 'root-old', path: '/music', indexed_file_count: 2 }]
+			}
+		};
+		render(SettingsLibrary);
+		await expect.element(page.getByText(/Library roots were removed/)).toBeVisible();
+		await page.getByRole('button', { name: 'Restore roots...' }).click();
+		await expect
+			.element(page.getByRole('heading', { name: 'Restore removed library roots' }))
+			.toBeVisible();
+		const pathInput = page.getByRole('textbox', { name: 'Path for root-old' });
+		await expect.element(pathInput).toHaveValue('/music');
+		await page.getByRole('button', { name: 'Restore root', exact: true }).click();
+		expect(h.restore).toHaveBeenCalledWith({
+			expected_policy_revision: 'policy-1',
+			paths: { 'root-old': '/music' }
+		});
+		await expect.element(page.getByRole('heading', { name: 'Music' })).toBeVisible();
+	});
+
+	it('keeps the dialog open when a restore fails', async () => {
+		h.restorable = {
+			data: {
+				policy_revision: 'policy-1',
+				restorable_roots: [{ root_id: 'root-old', path: '/music', indexed_file_count: 2 }]
+			}
+		};
+		h.restore.mockRejectedValue(new Error('failed'));
+		render(SettingsLibrary);
+		await page.getByRole('button', { name: 'Restore roots...' }).click();
+		await page.getByRole('button', { name: 'Restore root', exact: true }).click();
+		await expect
+			.element(page.getByRole('heading', { name: 'Restore removed library roots' }))
+			.toBeVisible();
+		expect(h.restore).toHaveBeenCalledWith({
+			expected_policy_revision: 'policy-1',
+			paths: { 'root-old': '/music' }
+		});
 	});
 });
