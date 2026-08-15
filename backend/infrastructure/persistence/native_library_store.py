@@ -28580,11 +28580,15 @@ class NativeLibraryStore(PersistenceBase):
                     if source is None:
                         return
                     connection.execute(
-                        "INSERT OR IGNORE INTO library_play_history "
+                        "INSERT INTO library_play_history "
                         "(id, user_id, local_track_id, local_album_id, local_artist_id, "
                         "track_name, artist_name, album_name, recording_mbid, "
                         "release_group_mbid, duration_ms, source, played_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(id) DO UPDATE SET "
+                        "local_track_id = excluded.local_track_id, "
+                        "local_album_id = excluded.local_album_id, "
+                        "local_artist_id = excluded.local_artist_id",
                         (
                             source["id"],
                             source["user_id"],
@@ -29215,6 +29219,128 @@ class NativeLibraryStore(PersistenceBase):
                     "WHERE source_kind = 'root' AND target_kind = 'library_root'"
                 ).fetchall()
             }
+
+        return await self._read(operation)
+
+    async def get_migrated_legacy_source_keys(
+        self, kinds: set[str] | None = None
+    ) -> dict[str, set[str]]:
+        """Return provenance source keys per kind for already-migrated legacy rows."""
+
+        def operation(connection: sqlite3.Connection) -> dict[str, set[str]]:
+            result: dict[str, set[str]] = {}
+            query = "SELECT source_kind, source_key FROM library_migration_provenance"
+            parameters: tuple[object, ...] = ()
+            if kinds:
+                placeholders = ",".join("?" for _ in kinds)
+                query += f" WHERE source_kind IN ({placeholders})"
+                parameters = tuple(sorted(kinds))
+            for row in connection.execute(query, parameters):
+                result.setdefault(str(row["source_kind"]), set()).add(
+                    str(row["source_key"])
+                )
+            return result
+
+        return await self._read(operation)
+
+    async def has_completed_legacy_migration_marker(self) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            present = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'library_migration_markers'"
+            ).fetchone()
+            if present is None:
+                return False
+            return (
+                connection.execute(
+                    "SELECT 1 FROM library_migration_markers "
+                    "WHERE marker = 'legacy_catalog_import_complete'"
+                ).fetchone()
+                is not None
+            )
+
+        return await self._read(operation)
+
+    async def get_migration_run_state(self, migration_id: str) -> str | None:
+        def operation(connection: sqlite3.Connection) -> str | None:
+            row = connection.execute(
+                "SELECT state FROM library_migration_runs WHERE id = ?",
+                (migration_id,),
+            ).fetchone()
+            return str(row["state"]) if row is not None else None
+
+        return await self._read(operation)
+
+    async def get_existing_local_track_paths(self, paths: list[str]) -> set[str]:
+        """Return the subset of paths already owned by local_tracks rows."""
+
+        def operation(connection: sqlite3.Connection) -> set[str]:
+            present = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_tracks'"
+            ).fetchone()
+            if present is None or not paths:
+                return set()
+            existing: set[str] = set()
+            for start in range(0, len(paths), 500):
+                chunk = paths[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                existing.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        f"SELECT file_path FROM local_tracks WHERE file_path IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                )
+            return existing
+
+        return await self._read(operation)
+
+    async def get_pending_legacy_counts(self) -> dict[str, int]:
+        """Count legacy rows that have no migration provenance yet."""
+
+        def operation(connection: sqlite3.Connection) -> dict[str, int]:
+            pending: dict[str, int] = {}
+
+            def count_absent(
+                table: str, kind: str, *, active_only: bool = False
+            ) -> int:
+                present = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,),
+                ).fetchone()
+                if present is None:
+                    return 0
+                clause = "WHERE deleted_at IS NULL" if active_only else ""
+                legacy = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table} {clause}"
+                    ).fetchone()[0]
+                )
+                migrated = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM library_migration_provenance "
+                        "WHERE source_kind = ?",
+                        (kind,),
+                    ).fetchone()[0]
+                )
+                return max(0, legacy - migrated)
+
+            pending["library_file"] = count_absent(
+                "library_files", "library_file", active_only=True
+            )
+            pending["review_row"] = count_absent("manual_review_queue", "review_row")
+            for table, kind in (
+                ("user_favorites", "favorite"),
+                ("play_history", "history"),
+                ("playlist_tracks", "playlist_track"),
+                ("album_release_pins", "album_release_pin"),
+                ("compat_bookmarks", "compat_bookmark"),
+                ("compat_play_queues", "compat_play_queue"),
+                ("compat_play_queue_items", "compat_play_queue_item"),
+                ("compat_id_map", "jellyfin_id_map"),
+            ):
+                pending[kind] = count_absent(table, kind)
+            return pending
 
         return await self._read(operation)
 

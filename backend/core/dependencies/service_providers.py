@@ -265,6 +265,20 @@ def get_library_policy_service() -> "LibraryPolicyService":
 
 
 @singleton
+def get_legacy_pending_migration_service() -> "LegacyPendingMigrationService":
+    from services.native.legacy_pending_migration_service import (
+        LegacyPendingMigrationService,
+    )
+
+    from .cache_providers import get_native_library_store
+
+    return LegacyPendingMigrationService(
+        get_native_library_store(),
+        get_library_policy_resolver,
+    )
+
+
+@singleton
 def get_library_management_profile_service() -> "LibraryManagementProfileService":
     from services.native.library_management_profile_service import (
         LibraryManagementProfileService,
