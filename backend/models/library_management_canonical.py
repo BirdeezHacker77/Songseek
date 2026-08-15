@@ -21,7 +21,7 @@ class CanonicalArtistCredit(ImmutableManagementStruct):
     credited_name: str
     canonical_name: str
     sort_name: str
-    artist_mbid: str
+    artist_mbid: str | None
     join_phrase: str = ""
 
 
@@ -45,7 +45,7 @@ class CanonicalLabel(ImmutableManagementStruct):
 
 class CanonicalIdentifierSet(ImmutableManagementStruct):
     release_group_mbid: str
-    release_mbid: str
+    release_mbid: str | None
     release_track_mbid: str | None = None
     recording_mbid: str | None = None
     album_artist_mbids: tuple[str, ...] = ()
@@ -117,6 +117,8 @@ class CanonicalReleaseDocument(ImmutableManagementStruct):
     media: tuple[CanonicalMedium, ...]
     album_disambiguation: str = ""
     organization_audio_medium_count: int = 1
+    identity_kind: Literal["exact_release", "custom_edition"] = "exact_release"
+    custom_manifest_id: str | None = None
 
 
 class AcceptedTrackManagementIdentity(ImmutableManagementStruct):
@@ -137,6 +139,10 @@ class AcceptedAlbumManagementIdentity(ImmutableManagementStruct):
     release_group_mbid: str | None
     release_mbid: str | None
     tracks: tuple[AcceptedTrackManagementIdentity, ...]
+    identity_kind: Literal["exact_release", "custom_edition"] = "exact_release"
+    custom_manifest_id: str | None = None
+    custom_manifest_version: int | None = None
+    custom_manifest_stale: bool = False
 
 
 class IncomingTrackManagementMapping(ImmutableManagementStruct):

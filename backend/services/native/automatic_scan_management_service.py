@@ -112,26 +112,46 @@ class AutomaticScanManagementService:
             local_album_id,
             local_track_ids=track_ids,
         )
-        if (
-            identity is None
-            or identity.identity_revision is None
-            or not identity.release_group_mbid
-            or not identity.release_mbid
-            or len(identity.tracks) != len(track_ids)
-            or any(
-                track.identity_revision is None
-                or not track.recording_mbid
-                or not track.release_track_mbid
-                or track.medium_position is None
-                or track.release_track_position is None
-                or track.release_mbid != identity.release_mbid
-                for track in identity.tracks
-            )
-        ):
+        if await self._store.get_management_exclusion(local_album_id) is not None:
             return None
+        if identity is not None and identity.identity_kind == "custom_edition":
+            identity_ready = (
+                assignment.automatic_custom_editions
+                and not identity.custom_manifest_stale
+                and bool(identity.custom_manifest_id)
+                and identity.identity_revision is not None
+                and bool(identity.release_group_mbid)
+                and len(identity.tracks) == len(track_ids)
+                and all(
+                    track.recording_mbid is None or track.identity_revision is not None
+                    for track in identity.tracks
+                )
+            )
+        else:
+            identity_ready = not (
+                identity is None
+                or identity.identity_revision is None
+                or not identity.release_group_mbid
+                or not identity.release_mbid
+                or len(identity.tracks) != len(track_ids)
+                or any(
+                    track.identity_revision is None
+                    or not track.recording_mbid
+                    or not track.release_track_mbid
+                    or track.medium_position is None
+                    or track.release_track_position is None
+                    or track.release_mbid != identity.release_mbid
+                    for track in identity.tracks
+                )
+            )
+        if not identity_ready:
+            return None
+        assert identity is not None
         identity_revision = ":".join(
             [
                 str(identity.identity_revision),
+                identity.identity_kind,
+                identity.custom_manifest_id or "",
                 *(
                     f"{track.local_track_id}:{track.identity_revision}:"
                     f"{track.release_track_mbid}"

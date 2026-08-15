@@ -321,6 +321,109 @@ async def test_target_identity_states_remain_separate_from_review_status(
 
 
 @pytest.mark.asyncio
+async def test_album_lists_project_active_custom_edition_identity(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, _root = target_services
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO library_custom_edition_manifests "
+            "(id,local_album_id,version,release_group_mbid,album_title,"
+            "album_artist_name,album_metadata_json,source_album_revision,"
+            "input_revision,content_hash,sealed_by_user_id,sealed_at) VALUES "
+            "('custom-manifest',?,1,?,'Local Only','Local Only Artist','{}',1,"
+            "'input','content','user-1',4)",
+            (LOCAL_ALBUM_ID, RELEASE_GROUP_MBID),
+        )
+        connection.execute(
+            "INSERT INTO library_custom_edition_active "
+            "(local_album_id,manifest_id,activated_at) VALUES "
+            "(?,'custom-manifest',4)",
+            (LOCAL_ALBUM_ID,),
+        )
+    service = TargetNativeLibraryService(store)
+
+    albums, _ = await service.albums(
+        limit=10, offset=0, sort="name", search=None, file_format=None
+    )
+    artist_albums = await service.artist_albums(LOCAL_ARTIST_ID)
+
+    listed = next(album for album in albums if album.id == LOCAL_ALBUM_ID)
+    assert listed.album_identity_state == "custom_edition"
+    assert listed.musicbrainz_release_id is None
+    assert artist_albums[0].album_identity_state == "custom_edition"
+
+
+@pytest.mark.asyncio
+async def test_album_detail_projects_current_management_identity_readiness(
+    target_services,
+) -> None:
+    store, _view, _favorites, _history, _root = target_services
+    service = TargetNativeLibraryService(store)
+
+    detail = await service.album_detail(IDENTIFIED_ALBUM_ID)
+    assert detail is not None
+    assert detail.management_identity_readiness == "exact_release_required"
+    assert detail.mapped_track_count == 0
+
+    release_mbid = "70000000-0000-4000-8000-000000000001"
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_album_external_identities SET release_mbid = ? "
+            "WHERE local_album_id = ?",
+            (release_mbid, IDENTIFIED_ALBUM_ID),
+        )
+        connection.execute(
+            "UPDATE local_track_external_identities SET release_mbid = ?, "
+            "release_track_mbid = 'release-track-1', medium_position = 1, "
+            "release_track_position = 1 WHERE local_track_id = ?",
+            (release_mbid, IDENTIFIED_TRACK_ID),
+        )
+
+    detail = await service.album_detail(IDENTIFIED_ALBUM_ID)
+    assert detail is not None
+    assert detail.management_identity_readiness == "ready"
+    assert detail.mapped_track_count == 1
+
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE local_track_external_identities SET release_track_position = NULL "
+            "WHERE local_track_id = ?",
+            (IDENTIFIED_TRACK_ID,),
+        )
+
+    detail = await service.album_detail(IDENTIFIED_ALBUM_ID)
+    assert detail is not None
+    assert detail.management_identity_readiness == "track_mapping_required"
+    assert detail.mapped_track_count == 0
+
+    assert service._management_identity_readiness(None, []) == "not_applicable"
+
+
+def test_management_identity_readiness_rejects_duplicate_release_tracks() -> None:
+    identity = {
+        "release_group_mbid": RELEASE_GROUP_MBID,
+        "release_mbid": "release-1",
+    }
+    track = {
+        "identity_row_revision": 1,
+        "recording_mbid": "recording-1",
+        "identity_release_mbid": "release-1",
+        "release_track_mbid": "release-track-1",
+        "medium_position": 1,
+        "release_track_position": 1,
+    }
+
+    assert (
+        TargetNativeLibraryService._management_identity_readiness(
+            identity, [track, {**track, "recording_mbid": "recording-2"}]
+        )
+        == "track_mapping_required"
+    )
+
+
+@pytest.mark.asyncio
 async def test_artist_album_projection_includes_active_contribution_state(
     target_services,
 ) -> None:

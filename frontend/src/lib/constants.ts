@@ -248,8 +248,35 @@ export const API = {
 		scanSchedule: () => '/api/v1/settings/library/schedule',
 		rescanAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/rescan`,
 		reidentifyAlbum: (mbid: string) => `/api/v1/library/albums/${mbid}/reidentify`,
-		reidentificationReleases: (albumId: string, q: string, limit = 12, offset = 0) => {
-			const query = new URLSearchParams({ q, limit: String(limit), offset: String(offset) });
+		reenableAlbumManagement: (albumId: string) =>
+			`/api/v1/library/albums/${encodeURIComponent(albumId)}/management/re-enable`,
+		editionConversionPreflight: (albumId: string) =>
+			`/api/v1/library/albums/${encodeURIComponent(albumId)}/edition-conversions/preflight`,
+		editionConversion: (jobId: string) =>
+			`/api/v1/library/edition-conversions/${encodeURIComponent(jobId)}`,
+		editionConversionPreview: (jobId: string) =>
+			`/api/v1/library/edition-conversions/${encodeURIComponent(jobId)}/preview`,
+		editionConversionStart: (jobId: string) =>
+			`/api/v1/library/edition-conversions/${encodeURIComponent(jobId)}/start`,
+		editionConversionRetry: (jobId: string) =>
+			`/api/v1/library/edition-conversions/${encodeURIComponent(jobId)}/retry`,
+		editionConversionRecheck: (jobId: string) =>
+			`/api/v1/library/edition-conversions/${encodeURIComponent(jobId)}/recheck`,
+		editionConversionCancel: (jobId: string) =>
+			`/api/v1/library/edition-conversions/${encodeURIComponent(jobId)}/cancel`,
+		reidentificationReleases: (
+			albumId: string,
+			title: string,
+			artist: string,
+			limit = 12,
+			offset = 0
+		) => {
+			const query = new URLSearchParams({
+				title,
+				artist,
+				limit: String(limit),
+				offset: String(offset)
+			});
 			return `/api/v1/library/albums/${encodeURIComponent(albumId)}/reidentification/releases?${query.toString()}`;
 		},
 		trackTags: (fileId: string) => `/api/v1/library/tracks/${fileId}/tags`,

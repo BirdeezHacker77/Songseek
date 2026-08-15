@@ -85,8 +85,8 @@ AUDIODB_PREFIX = "audiodb_"
 DISCOGS_RELEASE_PREFIX = "discogs:release:"
 DISCOGS_SEARCH_PREFIX = "discogs:search:"
 
-GETIT_OPTIONS_PREFIX = "getit:options:"
-GETIT_ARTIST_OPTIONS_PREFIX = "getit:artist_options:"
+GETIT_OPTIONS_PREFIX = "getit:v2:options:"
+GETIT_ARTIST_OPTIONS_PREFIX = "getit:v2:artist_options:"
 
 
 def library_policy_prefixes() -> list[str]:
@@ -128,12 +128,12 @@ def getit_prefixes() -> list[str]:
     return [GETIT_OPTIONS_PREFIX, GETIT_ARTIST_OPTIONS_PREFIX]
 
 
-def getit_options_key(release_group_mbid: str, region: str, decorated: bool) -> str:
-    return f"{GETIT_OPTIONS_PREFIX}{release_group_mbid}:{region}:{int(decorated)}"
+def getit_options_key(release_group_mbid: str, region: str) -> str:
+    return f"{GETIT_OPTIONS_PREFIX}{release_group_mbid}:{region}"
 
 
-def getit_artist_options_key(artist_mbid: str, decorated: bool) -> str:
-    return f"{GETIT_ARTIST_OPTIONS_PREFIX}{artist_mbid}:{int(decorated)}"
+def getit_artist_options_key(artist_mbid: str) -> str:
+    return f"{GETIT_ARTIST_OPTIONS_PREFIX}{artist_mbid}"
 
 
 def musicbrainz_prefixes() -> list[str]:
@@ -160,8 +160,12 @@ def musicbrainz_prefixes() -> list[str]:
     ]
 
 
-def mb_release_edition_search_key(query: str, limit: int, offset: int) -> str:
-    normalized = " ".join(query.casefold().split())
+def mb_release_edition_search_key(
+    title: str, artist: str, limit: int, offset: int
+) -> str:
+    normalized = "\x00".join(
+        " ".join(value.casefold().split()) for value in (title, artist)
+    )
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return f"{MB_RELEASE_EDITION_SEARCH_PREFIX}{digest}:{limit}:{offset}"
 

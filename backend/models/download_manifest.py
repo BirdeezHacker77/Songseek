@@ -81,6 +81,9 @@ class DownloadManifest(AppStruct):
     # The owning task's origin ('user' | 'retry' | 'upgrade'). Replace-on-import fires
     # only for 'upgrade' (D18); legacy manifests decode as 'user' (add-only, unchanged).
     origin: str = "user"
+    # Free Music uses a separate task store. Conversion holding therefore carries
+    # the administrator explicitly instead of looking up a built-in download task.
+    requested_by_user_id: str | None = None
     # Candidate-attempt journal identity. Old manifests decode with ``None`` and are
     # linked conservatively by their exact client job during startup reconciliation.
     attempt_id: str | None = None

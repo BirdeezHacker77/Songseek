@@ -83,6 +83,7 @@ class PreferencesService:
         self._config_path = settings.config_file_path
         self._config_cache: Optional[dict] = None
         self._cache_lock = threading.RLock()
+        self._normalize_get_it_settings()
         self._migrate_musicbrainz_settings()
         self._ensure_instance_id()
 
@@ -947,11 +948,10 @@ class PreferencesService:
         return raw.enabled and bool(raw.client_id) and bool(raw.client_secret)
 
     def get_get_it_settings(self) -> GetItSettings:
-        """ "Get it" purchase-link settings (no secrets - safe for API responses)."""
+        """Return the regional storefront used by purchase-link fallbacks."""
         data = self._load_config().get("get_it", {})
         return GetItSettings(
             store_region=(data.get("store_region") or "US").upper(),
-            support_droppedneedle=bool(data.get("support_droppedneedle", True)),
         )
 
     def save_get_it_settings(self, settings: GetItSettings) -> None:
@@ -959,12 +959,31 @@ class PreferencesService:
             config = self._load_config().copy()
             config["get_it"] = {
                 "store_region": settings.store_region.upper(),
-                "support_droppedneedle": settings.support_droppedneedle,
             }
             self._save_config(config)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to save Get it settings: {e}")
             raise ConfigurationError("Failed to save Get it settings")
+
+    def _normalize_get_it_settings(self) -> None:
+        """Remove fields retired from the purchase-link settings section."""
+        config = self._load_config()
+        data = config.get("get_it")
+        if not isinstance(data, dict):
+            return
+
+        region = data.get("store_region")
+        normalized = {
+            "store_region": region.upper()
+            if isinstance(region, str) and region
+            else "US"
+        }
+        if data == normalized:
+            return
+
+        updated = config.copy()
+        updated["get_it"] = normalized
+        self._save_config(updated)
 
     def get_plugin_config(self, plugin_name: str) -> PluginConfig:
         """Per-plugin admin state (01b). Unknown plugins get the safe default:

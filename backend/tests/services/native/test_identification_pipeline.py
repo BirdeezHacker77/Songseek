@@ -74,7 +74,7 @@ class FakeProvider:
         self.exact_releases: list[tuple[str, RequestPriority]] = []
 
     async def search_album_candidate_ids(
-        self, query: str, limit: int, priority: RequestPriority
+        self, artist: str, title: str, limit: int, priority: RequestPriority
     ) -> list[str]:
         self.calls.append(("album", priority))
         return [candidate.release_group_mbid for candidate in self.candidates[:limit]]
@@ -123,7 +123,7 @@ class FakeProvider:
 
 class AliasCandidateProvider(FakeProvider):
     async def search_album_candidate_ids(
-        self, query: str, limit: int, priority: RequestPriority
+        self, artist: str, title: str, limit: int, priority: RequestPriority
     ) -> list[str]:
         self.calls.append(("album", priority))
         return ["alias-group-a", "alias-group-b"]
@@ -170,7 +170,7 @@ class FakeFingerprinter:
 
 class DegradedProvider(FakeProvider):
     async def search_album_candidate_ids(
-        self, query: str, limit: int, priority: RequestPriority
+        self, artist: str, title: str, limit: int, priority: RequestPriority
     ) -> list[str]:
         context = try_get_degradation_context()
         assert context is not None
@@ -1077,10 +1077,12 @@ async def test_pause_at_candidate_and_fingerprint_checkpoints_releases_lease_wit
 
     class PausingProvider(FakeProvider):
         async def search_album_candidate_ids(
-            self, query: str, limit: int, priority: RequestPriority
+            self, artist: str, title: str, limit: int, priority: RequestPriority
         ) -> list[str]:
             await queue.pause("admin", now=3)
-            return await super().search_album_candidate_ids(query, limit, priority)
+            return await super().search_album_candidate_ids(
+                artist, title, limit, priority
+            )
 
     job = await _claimed_job(store)
     outcome = await _service(

@@ -17,7 +17,7 @@ from models.identification import (
 )
 from services.native.local_album_grouper import _hungarian_min
 
-MATCHER_VERSION = "feedback-fixes-v1"
+MATCHER_VERSION = "feedback-fixes-v2"
 PAIR_COST_CEILING = 0.40
 ALBUM_DISTANCE_CEILING = 0.35
 CANDIDATE_MARGIN_FLOOR = 0.05
@@ -29,7 +29,6 @@ DURATION_HARD_LIMIT_SECONDS = 30.0
 MAX_CANDIDATES = 10
 
 _NON_WORD = re.compile(r"[^\w]+", re.UNICODE)
-_UNSAFE_SECONDARY_TYPES = frozenset({"compilation", "live"})
 
 
 def _fold(value: str) -> str:
@@ -446,10 +445,22 @@ class AlbumEvidenceEngine:
         )
         local_compilation = any(track.is_compilation for track in local_tracks)
         secondary = {value.casefold() for value in candidate.secondary_types}
-        unsafe_type = (
-            bool(secondary & _UNSAFE_SECONDARY_TYPES) and not local_compilation
+        release_type_requires_confirmation = "live" in secondary or (
+            "compilation" in secondary and not local_compilation
         )
-
+        exact_release_track_proof = bool(
+            candidate.release_mbid
+            and local_tracks
+            and all(track.release_track_mbid for track in local_tracks)
+            and len({track.release_track_mbid for track in local_tracks})
+            == len(local_tracks)
+            and len(track_evidence) == len(local_tracks)
+            and all(
+                item.classification == "supported"
+                and "release_track_mbid" in item.evidence_kinds
+                for item in track_evidence
+            )
+        )
         album_costs = [
             _distance(album_title, candidate.album_title) if album_title else 0.25,
             _distance(album_artist, candidate.album_artist_name)
@@ -469,8 +480,8 @@ class AlbumEvidenceEngine:
             reason = "INSUFFICIENT_METADATA"
         elif unknown > unknown_limit:
             reason = "UNKNOWN_EXTRAS_EXCEED_LIMIT"
-        elif unsafe_type:
-            reason = "UNSAFE_RELEASE_TYPE"
+        elif release_type_requires_confirmation and not exact_release_track_proof:
+            reason = "RELEASE_TYPE_REQUIRES_CONFIRMATION"
         elif comparable == 0 or supported != comparable:
             reason = "INSUFFICIENT_METADATA"
         elif distance > ALBUM_DISTANCE_CEILING:
@@ -524,8 +535,11 @@ class AlbumEvidenceEngine:
                 outcome, reason = "contradictory", "CONFLICTING_TRACK_EVIDENCE"
             elif "UNKNOWN_EXTRAS_EXCEED_LIMIT" in reasons:
                 outcome, reason = "insufficient_evidence", "UNKNOWN_EXTRAS_EXCEED_LIMIT"
-            elif "UNSAFE_RELEASE_TYPE" in reasons:
-                outcome, reason = "insufficient_evidence", "UNSAFE_RELEASE_TYPE"
+            elif "RELEASE_TYPE_REQUIRES_CONFIRMATION" in reasons:
+                outcome, reason = (
+                    "insufficient_evidence",
+                    "RELEASE_TYPE_REQUIRES_CONFIRMATION",
+                )
             else:
                 outcome, reason = "insufficient_evidence", "INSUFFICIENT_METADATA"
             return IdentificationDecision(

@@ -56,7 +56,7 @@ from services.native.library_operation_service import (
 )
 
 MANAGEMENT_READINESS_PURPOSE = "management_readiness"
-MANAGEMENT_MAPPING_VERSION = "management-exact-release-v1"
+MANAGEMENT_MAPPING_VERSION = "management-edition-readiness-v3"
 
 
 class IdentityRepairService:
@@ -285,6 +285,24 @@ class IdentityRepairService:
                 [],
             )
         identity = context["identity"]
+        custom = await self._store.get_custom_edition_state(album_id)
+        if custom is not None:
+            return (
+                self._finding(
+                    job_id,
+                    work,
+                    "needs_review" if custom.stale else "ready",
+                    "CUSTOM_MANIFEST_STALE"
+                    if custom.stale
+                    else "CUSTOM_EDITION_MANIFEST_VERIFIED",
+                    False,
+                    identity_revision=(
+                        int(identity["row_revision"]) if identity is not None else None
+                    ),
+                ),
+                None,
+                [],
+            )
         if (
             identity is None
             or not identity["release_group_mbid"]
@@ -442,9 +460,14 @@ class IdentityRepairService:
                 for item in proposed
             )
         )
+        release_type_confirmed = bool(
+            evaluated.reason_code == "RELEASE_TYPE_REQUIRES_CONFIRMATION"
+            and identity["decision_source"] == "manual"
+            and complete
+        )
         safe = bool(
             safe
-            and evaluated.reason_code == "SUPPORTED"
+            and (evaluated.reason_code == "SUPPORTED" or release_type_confirmed)
             and len(proposed) == len(tracks)
             and len(set(release_tracks)) == len(release_tracks)
         )
@@ -793,6 +816,10 @@ class IdentityRepairService:
         scope = json.loads(str(snapshot["snapshot"]["scope_json"]))
         if scope.get("purpose") != MANAGEMENT_READINESS_PURPOSE:
             raise ResourceNotFoundError("Identity preparation job not found.")
+        if snapshot["snapshot"]["target_matcher_version"] != MANAGEMENT_MAPPING_VERSION:
+            raise ValidationError(
+                "These identity checks used older rules. Run a fresh identity check."
+            )
         row = await self._store.start_repair_apply(
             job_id,
             expected_row_revision=expected_row_revision,
@@ -875,7 +902,8 @@ class IdentityRepairService:
         if snapshot is None or snapshot["snapshot"] is None:
             raise ResourceNotFoundError("Repair job not found.")
         scope = json.loads(str(snapshot["snapshot"]["scope_json"]))
-        if scope.get("purpose") == MANAGEMENT_READINESS_PURPOSE:
+        management_readiness = scope.get("purpose") == MANAGEMENT_READINESS_PURPOSE
+        if management_readiness:
             categories = {
                 "ready": ["ready"],
                 "mapping_ready": ["mapping_ready"],
@@ -909,6 +937,7 @@ class IdentityRepairService:
             finding_codes=categories.get(finding_category),
             cursor_updated_at=cursor_updated_at,
             cursor_id=cursor_id,
+            current_only=management_readiness,
         )
         rows = result["rows"]
         next_cursor = None
@@ -938,6 +967,11 @@ class IdentityRepairService:
             ],
             next_cursor=next_cursor,
             has_more=bool(result["has_more"]),
+            current_counts_by_finding=result["current_counts_by_finding"],
+            refresh_required=bool(
+                management_readiness
+                and result["target_matcher_version"] != MANAGEMENT_MAPPING_VERSION
+            ),
         )
 
     async def _classify(

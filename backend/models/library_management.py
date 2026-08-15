@@ -14,7 +14,9 @@ ManagementBlobKind = Literal[
     "tag_snapshot", "image", "sidecar_manifest", "metadata_document"
 ]
 
-LibraryManagementImportOrigin = Literal["acquisition", "drop_import"]
+LibraryManagementImportOrigin = Literal[
+    "acquisition", "drop_import", "edition_conversion"
+]
 LibraryManagementAutomaticTrigger = Literal[
     "acquisition", "drop_import", "scan_discovered"
 ]
@@ -75,6 +77,7 @@ class LibraryManagementImportFile(AppStruct):
     undo_retention_days: int | None = None
     management_warnings: tuple[str, ...] = ()
     artifacts: tuple[LibraryManagementImportArtifact, ...] = ()
+    conversion_recycle_only: bool = False
 
 
 class LibraryManagementImportBundle(AppStruct):
@@ -82,6 +85,11 @@ class LibraryManagementImportBundle(AppStruct):
     origin: LibraryManagementImportOrigin
     policy_revision: str
     files: tuple[LibraryManagementImportFile, ...]
+    conversion_job_id: str | None = None
+    conversion_expected_row_revision: int | None = None
+    conversion_local_album_id: str | None = None
+    conversion_preview_job_id: str | None = None
+    conversion_recycle_bin_path: str | None = None
 
 
 class LibraryManagementPublishedImportFile(AppStruct):
@@ -512,12 +520,15 @@ class LibraryManagementCatalogMutation(AppStruct):
     expected_relative_path: str
     expected_stat_revision: str
     expected_tag_revision: str
-    expected_identity_revision: int
+    expected_identity_revision: int | None
     expected_album_identity_revision: int
     expected_override_revision: str
-    expected_release_mbid: str
-    expected_recording_mbid: str
-    expected_release_track_mbid: str
+    expected_identity_kind: Literal["exact_release", "custom_edition"]
+    expected_release_group_mbid: str
+    expected_release_mbid: str | None
+    expected_recording_mbid: str | None
+    expected_release_track_mbid: str | None
+    expected_custom_manifest_id: str | None
     destination_root_id: str
     destination_relative_path: str
     destination_file_path: str
@@ -539,6 +550,7 @@ class LibraryManagementCatalogMutation(AppStruct):
     applied_override_revision: str | None = None
     restored_management_state_json: str | None = None
     recycle_only: bool = False
+    allow_unmapped_conversion_restore: bool = False
 
 
 class LibraryManagementBundleCommitResult(AppStruct):

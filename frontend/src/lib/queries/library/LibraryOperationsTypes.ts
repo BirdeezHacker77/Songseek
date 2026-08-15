@@ -457,6 +457,8 @@ export interface RepairFindingListResponse {
 	items: RepairFindingResponse[];
 	next_cursor: string | null;
 	has_more: boolean;
+	current_counts_by_finding: Record<string, number>;
+	refresh_required: boolean;
 }
 
 export type LibraryIdentificationPolicy = 'local_metadata' | 'automatic' | 'excluded';

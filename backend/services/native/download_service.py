@@ -296,6 +296,7 @@ class DownloadService:
         release_mbid: str | None,
         *,
         recording_mbid: str | None = None,
+        release_track_mbid: str | None = None,
         priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> tuple[str, list, object | None]:
         """Resolve one exact edition and its complete per-track identity map.
@@ -355,7 +356,23 @@ class DownloadService:
             release_track_ids.add(str(release_track_id).casefold())
 
         selected_track = None
-        if recording_mbid:
+        if release_track_mbid:
+            matches = [
+                track
+                for track in tracks
+                if str(getattr(track, "release_track_id", "")).casefold()
+                == release_track_mbid.casefold()
+            ]
+            if len(matches) != 1 or (
+                recording_mbid
+                and str(getattr(matches[0], "recording_id", "")).casefold()
+                != recording_mbid.casefold()
+            ):
+                raise ValidationError(
+                    "The requested release track conflicts with the exact MusicBrainz edition. No download was started."
+                )
+            selected_track = matches[0]
+        elif recording_mbid:
             matches = [
                 track
                 for track in tracks
@@ -703,6 +720,7 @@ class DownloadService:
         artist_mbid: str | None = None,
         origin: str = "user",
         release_mbid: str | None = None,
+        release_track_mbid: str | None = None,
     ) -> str:
         """Create a download task and dispatch the orchestrator. Returns the new
         task id, the existing active task id (dedup), or the ``already_in_library``
@@ -724,7 +742,9 @@ class DownloadService:
 
         # track tasks dedup on the recording (not the album) so a different track of
         # the same album runs concurrently
-        if download_type == "track" and recording_mbid:
+        if origin == "edition_conversion":
+            existing = None
+        elif download_type == "track" and recording_mbid:
             existing = await self._store.get_active_task_for_track(
                 recording_mbid, user_id
             )
@@ -794,7 +814,6 @@ class DownloadService:
                 album_title = album_title or album_meta.title
                 artist_mbid = artist_mbid or album_meta.artist_id
 
-        release_track_mbid = None
         track_number = None
         disc_number = None
         if self._album_service is not None:
@@ -806,6 +825,9 @@ class DownloadService:
                 release_group_mbid,
                 release_mbid,
                 recording_mbid=(recording_mbid if download_type == "track" else None),
+                release_track_mbid=(
+                    release_track_mbid if download_type == "track" else None
+                ),
             )
             track_count = 1 if download_type == "track" else len(tracks)
             if selected_track is None and download_type == "album" and len(tracks) == 1:
@@ -871,6 +893,7 @@ class DownloadService:
         artist_mbid: str | None = None,
         origin: str = "user",
         release_mbid: str | None = None,
+        release_track_mbid: str | None = None,
     ) -> str:
         """Request a single track. Orphan tracks (album not in the library) resolve
         the release group via MusicBrainz, auto-create the album folder, and download
@@ -893,7 +916,9 @@ class DownloadService:
                     held, self._quality_cutoff, self._upgrade_allowed
                 ):
                     return ALREADY_IN_LIBRARY
-            elif await self._library.has_track(recording_mbid):
+            elif origin != "edition_conversion" and await self._library.has_track(
+                recording_mbid
+            ):
                 return ALREADY_IN_LIBRARY
 
         if not release_group_mbid:
@@ -935,6 +960,7 @@ class DownloadService:
             artist_mbid=artist_mbid,
             origin=origin,
             release_mbid=release_mbid,
+            release_track_mbid=release_track_mbid,
         )
 
     @property

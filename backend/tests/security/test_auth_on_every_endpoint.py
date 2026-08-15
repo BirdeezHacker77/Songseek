@@ -424,7 +424,7 @@ _ADMIN_ENDPOINTS = [
     (
         "PUT",
         "/api/v1/settings/get-it",
-        {"store_region": "US", "support_droppedneedle": True},
+        {"store_region": "US"},
     ),
     # Upcoming Events sources (admin, settings router)
     ("GET", "/api/v1/settings/events", None),
@@ -524,8 +524,47 @@ _ADMIN_ENDPOINTS = [
     ),
     (
         "GET",
-        "/api/v1/library/albums/album-1/reidentification/releases?q=Artist+Album",
+        "/api/v1/library/albums/album-1/reidentification/releases?title=Album&artist=Artist",
         None,
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/management/re-enable",
+        {"expected_exclusion_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/albums/album-1/edition-conversions/preflight",
+        {
+            "release_group_mbid": "00000000-0000-4000-8000-000000000001",
+            "release_mbid": "00000000-0000-4000-8000-000000000002",
+        },
+    ),
+    (
+        "POST",
+        "/api/v1/library/edition-conversions/job-1/start",
+        {"preflight_token": "token", "expected_row_revision": 1, "confirmation": True},
+    ),
+    ("GET", "/api/v1/library/edition-conversions/job-1", None),
+    (
+        "POST",
+        "/api/v1/library/edition-conversions/job-1/preview",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/edition-conversions/job-1/retry",
+        {"target_ordinals": [0], "expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/edition-conversions/job-1/recheck",
+        {"expected_row_revision": 1},
+    ),
+    (
+        "POST",
+        "/api/v1/library/edition-conversions/job-1/cancel",
+        {"expected_row_revision": 1, "confirmation": True},
     ),
     (
         "POST",

@@ -396,6 +396,7 @@ class ExplicitReidentificationWorker:
         candidate_key: str,
         confirmation: bool,
         actor_user_id: str,
+        decision_mode: str = "exact_release",
         now: float | None = None,
     ) -> dict:
         result = await self._store.accept_reidentification_candidate(
@@ -403,10 +404,11 @@ class ExplicitReidentificationWorker:
             expected_job_revision=expected_job_revision,
             candidate_key=candidate_key,
             confirmation=confirmation,
+            decision_mode=decision_mode,
             actor_user_id=actor_user_id,
             now=time.time() if now is None else now,
         )
-        if result["state"] == "succeeded":
+        if result["state"] == "succeeded" and decision_mode != "leave_unmanaged":
             snapshot = await self._store.get_operation_snapshot(job_id)
             if snapshot is not None and snapshot["snapshot"] is not None:
                 local_album_id = str(snapshot["snapshot"]["local_album_id"])

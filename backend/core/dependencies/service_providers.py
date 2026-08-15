@@ -1075,7 +1075,7 @@ def get_plugin_host() -> "PluginHost":
     )
 
 
-def _build_free_music_service(drop_import) -> "FreeMusicService":
+def _build_free_music_service(drop_import, file_processor) -> "FreeMusicService":
     from services.native.free_music_service import FreeMusicService
 
     from .repo_providers import get_archive_repository, get_free_music_store
@@ -1086,17 +1086,20 @@ def _build_free_music_service(drop_import) -> "FreeMusicService":
         drop_import=drop_import,
         preferences_service=get_preferences_service(),
         sse_publisher=get_sse_publisher(),
+        file_processor=file_processor,
     )
 
 
 @singleton
 def get_free_music_service() -> "FreeMusicService":
-    return _build_free_music_service(get_drop_import_service())
+    return _build_free_music_service(get_drop_import_service(), get_file_processor())
 
 
 @singleton
 def get_target_free_music_service() -> "FreeMusicService":
-    return _build_free_music_service(get_target_drop_import_service())
+    return _build_free_music_service(
+        get_target_drop_import_service(), get_target_file_processor()
+    )
 
 
 @singleton
@@ -1122,6 +1125,29 @@ def get_target_acquisition_dispatcher() -> "AcquisitionDispatcher":
         preferences_service=get_preferences_service(),
         ownership_service=get_target_library_ownership_service(),
         get_album_service=get_target_album_service,
+    )
+
+
+@singleton
+def get_edition_conversion_service() -> "EditionConversionService":
+    from core.config import get_settings
+    from services.native.edition_conversion_service import EditionConversionService
+
+    from .cache_providers import get_native_library_store
+    from .repo_providers import get_download_store
+
+    return EditionConversionService(
+        store=get_native_library_store(),
+        album_service=get_target_album_service(),
+        preferences=get_preferences_service(),
+        acquisition=get_target_acquisition_dispatcher(),
+        download_store=get_download_store(),
+        get_download_service=get_target_download_service,
+        get_free_music_service=get_target_free_music_service,
+        automatic_management=get_automatic_import_management_service(),
+        fingerprinter=get_audio_fingerprinter(),
+        held_dir=get_settings().cache_dir / "held",
+        import_library=get_target_import_library_service(),
     )
 
 

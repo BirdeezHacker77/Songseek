@@ -51,6 +51,18 @@
 					? 'Manual identity needs review'
 					: null
 	);
+	const managementIdentityAttention = $derived(
+		album?.management_identity_readiness === 'exact_release_required'
+			? 'Exact MusicBrainz edition required'
+			: album?.management_identity_readiness === 'track_mapping_required'
+				? 'Exact track map required'
+				: album?.management_identity_readiness === 'custom_manifest_stale'
+					? 'Custom edition review required'
+					: album?.identification_status === 'needs_review' ||
+						  album?.identification_status === 'manual_identity_needs_review'
+						? 'Identity review required'
+						: null
+	);
 	const musicbrainzUrl = $derived(
 		album?.musicbrainz_release_id
 			? `https://musicbrainz.org/release/${album.musicbrainz_release_id}`
@@ -149,10 +161,10 @@
 							{album.contribution_id ? 'Contribution in progress' : 'Contribute to MusicBrainz'}
 						</button>
 					{/if}
-					{#if authStore.isAdmin}<AlbumIdentificationPanel {album} /><AlbumOrganizationDialog
+					{#if authStore.isAdmin}<AlbumIdentificationPanel
 							{album}
-							{tracks}
-						/>{/if}
+							attentionLabel={managementIdentityAttention}
+						/><AlbumOrganizationDialog {album} {tracks} />{/if}
 				</div>
 				{#if album.review_id && authStore.isAdmin}
 					<a

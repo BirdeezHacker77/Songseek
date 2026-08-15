@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import msgspec
 import pytest
 
 from api.v1.schemas.library_management import (
@@ -9,6 +10,7 @@ from api.v1.schemas.library_management import (
     PICARD_ORGANIZER_MULTI_DISC_NAMING_SCRIPT_ID,
     PICARD_ORGANIZER_NAMING_SCRIPT_ID,
     PICARD_ORGANIZER_PROFILE_ID,
+    LibraryManagementSettings,
     LibraryManagementRootAssignment,
     LibraryManagementRootOverrides,
     NamingScriptSettings,
@@ -279,6 +281,58 @@ def test_enabling_another_trigger_reuses_current_write_authorization(
     assert getattr(saved.root_assignments[0], assignment_field) is True
     assert saved.root_assignments[0].activation_preview_token == "verified"
     assert prepared is not None
+
+
+def test_custom_edition_automation_requires_effective_fresh_activation(
+    tmp_path: Path,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs, validate=True)
+    _activate(service, prefs)
+    current = service.get_settings()
+    dormant = prefs.get_library_management_settings_raw()
+    dormant.root_assignments[0].automatic_custom_editions = True
+
+    dormant_impact = service.preview_impact(
+        dormant, expected_settings_revision=current.settings_revision
+    )
+    saved = service.save_settings(
+        dormant, expected_settings_revision=current.settings_revision
+    )
+
+    assert dormant_impact.preview_required is False
+    assert saved.root_assignments[0].automatic_custom_editions is False
+
+    proposed = prefs.get_library_management_settings_raw()
+    proposed.root_assignments[0].automatic_scan_discovered = True
+    proposed.root_assignments[0].automatic_custom_editions = True
+    impact = service.preview_impact(
+        proposed, expected_settings_revision=saved.settings_revision
+    )
+
+    assert impact.classification == "destructive"
+    assert impact.preview_required is True
+    assert "Custom edition" in impact.reasons[0]
+
+
+def test_enabling_scan_requires_fresh_activation_when_custom_automation_is_dormant(
+    tmp_path: Path,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs, validate=True)
+    _activate(service, prefs)
+    current = prefs.get_library_management_settings_raw()
+    current.root_assignments[0].automatic_custom_editions = True
+    proposed = msgspec.convert(
+        msgspec.to_builtins(current), type=LibraryManagementSettings
+    )
+    proposed.root_assignments[0].automatic_scan_discovered = True
+
+    impact = service._classify(current, proposed)
+
+    assert impact.classification == "destructive"
+    assert impact.preview_required is True
+    assert any("Custom edition" in reason for reason in impact.reasons)
 
 
 def test_automatic_enablement_requires_bound_verified_activation(

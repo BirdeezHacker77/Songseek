@@ -445,8 +445,9 @@ class AlbumIdentifier:
 
         if artist and album:
             try:
-                for result in await self._mb_repo.search_albums(
-                    f"{artist} {album}".strip(),
+                for result in await self._mb_repo.search_release_groups(
+                    artist,
+                    album,
                     limit=_ALBUM_SEARCH_LIMIT,
                     include_all_types=True,
                     priority=RequestPriority.BACKGROUND_SYNC,
@@ -509,7 +510,9 @@ class AlbumIdentifier:
         credit = detail.get("artist-credit") or []
         rg_artist_mbid = (credit[0].get("artist") or {}).get("id") if credit else None
         if not rg_artist or not rg_artist_mbid:
-            resolved_mbid, resolved_name = await self.resolve_release_group_artist(rg_id)
+            resolved_mbid, resolved_name = await self.resolve_release_group_artist(
+                rg_id
+            )
             rg_artist = rg_artist or resolved_name or ""
             rg_artist_mbid = rg_artist_mbid or resolved_mbid
         is_various = self._is_various(detail, rg_artist_mbid, rg_artist)
@@ -565,9 +568,7 @@ class AlbumIdentifier:
         return meta, _build_mb_tracks(release)
 
     @staticmethod
-    def _is_various(
-        rg_detail: dict, artist_mbid: str | None, artist_name: str
-    ) -> bool:
+    def _is_various(rg_detail: dict, artist_mbid: str | None, artist_name: str) -> bool:
         for credit in rg_detail.get("artist-credit") or []:
             artist = credit.get("artist") or {}
             if artist.get("id") == _VA_MBID:

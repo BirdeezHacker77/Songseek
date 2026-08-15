@@ -26,6 +26,7 @@ from api.v1.schemas.library_management_preview import (
 from api.v1.schemas.library_operations import OperationResponse
 from core.config import Settings
 from core.dependencies import (
+    get_edition_conversion_service,
     get_library_management_duplicate_service,
     get_library_management_preview_service,
     get_library_management_profile_service,
@@ -49,6 +50,7 @@ from services.native.library_management_baseline_service import (
 from services.native.library_management_duplicate_service import (
     LibraryManagementDuplicateService,
 )
+from services.native.edition_conversion_service import EditionConversionService
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.preferences_service import PreferencesService
 from tests.helpers import build_test_client, override_admin_auth
@@ -134,6 +136,12 @@ def app(
     application.dependency_overrides[get_library_management_preview_service] = (
         lambda: preview
     )
+    conversion = AsyncMock(spec=EditionConversionService)
+    conversion.apply_preview.return_value = None
+    application.dependency_overrides[get_edition_conversion_service] = (
+        lambda: conversion
+    )
+    application.state.edition_conversion = conversion
     recovery = AsyncMock(spec=LibraryManagementRecoveryService)
     recovery.diagnostics.return_value = {
         "recoverable_bundle_count": 2,
@@ -492,6 +500,7 @@ def test_apply_history_and_result_routes_are_admin_bounded(
     assert detail.status_code == 200
     assert results.status_code == 200
     preview.apply.assert_awaited_once()
+    app.state.edition_conversion.apply_preview.assert_awaited_once()
     preview.history.assert_awaited_once_with(
         limit=25,
         cursor=None,
@@ -504,6 +513,32 @@ def test_apply_history_and_result_routes_are_admin_bounded(
         created_to=2.0,
     )
     preview.results.assert_awaited_once_with("job-1", after_ordinal=4, limit=25)
+
+
+def test_apply_route_returns_conversion_result_before_standard_preview(
+    app: FastAPI,
+    route_services: tuple[LibraryManagementProfileService, AsyncMock],
+) -> None:
+    _, preview = route_services
+    override_admin_auth(app)
+    app.state.edition_conversion.apply_preview.return_value = OperationResponse(
+        id="conversion-job-1", kind="library_management", state="queued"
+    )
+
+    response = build_test_client(app).post(
+        "/library/management/previews/job-1/apply",
+        json={
+            "preview_token": "opaque",
+            "expected_operation_row_revision": 2,
+            "idempotency_key": "apply-conversion-once",
+            "confirmation": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "conversion-job-1"
+    app.state.edition_conversion.apply_preview.assert_awaited_once()
+    preview.apply.assert_not_awaited()
 
 
 def test_discard_preview_route_forwards_exact_operation_revision(

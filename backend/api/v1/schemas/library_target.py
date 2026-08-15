@@ -30,7 +30,7 @@ class TargetNativeAlbum(AppStruct):
     musicbrainz_release_id: str | None = None
     musicbrainz_artist_id: str | None = None
     album_identity_state: Literal[
-        "local_only", "release_group_linked", "release_linked"
+        "local_only", "release_group_linked", "release_linked", "custom_edition"
     ] = "local_only"
     track_count: int = 0
     total_duration_seconds: float = 0
@@ -46,6 +46,19 @@ class TargetNativeAlbum(AppStruct):
     contribution_state: str | None = None
 
 
+class ActiveEditionConversionSummary(AppStruct):
+    job_id: str
+    release_mbid: str
+    state: Literal["preflight", "acquiring", "ready", "needs_recheck"]
+    kept_count: int
+    acquire_count: int
+    staged_count: int
+    failed_count: int
+    recycle_count: int
+    row_revision: int
+    final_preview_job_id: str | None = None
+
+
 class TargetNativeAlbumDetail(TargetNativeAlbum):
     row_revision: int = 1
     input_revision: str = ""
@@ -58,6 +71,32 @@ class TargetNativeAlbumDetail(TargetNativeAlbum):
     ] = "local_metadata"
     review_id: str | None = None
     review_revision: int | None = None
+    management_identity_readiness: Literal[
+        "not_applicable",
+        "exact_release_required",
+        "track_mapping_required",
+        "custom_manifest_stale",
+        "ready",
+    ] = "not_applicable"
+    mapped_track_count: int = 0
+    management_identity_kind: Literal["exact_release", "custom_edition"] | None = None
+    custom_manifest_id: str | None = None
+    custom_manifest_version: int | None = None
+    custom_manifest_track_count: int = 0
+    custom_manifest_recognized_track_count: int = 0
+    custom_manifest_stale: bool = False
+    management_excluded: bool = False
+    management_exclusion_revision: int | None = None
+    management_excluded_at: float | None = None
+    active_edition_conversion: ActiveEditionConversionSummary | None = None
+
+
+class ManagementReenableRequest(AppStruct):
+    expected_exclusion_revision: int
+
+
+class ManagementReenableResponse(AppStruct):
+    reenabled: bool
 
 
 class ReleaseEditionResult(AppStruct):
@@ -79,10 +118,12 @@ class ReleaseEditionResult(AppStruct):
     disambiguation: str | None = None
     score: int = 0
     belongs_to_current_release_group: bool = False
+    is_current_release: bool = False
 
 
 class ReleaseEditionSearchResponse(AppStruct):
-    query: str
+    title_query: str
+    artist_query: str
     items: list[ReleaseEditionResult] = msgspec.field(default_factory=list)
     total: int = 0
     offset: int = 0

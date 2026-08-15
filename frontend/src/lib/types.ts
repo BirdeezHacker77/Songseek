@@ -1155,7 +1155,6 @@ export type FreeMusicSettings = {
 // mirrors backend api/v1/schemas/settings.py (GetItSettings)
 export type GetItSettings = {
 	store_region: string; // ISO 3166-1 alpha-2, feeds the iTunes storefront
-	support_droppedneedle: boolean; // D19 affiliate toggle
 };
 
 // mirrors backend api/v1/schemas/get_it.py
@@ -1171,13 +1170,11 @@ export type PurchaseOptionsResponse = {
 	physical: PurchaseLink[];
 	free: PurchaseLink[];
 	bandcamp_search_url: string;
-	disclosure: boolean;
 };
 
 export type ArtistPurchaseOptionsResponse = {
 	links: PurchaseLink[];
 	bandcamp_search_url: string;
-	disclosure: boolean;
 };
 
 // mirrors backend api/v1/schemas/settings.py (EventsSettings)
@@ -1504,7 +1501,11 @@ export type AlbumSort = 'recent' | 'title' | 'artist';
 
 export type TrackSort = 'recent' | 'title' | 'artist' | 'album';
 
-export type AlbumIdentityState = 'local_only' | 'release_group_linked' | 'release_linked';
+export type AlbumIdentityState =
+	| 'local_only'
+	| 'release_group_linked'
+	| 'release_linked'
+	| 'custom_edition';
 
 export type ArtistIdentityState = 'local_only' | 'musicbrainz_linked';
 
@@ -1581,6 +1582,34 @@ export interface LibraryAlbumDetail extends LibraryAlbumSummary {
 		| 'manual_identity_needs_review';
 	review_id: string | null;
 	review_revision: number | null;
+	management_identity_readiness:
+		| 'not_applicable'
+		| 'exact_release_required'
+		| 'track_mapping_required'
+		| 'custom_manifest_stale'
+		| 'ready';
+	mapped_track_count: number;
+	management_identity_kind: 'exact_release' | 'custom_edition' | null;
+	custom_manifest_id: string | null;
+	custom_manifest_version: number | null;
+	custom_manifest_track_count: number;
+	custom_manifest_recognized_track_count: number;
+	custom_manifest_stale: boolean;
+	management_excluded: boolean;
+	management_exclusion_revision: number | null;
+	management_excluded_at: number | null;
+	active_edition_conversion: {
+		job_id: string;
+		release_mbid: string;
+		state: 'preflight' | 'acquiring' | 'ready' | 'needs_recheck';
+		kept_count: number;
+		acquire_count: number;
+		staged_count: number;
+		failed_count: number;
+		recycle_count: number;
+		row_revision: number;
+		final_preview_job_id: string | null;
+	} | null;
 }
 
 export type ContributionState =

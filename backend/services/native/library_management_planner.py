@@ -1134,6 +1134,11 @@ class LibraryManagementPlanner:
             field.name: field.value for field in source.document.metadata.fields
         }
         canonical_values = canonical_track_values(canonical_release, canonical_track)
+        custom_release_claims = (
+            frozenset({"musicbrainz_release_id", "musicbrainz_release_track_id"})
+            if canonical_release.identity_kind == "custom_edition"
+            else frozenset()
+        )
         genre_projection = await self._genres.project(
             settings=profile.genres,
             canonical_release=canonical_release,
@@ -1238,6 +1243,7 @@ class LibraryManagementPlanner:
             existing_values=existing,
             enriched_values=enriched,
             canonical_available=True,
+            forced_clear_fields=custom_release_claims,
         )
         preliminary_document = self._metadata_document(preliminary)
         current_custom = self._write_planner.custom_tags(
@@ -1263,6 +1269,7 @@ class LibraryManagementPlanner:
             track_overrides=effective_track_overrides,
             manual_overrides=manual_overrides,
             canonical_available=True,
+            forced_clear_fields=custom_release_claims,
         )
         desired_metadata = self._metadata_document(effective)
         artwork_settings = (
@@ -1316,6 +1323,11 @@ class LibraryManagementPlanner:
                 ),
             )
         )
+        for name in custom_release_claims:
+            desired_fields = [value for value in desired_fields if value.name != name]
+            desired_fields.append(
+                DesiredAudioField(name=name, action="clear", value=None)
+            )
         for name, value in planned_lyrics_outputs(
             profile.enrichment.lyrics,
             lyrics_projection,
@@ -2254,6 +2266,17 @@ class LibraryManagementPlanner:
     ) -> str | None:
         if identity is None or identity.identity_revision is None:
             return IDENTITY_NOT_ACCEPTED
+        if identity.identity_kind == "custom_edition":
+            if identity.custom_manifest_stale or not identity.custom_manifest_id:
+                return IDENTITY_NOT_ACCEPTED
+            by_id = {value.local_track_id: value for value in identity.tracks}
+            for source in inspected:
+                track = by_id.get(source.subject.local_track_id)
+                if track is None or (
+                    track.recording_mbid is not None and track.identity_revision is None
+                ):
+                    return TRACK_NOT_MAPPED
+            return None
         if not identity.release_group_mbid or not identity.release_mbid:
             return RELEASE_NOT_SELECTED
         by_id = {value.local_track_id: value for value in identity.tracks}

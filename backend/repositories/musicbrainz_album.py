@@ -33,9 +33,13 @@ from infrastructure.queue.priority_queue import RequestPriority
 from infrastructure.resilience.retry import CircuitOpenError
 from models.musicbrainz import recording_release_group_rank
 from repositories.musicbrainz_base import (
+    build_recording_search_query,
+    build_release_group_search_query,
+    build_release_search_query,
     mb_api_get,
     mb_deduplicator,
     dedupe_by_id,
+    escape_lucene_phrase,
     get_score,
     should_include_release,
     extract_artist_name,
@@ -221,28 +225,24 @@ class MusicBrainzAlbumMixin:
     _cache: CacheInterface
     _preferences_service: PreferencesService
 
-    @staticmethod
-    def _plain_release_search_query(value: str) -> str:
-        """Escape Lucene operators so the administrator's input stays plain text."""
-        reserved = set(r'+-&|!(){}[]^"~*?:\\/')
-        return "".join(
-            f"\\{character}" if character in reserved else character
-            for character in value
-        )
-
     async def search_release_editions(
         self,
-        query: str,
+        title: str,
+        artist: str,
         *,
         limit: int = 12,
         offset: int = 0,
         priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> ReleaseEditionSearchPage:
-        normalized_query = " ".join(query.split())
+        normalized_title = " ".join(title.split())
+        normalized_artist = " ".join(artist.split())
         normalized_limit = max(1, min(limit, 12))
         normalized_offset = max(0, offset)
         cache_key = mb_release_edition_search_key(
-            normalized_query, normalized_limit, normalized_offset
+            normalized_title,
+            normalized_artist,
+            normalized_limit,
+            normalized_offset,
         )
         cached = await self._cache.get(cache_key)
         if isinstance(cached, ReleaseEditionSearchPage):
@@ -253,7 +253,9 @@ class MusicBrainzAlbumMixin:
                 payload = await mb_api_get(
                     "/release",
                     params={
-                        "query": self._plain_release_search_query(normalized_query),
+                        "query": build_release_search_query(
+                            normalized_title, normalized_artist
+                        ),
                         "limit": normalized_limit,
                         "offset": normalized_offset,
                     },
@@ -365,6 +367,63 @@ class MusicBrainzAlbumMixin:
         cache_key = mb_album_search_key(
             query, limit, offset, included_secondary_types, included_primary_types
         )
+        provider_query = f'releasegroup:"{query}"^3 OR release:"{query}"^2 OR {query}'
+        return await self._search_release_groups(
+            provider_query=provider_query,
+            cache_key=cache_key,
+            limit=limit,
+            offset=offset,
+            included_secondary_types=included_secondary_types,
+            include_all_types=include_all_types,
+            included_primary_types=included_primary_types,
+            priority=priority,
+        )
+
+    async def search_release_groups(
+        self,
+        artist: str,
+        title: str,
+        limit: int = 10,
+        offset: int = 0,
+        included_secondary_types: set[str] | None = None,
+        include_all_types: bool = False,
+        included_primary_types: set[str] | None = None,
+        priority: RequestPriority = RequestPriority.USER_INITIATED,
+    ) -> list[SearchResult]:
+        normalized_artist = " ".join(artist.split())
+        normalized_title = " ".join(title.split())
+        cache_key = mb_album_search_key(
+            f"structured:{normalized_artist}\x00{normalized_title}",
+            limit,
+            offset,
+            included_secondary_types,
+            included_primary_types,
+        )
+        return await self._search_release_groups(
+            provider_query=build_release_group_search_query(
+                normalized_title, normalized_artist
+            ),
+            cache_key=cache_key,
+            limit=limit,
+            offset=offset,
+            included_secondary_types=included_secondary_types,
+            include_all_types=include_all_types,
+            included_primary_types=included_primary_types,
+            priority=priority,
+        )
+
+    async def _search_release_groups(
+        self,
+        *,
+        provider_query: str,
+        cache_key: str,
+        limit: int,
+        offset: int,
+        included_secondary_types: set[str] | None,
+        include_all_types: bool,
+        included_primary_types: set[str] | None,
+        priority: RequestPriority,
+    ) -> list[SearchResult]:
         if include_all_types:
             cache_key = f"{cache_key}:all"
 
@@ -378,7 +437,7 @@ class MusicBrainzAlbumMixin:
             result = await mb_api_get(
                 "/release-group",
                 params={
-                    "query": f'releasegroup:"{query}"^3 OR release:"{query}"^2 OR {query}',
+                    "query": provider_query,
                     "limit": internal_limit,
                     "offset": offset,
                 },
@@ -760,15 +819,12 @@ class MusicBrainzAlbumMixin:
         ):
             return cached
 
-        def quoted(value: str) -> str:
-            return value.replace("\\", "\\\\").replace('"', '\\"')
-
         clauses = [
-            f'release:"{quoted(facts.title)}"',
-            f'artist:"{quoted(facts.artist_name)}"',
+            f'release:"{escape_lucene_phrase(facts.title)}"',
+            f'artist:"{escape_lucene_phrase(facts.artist_name)}"',
         ]
         if facts.barcode:
-            clauses.append(f'barcode:"{quoted(facts.barcode)}"')
+            clauses.append(f'barcode:"{escape_lucene_phrase(facts.barcode)}"')
         query = " AND ".join(clauses[:2])
         if len(clauses) == 3:
             query = f"({query}) OR {clauses[2]}"
@@ -880,8 +936,8 @@ class MusicBrainzAlbumMixin:
         priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> list["RecordingMatch"]:
         """Search MusicBrainz recordings by track title + artist, returning each candidate with its release groups."""
-        artist = artist.replace('"', "").strip()
-        title = title.replace('"', "").strip()
+        artist = " ".join(artist.split())
+        title = " ".join(title.split())
         if not artist or not title:
             return []
         cache_key = (
@@ -895,7 +951,7 @@ class MusicBrainzAlbumMixin:
             result = await mb_api_get(
                 "/recording",
                 params={
-                    "query": f'recording:"{title}" AND artist:"{artist}"',
+                    "query": build_recording_search_query(title, artist),
                     "limit": limit,
                 },
                 priority=priority,

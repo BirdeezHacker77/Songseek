@@ -30,7 +30,9 @@ def test_repository_matches_identification_provider_protocol_signatures() -> Non
 async def test_repository_normalizes_provider_payload_and_forwards_priority() -> None:
     musicbrainz = SimpleNamespace(
         search_release_editions=AsyncMock(),
-        search_albums=AsyncMock(return_value=[SimpleNamespace(musicbrainz_id="rg-1")]),
+        search_release_groups=AsyncMock(
+            return_value=[SimpleNamespace(musicbrainz_id="rg-1")]
+        ),
         search_recordings=AsyncMock(
             return_value=[
                 SimpleNamespace(
@@ -77,9 +79,11 @@ async def test_repository_normalizes_provider_payload_and_forwards_priority() ->
     repository = MusicBrainzIdentificationRepository(musicbrainz)
     priority = RequestPriority.BACKGROUND_SYNC
 
-    await repository.search_release_editions("Album", 12, 24, priority)
+    await repository.search_release_editions("Album", "Artist", 12, 24, priority)
 
-    assert await repository.search_album_candidate_ids("query", 8, priority) == ["rg-1"]
+    assert await repository.search_album_candidate_ids(
+        "Artist", "Album", 8, priority
+    ) == ["rg-1"]
     assert await repository.search_recording_candidate_ids(
         "Artist", "Track", 5, priority
     ) == ["rg-1"]
@@ -93,7 +97,7 @@ async def test_repository_normalizes_provider_payload_and_forwards_priority() ->
     assert all(
         call.kwargs["priority"] is priority
         for mock in (
-            musicbrainz.search_albums,
+            musicbrainz.search_release_groups,
             musicbrainz.search_recordings,
             musicbrainz.get_release_group_by_id,
             musicbrainz.get_release_by_id,
@@ -101,7 +105,7 @@ async def test_repository_normalizes_provider_payload_and_forwards_priority() ->
         for call in mock.await_args_list
     )
     musicbrainz.search_release_editions.assert_awaited_once_with(
-        "Album", limit=12, offset=24, priority=priority
+        "Album", "Artist", limit=12, offset=24, priority=priority
     )
 
 

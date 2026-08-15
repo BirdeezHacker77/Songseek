@@ -368,12 +368,12 @@ def test_equal_safe_candidates_are_ambiguous_at_the_signed_margin() -> None:
     )
 
 
-def test_studio_protection_and_genuine_compilation_acceptance() -> None:
+def test_release_type_confirmation_and_genuine_compilation_acceptance() -> None:
     normal = [_track("one", "One")]
     unsafe = _candidate("live", [_candidate_track("One", 1)], secondary=["live"])
     assert (
         AlbumEvidenceEngine().decide(normal, [unsafe]).reason_code
-        == "UNSAFE_RELEASE_TYPE"
+        == "RELEASE_TYPE_REQUIRES_CONFIRMATION"
     )
 
     compilation = [_track("one", "One", compilation=True, artist="Various Artists")]
@@ -384,6 +384,78 @@ def test_studio_protection_and_genuine_compilation_acceptance() -> None:
         secondary=["compilation"],
     )
     assert AlbumEvidenceEngine().decide(compilation, [genuine]).outcome == "identified"
+
+
+def test_compilation_flag_cannot_make_a_live_release_safe() -> None:
+    tagged_compilation = [_track("one", "One", compilation=True)]
+    live = _candidate("live", [_candidate_track("One", 1)], secondary=["live"])
+
+    assert AlbumEvidenceEngine().decide(tagged_compilation, [live]).reason_code == (
+        "RELEASE_TYPE_REQUIRES_CONFIRMATION"
+    )
+
+
+@pytest.mark.parametrize("secondary_type", ["compilation", "live"])
+def test_complete_release_track_ids_prove_an_exact_special_release(
+    secondary_type: str,
+) -> None:
+    local = [
+        _track(
+            "one",
+            "One",
+            recording="recording-1",
+            release_track="release-track-1",
+        ),
+        _track(
+            "two",
+            "Two",
+            number=2,
+            recording="recording-2",
+            release_track="release-track-2",
+        ),
+    ]
+    candidate = _candidate(
+        secondary_type,
+        [
+            _candidate_track(
+                "One", 1, recording="recording-1", release_track="release-track-1"
+            ),
+            _candidate_track(
+                "Two", 2, recording="recording-2", release_track="release-track-2"
+            ),
+        ],
+        secondary=[secondary_type],
+    )
+
+    assert AlbumEvidenceEngine().decide(local, [candidate]).outcome == "identified"
+
+
+def test_incomplete_release_track_ids_do_not_bypass_release_type_confirmation() -> None:
+    local = [
+        _track(
+            "one",
+            "One",
+            recording="recording-1",
+            release_track="release-track-1",
+        ),
+        _track("two", "Two", number=2, recording="recording-2"),
+    ]
+    candidate = _candidate(
+        "compilation",
+        [
+            _candidate_track(
+                "One", 1, recording="recording-1", release_track="release-track-1"
+            ),
+            _candidate_track(
+                "Two", 2, recording="recording-2", release_track="release-track-2"
+            ),
+        ],
+        secondary=["compilation"],
+    )
+
+    assert AlbumEvidenceEngine().decide(local, [candidate]).reason_code == (
+        "RELEASE_TYPE_REQUIRES_CONFIRMATION"
+    )
 
 
 def test_unicode_punctuation_and_duration_grace_are_supported() -> None:

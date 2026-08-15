@@ -34,6 +34,15 @@ class FreeMusicTask(AppStruct):
     bytes_downloaded: int = 0
     attempts: int = 0
     error: str | None = None
+    origin: str = "user"
+    release_group_mbid: str | None = None
+    release_mbid: str | None = None
+    release_track_mbid: str | None = None
+    recording_mbid: str | None = None
+    duration_seconds: float | None = None
+    album_title: str | None = None
+    track_number: int | None = None
+    disc_number: int | None = None
 
 
 class FreeMusicCandidate(AppStruct):

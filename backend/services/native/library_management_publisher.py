@@ -66,6 +66,7 @@ from models.library_management_planning import (
     naming_policy_revision,
     pin_library_management_profile,
 )
+from api.v1.schemas.library_management import LibraryManagementRootAssignment
 from services.native.artwork_projection_service import merge_embedded_artwork
 from services.native.audio_write_planning_service import AudioWritePlanningService
 from services.native.file_revision import revision_from_stat
@@ -370,7 +371,11 @@ class LibraryManagementPublisher:
             LibraryManagementImportBundleRecord(
                 id=bundle_id,
                 idempotency_key=bundle.idempotency_key,
-                origin=bundle.origin,
+                origin=(
+                    "acquisition"
+                    if bundle.origin == "edition_conversion"
+                    else bundle.origin
+                ),
                 policy_revision=bundle.policy_revision,
                 request_json=request_json,
                 request_hash=request_hash,
@@ -395,7 +400,10 @@ class LibraryManagementPublisher:
         elif record.state != "publishing":
             raise StaleRevisionError("The import publication state is invalid.")
 
-        roots = self._root_paths(bundle.policy_revision)
+        roots = self._root_paths(
+            bundle.policy_revision,
+            recycle_bin_path=bundle.conversion_recycle_bin_path,
+        )
         existing = {
             value.ordinal: value
             for value in await self._store.list_library_management_import_journals(
@@ -445,7 +453,10 @@ class LibraryManagementPublisher:
             async with self._filesystem.write_many(root_ids):
 
                 async def critical() -> tuple[str, ...]:
-                    self._root_paths(bundle.policy_revision)
+                    self._root_paths(
+                        bundle.policy_revision,
+                        recycle_bin_path=bundle.conversion_recycle_bin_path,
+                    )
                     for value in prepared:
                         await self._recover_import_publish_boundary(value, roots)
                     self._validate_automatic_import_configuration(bundle)
@@ -520,7 +531,12 @@ class LibraryManagementPublisher:
             )
             if (
                 expected_id != record.id
-                or bundle.origin != record.origin
+                or (
+                    "acquisition"
+                    if bundle.origin == "edition_conversion"
+                    else bundle.origin
+                )
+                != record.origin
                 or bundle.policy_revision != record.policy_revision
             ):
                 raise ValidationError("The import recovery identity changed.")
@@ -545,7 +561,10 @@ class LibraryManagementPublisher:
                 return "rolled_back"
             if record.state != "publishing":
                 raise ValidationError("The import recovery state is invalid.")
-            roots = self._root_paths(bundle.policy_revision)
+            roots = self._root_paths(
+                bundle.policy_revision,
+                recycle_bin_path=bundle.conversion_recycle_bin_path,
+            )
             requests = {value.ordinal: value for value in bundle.files}
             if any(journal.ordinal not in requests for journal in journals):
                 raise ValidationError("The import recovery journal is inconsistent.")
@@ -582,6 +601,26 @@ class LibraryManagementPublisher:
             raise ValidationError("An import publication idempotency key is required.")
         if not 1 <= len(bundle.files) <= 500:
             raise ValidationError("An import publication must contain 1 to 500 files.")
+        conversion_values = (
+            bundle.conversion_job_id,
+            bundle.conversion_expected_row_revision,
+            bundle.conversion_local_album_id,
+            bundle.conversion_preview_job_id,
+            bundle.conversion_recycle_bin_path,
+        )
+        if bundle.origin == "edition_conversion":
+            if any(value is None for value in conversion_values):
+                raise ValidationError(
+                    "An edition conversion needs one complete sealed correlation."
+                )
+            if not Path(str(bundle.conversion_recycle_bin_path)).is_absolute():
+                raise ValidationError(
+                    "An edition conversion needs an absolute managed recycle path."
+                )
+        elif any(value is not None for value in conversion_values):
+            raise ValidationError(
+                "Only an edition conversion can carry conversion correlation."
+            )
         ordinals = [value.ordinal for value in bundle.files]
         destinations = [
             (value.destination_root_id, value.destination_relative_path)
@@ -643,6 +682,8 @@ class LibraryManagementPublisher:
                 value.settings_revision,
                 value.undo_retention_days,
                 value.baseline_relative_path,
+            )
+            mapping_values = (
                 value.release_track_mbid,
                 value.medium_position,
                 value.release_track_position,
@@ -653,9 +694,29 @@ class LibraryManagementPublisher:
                 raise ValidationError(
                     "An automatic import needs one complete immutable projection."
                 )
-            if value.pinned_profile is not None and not value.authoritative_mapping:
+            if (
+                not value.conversion_recycle_only
+                and any(item is not None for item in mapping_values)
+                and not all(item is not None for item in mapping_values)
+            ):
+                raise ValidationError(
+                    "An automatic import needs one complete release-track mapping."
+                )
+            if (
+                value.pinned_profile is not None
+                and not value.authoritative_mapping
+                and not value.conversion_recycle_only
+            ):
                 raise ValidationError(
                     "An automatic import needs an authoritative release-track mapping."
+                )
+            if value.conversion_recycle_only and (
+                bundle.origin != "edition_conversion"
+                or value.destination_root_id != MANAGEMENT_RECYCLE_ROOT_ID
+                or value.replacement_local_track_id is None
+            ):
+                raise ValidationError(
+                    "A conversion recycle item needs a catalogued source and recycle destination."
                 )
             if value.pinned_profile is not None:
                 expected_naming_revision = naming_policy_revision(value.pinned_profile)
@@ -832,12 +893,17 @@ class LibraryManagementPublisher:
                 raise StaleRevisionError("An import source changed before staging.")
             read = await asyncio.to_thread(self._audio.read, source)
             profile = (
-                request.pinned_profile.profile
+                self._minimal_import_profile()
+                if request.conversion_recycle_only
+                else request.pinned_profile.profile
                 if request.pinned_profile is not None
                 else self._minimal_import_profile()
             )
-            desired = request.desired_document or self._minimal_import_document(
-                request.tag
+            desired = (
+                self._minimal_import_document(request.tag)
+                if request.conversion_recycle_only
+                else request.desired_document
+                or self._minimal_import_document(request.tag)
             )
             plan = self._write_planner.plan(
                 current=read,
@@ -1589,7 +1655,10 @@ class LibraryManagementPublisher:
     ) -> LibraryManagementImportBundleRecord:
         if record.state == "completed":
             return record
-        roots = self._root_paths(bundle.policy_revision)
+        roots = self._root_paths(
+            bundle.policy_revision,
+            recycle_bin_path=bundle.conversion_recycle_bin_path,
+        )
         root_ids = (
             {value.destination_root_id for value in bundle.files}
             | {
@@ -1904,6 +1973,7 @@ class LibraryManagementPublisher:
         self,
         policy_revision: str,
         pinned: PinnedLibraryManagementProfile | None = None,
+        recycle_bin_path: str | None = None,
     ) -> dict[str, Path]:
         resolver = LibraryPolicyResolver(
             self._preferences.get_typed_library_settings_raw()
@@ -1915,6 +1985,8 @@ class LibraryManagementPublisher:
         roots = {root.id: Path(root.path) for root in resolver.settings.library_roots}
         if pinned is not None and pinned.recycle_bin_path:
             roots[MANAGEMENT_RECYCLE_ROOT_ID] = Path(pinned.recycle_bin_path)
+        if recycle_bin_path is not None:
+            roots[MANAGEMENT_RECYCLE_ROOT_ID] = Path(recycle_bin_path)
         return roots
 
     async def _prepare_plan_item(
@@ -1955,8 +2027,14 @@ class LibraryManagementPublisher:
             raise StaleRevisionError("A managed file changed after preview.")
         current = await asyncio.to_thread(self._audio.read, source)
         desired = await self._desired_document(item, current.artwork)
-        identity_values = await self._validate_subject_revision(item, desired)
         diff = json.loads(item.diff_json)
+        identity_values = await self._validate_subject_revision(
+            item,
+            desired,
+            allow_unmapped_conversion_restore=bool(
+                diff.get("edition_conversion_restore_unmapped")
+            ),
+        )
         restore_blob_sha256 = diff.get("restore_snapshot_blob_sha256")
         write_plan = self._write_planner.plan(
             current=current, desired=desired, profile=pinned.profile
@@ -2380,14 +2458,15 @@ class LibraryManagementPublisher:
         profile_revision: str,
         naming_revision: str,
         *,
-        identity_values: tuple[str, str, str],
+        identity_values: tuple[
+            str, str | None, str, str | None, str | None, str | None
+        ],
     ) -> LibraryManagementCatalogMutation:
         required = (
             item.local_track_id,
             item.local_album_id,
             item.expected_album_revision,
             item.expected_track_revision,
-            item.expected_identity_revision,
             item.expected_album_identity_revision,
             item.expected_override_revision,
             journal.destination_root_id,
@@ -2430,12 +2509,15 @@ class LibraryManagementPublisher:
             expected_relative_path=item.expected_relative_path,
             expected_stat_revision=item.expected_stat_revision,
             expected_tag_revision=item.expected_tag_revision,
-            expected_identity_revision=int(item.expected_identity_revision),
+            expected_identity_revision=item.expected_identity_revision,
             expected_album_identity_revision=int(item.expected_album_identity_revision),
             expected_override_revision=str(item.expected_override_revision),
-            expected_release_mbid=identity_values[0],
-            expected_recording_mbid=identity_values[1],
-            expected_release_track_mbid=identity_values[2],
+            expected_identity_kind=identity_values[0],
+            expected_custom_manifest_id=identity_values[1],
+            expected_release_group_mbid=identity_values[2],
+            expected_release_mbid=identity_values[3],
+            expected_recording_mbid=identity_values[4],
+            expected_release_track_mbid=identity_values[5],
             destination_root_id=str(journal.destination_root_id),
             destination_relative_path=destination_relative,
             destination_file_path=str(destination),
@@ -2467,6 +2549,9 @@ class LibraryManagementPublisher:
                 else None
             ),
             recycle_only=bool(diff.get("duplicate_recycle_only")),
+            allow_unmapped_conversion_restore=bool(
+                diff.get("edition_conversion_restore_unmapped")
+            ),
         )
 
     def _validate_pinned_configuration(
@@ -2527,17 +2612,28 @@ class LibraryManagementPublisher:
                 "Library policy changed before automatic publication."
             )
         assignments = {value.root_id: value for value in current.root_assignments}
-        trigger_field = (
-            "automatic_acquisitions"
-            if bundle.origin == "acquisition"
-            else "automatic_drop_imports"
-        )
+        trigger_field = {
+            "acquisition": "automatic_acquisitions",
+            "drop_import": "automatic_drop_imports",
+        }.get(bundle.origin)
         for request in managed:
-            assignment = assignments.get(request.destination_root_id)
-            if (
-                assignment is None
-                or not assignment.enabled
-                or not getattr(assignment, trigger_field)
+            root_id = (
+                request.replacement_root_id
+                if request.conversion_recycle_only
+                else request.destination_root_id
+            )
+            assignment = assignments.get(str(root_id))
+            if bundle.origin == "edition_conversion" and assignment is None:
+                assignment = LibraryManagementRootAssignment(
+                    root_id=str(root_id), profile_id=current.default_profile_id
+                )
+            if assignment is None or (
+                bundle.origin != "edition_conversion"
+                and (
+                    not assignment.enabled
+                    or trigger_field is None
+                    or not getattr(assignment, trigger_field)
+                )
             ):
                 raise StaleRevisionError(
                     "Automatic Library Management is no longer enabled for this root."
@@ -2570,12 +2666,21 @@ class LibraryManagementPublisher:
             activation_matches = activated == expected or (
                 activated is None and current_pinned.multi_disc_naming_script is None
             )
-            if (
+            profile_changed = (
                 request_naming_revision != expected
                 or request_naming_revision
                 != naming_policy_revision(request.pinned_profile)
                 or msgspec.json.encode(request.pinned_profile)
                 != msgspec.json.encode(current_pinned)
+            )
+            if bundle.origin == "edition_conversion":
+                if profile_changed:
+                    raise StaleRevisionError(
+                        "The automatic Library Management profile changed."
+                    )
+                continue
+            if (
+                profile_changed
                 or assignment.activation_profile_revision != effective.revision
                 or not activation_matches
                 or assignment.activation_policy_revision != policy.policy_revision
@@ -2591,11 +2696,12 @@ class LibraryManagementPublisher:
         self,
         item: LibraryManagementPlanItem,
         desired: DesiredAudioDocument,
-    ) -> tuple[str, str, str]:
+        *,
+        allow_unmapped_conversion_restore: bool = False,
+    ) -> tuple[str, str | None, str, str | None, str | None, str | None]:
         if (
             item.local_album_id is None
             or item.local_track_id is None
-            or item.expected_identity_revision is None
             or item.expected_album_identity_revision is None
             or item.expected_override_revision is None
         ):
@@ -2612,11 +2718,40 @@ class LibraryManagementPublisher:
         )
         recording_mbid = track.recording_mbid if track is not None else None
         release_track_mbid = track.release_track_mbid if track is not None else None
-        if (
-            identity is None
-            or identity.identity_revision != item.expected_album_identity_revision
+        if identity is None or track is None:
+            raise StaleRevisionError(
+                "The accepted MusicBrainz mapping changed after preview."
+            )
+        if allow_unmapped_conversion_restore:
+            if (
+                identity.identity_kind != "exact_release"
+                or identity.identity_revision != item.expected_album_identity_revision
+                or release_group_mbid is None
+                or release_mbid is None
+                or track.identity_revision != item.expected_identity_revision
+            ):
+                raise StaleRevisionError(
+                    "The edition-conversion restore identity changed after preview."
+                )
+        elif identity.identity_kind == "custom_edition":
+            if (
+                identity.identity_revision != item.expected_album_identity_revision
+                or identity.custom_manifest_stale
+                or not identity.custom_manifest_id
+                or release_group_mbid is None
+                or release_mbid is not None
+                or track.identity_revision != item.expected_identity_revision
+                or track.release_mbid is not None
+                or track.release_track_mbid is not None
+                or recording_mbid != track.recording_mbid
+            ):
+                raise StaleRevisionError(
+                    "The sealed Custom edition changed after preview."
+                )
+        elif (
+            identity.identity_revision != item.expected_album_identity_revision
             or release_mbid is None
-            or track is None
+            or item.expected_identity_revision is None
             or track.identity_revision != item.expected_identity_revision
             or track.release_mbid != release_mbid
             or recording_mbid is None
@@ -2638,6 +2773,18 @@ class LibraryManagementPublisher:
                 raise StaleRevisionError(
                     "The accepted MusicBrainz mapping changed after preview."
                 )
+        if identity.identity_kind == "custom_edition":
+            for name in (
+                "musicbrainz_release_id",
+                "musicbrainz_release_track_id",
+            ):
+                field = next(
+                    (value for value in desired.fields if value.name == name), None
+                )
+                if field is None or field.action != "clear":
+                    raise StaleRevisionError(
+                        "A Custom edition must clear exact MusicBrainz release tags."
+                    )
         _album_overrides, album_revision = await self._store.list_management_overrides(
             subject_kind="album", subject_id=item.local_album_id
         )
@@ -2649,7 +2796,14 @@ class LibraryManagementPublisher:
         ).hexdigest()
         if override_revision != item.expected_override_revision:
             raise StaleRevisionError("Management overrides changed after preview.")
-        return release_mbid, recording_mbid, release_track_mbid
+        return (
+            identity.identity_kind,
+            identity.custom_manifest_id,
+            release_group_mbid,
+            release_mbid,
+            recording_mbid,
+            release_track_mbid,
+        )
 
     async def _desired_document(
         self,

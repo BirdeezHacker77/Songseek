@@ -94,6 +94,7 @@ class AcquisitionDispatcher:
         artist_mbid: str | None = None,
         origin: str = "user",
         release_mbid: str | None = None,
+        release_track_mbid: str | None = None,
         track_count_priority: RequestPriority = RequestPriority.USER_INITIATED,
     ) -> str:
         if self._ownership is not None:
@@ -132,6 +133,7 @@ class AcquisitionDispatcher:
             artist_mbid=artist_mbid,
             origin=origin,
             release_mbid=release_mbid,
+            release_track_mbid=release_track_mbid,
         )
 
     async def request_track(
@@ -146,6 +148,9 @@ class AcquisitionDispatcher:
         artist_mbid: str | None = None,
         origin: str = "user",
         release_mbid: str | None = None,
+        release_track_mbid: str | None = None,
+        track_number: int | None = None,
+        disc_number: int | None = None,
     ) -> str:
         if self._ownership is not None:
             recording_mbid = await self._ownership.provider_track_id(recording_mbid)
@@ -156,11 +161,26 @@ class AcquisitionDispatcher:
             if artist_mbid is not None:
                 artist_mbid = await self._ownership.provider_artist_id(artist_mbid)
         if self._use_free_music():
+            if origin != "edition_conversion":
+                return await self._get_free_music_service().request_track(
+                    user_id=user_id,
+                    recording_mbid=recording_mbid,
+                    artist_name=artist_name,
+                    track_title=track_title,
+                )
             return await self._get_free_music_service().request_track(
                 user_id=user_id,
                 recording_mbid=recording_mbid,
                 artist_name=artist_name,
                 track_title=track_title,
+                origin=origin,
+                release_group_mbid=release_group_mbid,
+                release_mbid=release_mbid,
+                release_track_mbid=release_track_mbid,
+                duration_seconds=duration_seconds,
+                album_title=album_title,
+                track_number=track_number,
+                disc_number=disc_number,
             )
         return await self._get_download_service().request_track(
             user_id=user_id,
@@ -173,4 +193,5 @@ class AcquisitionDispatcher:
             artist_mbid=artist_mbid,
             origin=origin,
             release_mbid=release_mbid,
+            release_track_mbid=release_track_mbid,
         )

@@ -484,6 +484,7 @@ class LibraryManagementRootAssignment(AppStruct):
     automatic_acquisitions: bool = False
     automatic_drop_imports: bool = False
     automatic_scan_discovered: bool = False
+    automatic_custom_editions: bool = False
     activation_profile_revision: str | None = None
     activation_naming_policy_revision: str | None = None
     activation_policy_revision: str | None = None
@@ -1096,6 +1097,8 @@ def normalize_library_management_settings(
         if not assignment.root_id.strip() or assignment.root_id in assignment_roots:
             raise ValueError("Every root can have only one management assignment.")
         assignment_roots.add(assignment.root_id)
+        if not assignment.automatic_scan_discovered:
+            assignment.automatic_custom_editions = False
         if (
             assignment.profile_id is not None
             and assignment.profile_id not in profile_ids

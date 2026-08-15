@@ -454,13 +454,9 @@ class FreeMusicSettings(AppStruct):
 
 class GetItSettings(AppStruct):
     """ "Get it" purchase links (phase 01). ``store_region`` feeds the iTunes
-    Search ``country`` storefront parameter. ``support_droppedneedle`` gates
-    the affiliate decorator (D19): on = the app's baked-in tags decorate store
-    links and a disclosure line renders; off = every link is a clean direct
-    URL. No secrets here - affiliate tags are public strings."""
+    Search ``country`` storefront parameter."""
 
     store_region: Annotated[str, msgspec.Meta(pattern=r"^[A-Za-z]{2}$")] = "US"
-    support_droppedneedle: bool = True
 
 
 class EventsSettings(AppStruct):

@@ -366,6 +366,7 @@ async def select_reidentification_candidate(
         expected_job_revision=body.expected_row_revision,
         candidate_key=body.candidate_key,
         confirmation=body.confirmation,
+        decision_mode=body.decision_mode,
         actor_user_id=admin.id,
     )
     return worker.response(row)

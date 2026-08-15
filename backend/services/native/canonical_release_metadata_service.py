@@ -16,6 +16,7 @@ from core.exceptions import ProviderIdentityRequiredError, ResourceNotFoundError
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from infrastructure.queue.priority_queue import RequestPriority
 from models.library_management import LibraryManagementMetadataSnapshot
+from models.edition_management import CustomEditionManifest
 from models.library_management_canonical import (
     AcceptedAlbumManagementIdentity,
     AcceptedTrackManagementIdentity,
@@ -295,8 +296,6 @@ class CanonicalReleaseMetadataService:
         )
         if identity is None:
             raise ResourceNotFoundError("Library album not found.")
-        self._require_complete_identity(identity, local_track_ids)
-        assert identity.release_mbid is not None
 
         return await self.build_from_identity(
             identity=identity,
@@ -313,6 +312,19 @@ class CanonicalReleaseMetadataService:
         priority: RequestPriority = RequestPriority.USER_INITIATED,
         bypass_cache: bool = False,
     ) -> CanonicalReleaseProjection:
+        if identity.identity_kind == "custom_edition":
+            self._require_current_custom_identity(identity)
+            state = await self._store.get_custom_edition_state(identity.local_album_id)
+            if (
+                state is None
+                or state.stale
+                or state.manifest.id != identity.custom_manifest_id
+            ):
+                raise ProviderIdentityRequiredError(
+                    "The Custom edition changed after it was sealed; review and reseal it before managing this album."
+                )
+            document = self._project_custom(identity, state.manifest)
+            return await self._snapshot(identity, profile, (), document)
         self._require_complete_identity(identity, None)
         assert identity.release_mbid is not None
         includes = _required_includes(profile)
@@ -462,6 +474,10 @@ class CanonicalReleaseMetadataService:
         identity: AcceptedAlbumManagementIdentity,
         requested_track_ids: tuple[str, ...] | None,
     ) -> None:
+        if identity.identity_kind != "exact_release":
+            raise ProviderIdentityRequiredError(
+                "This operation requires an accepted exact MusicBrainz release."
+            )
         if not identity.release_group_mbid or not identity.release_mbid:
             raise ProviderIdentityRequiredError(
                 "Select and accept a specific MusicBrainz release before managing this album."
@@ -496,6 +512,192 @@ class CanonicalReleaseMetadataService:
                     "Two selected files map to the same MusicBrainz release track."
                 )
             release_tracks.add(track.release_track_mbid)
+
+    @staticmethod
+    def _require_current_custom_identity(
+        identity: AcceptedAlbumManagementIdentity,
+    ) -> None:
+        if (
+            not identity.release_group_mbid
+            or identity.identity_revision is None
+            or not identity.custom_manifest_id
+            or identity.custom_manifest_stale
+            or not identity.tracks
+        ):
+            raise ProviderIdentityRequiredError(
+                "The Custom edition changed after it was sealed; review and reseal it before managing this album."
+            )
+        if any(
+            track.identity_revision is None and track.recording_mbid
+            for track in identity.tracks
+        ):
+            raise ProviderIdentityRequiredError(
+                "The Custom edition's recognized recording evidence changed after sealing."
+            )
+
+    @staticmethod
+    def _project_custom(
+        identity: AcceptedAlbumManagementIdentity,
+        manifest: CustomEditionManifest,
+    ) -> CanonicalReleaseDocument:
+        selected_ids = {value.local_track_id for value in identity.tracks}
+        manifest_tracks = [
+            value for value in manifest.tracks if value.local_track_id in selected_ids
+        ]
+        if len(manifest_tracks) != len(selected_ids):
+            raise ProviderIdentityRequiredError(
+                "One or more selected files are not part of the sealed Custom edition."
+            )
+        try:
+            album_metadata = json.loads(manifest.album_metadata_json)
+            track_metadata = {
+                value.local_track_id: json.loads(value.metadata_json)
+                for value in manifest_tracks
+            }
+        except (TypeError, ValueError) as error:
+            raise ProviderIdentityRequiredError(
+                "The sealed Custom edition metadata is invalid; review and reseal it."
+            ) from error
+        if not isinstance(album_metadata, dict) or any(
+            not isinstance(value, dict) for value in track_metadata.values()
+        ):
+            raise ProviderIdentityRequiredError(
+                "The sealed Custom edition metadata is invalid; review and reseal it."
+            )
+
+        album_artist = CanonicalArtistCredit(
+            display_name=manifest.album_artist_name,
+            credited_name=manifest.album_artist_name,
+            canonical_name=manifest.album_artist_name,
+            sort_name=str(
+                album_metadata.get("album_artist_sort_name")
+                or manifest.album_artist_name
+            ),
+            artist_mbid=manifest.artist_mbid,
+        )
+        disc_counts: dict[int, int] = {}
+        for value in manifest.tracks:
+            disc_counts[value.disc_number] = disc_counts.get(value.disc_number, 0) + 1
+        total_discs = len(disc_counts)
+        by_disc: dict[int, list[CanonicalTrackDocument]] = {}
+        accepted = {value.local_track_id: value for value in identity.tracks}
+        for value in manifest_tracks:
+            metadata = track_metadata[value.local_track_id]
+            mapped = accepted[value.local_track_id]
+            artist = CanonicalArtistCredit(
+                display_name=value.artist_name,
+                credited_name=value.artist_name,
+                canonical_name=value.artist_name,
+                sort_name=str(metadata.get("artist_sort") or value.artist_name),
+                artist_mbid=value.artist_mbid,
+            )
+            by_disc.setdefault(value.disc_number, []).append(
+                CanonicalTrackDocument(
+                    local_track_id=value.local_track_id,
+                    source_track_revision=value.source_track_revision,
+                    source_identity_revision=value.source_identity_revision or 0,
+                    title=value.title,
+                    artist_credits=(artist,),
+                    relationship_credits=(),
+                    identifiers=CanonicalIdentifierSet(
+                        release_group_mbid=manifest.release_group_mbid,
+                        release_mbid=None,
+                        recording_mbid=value.recording_mbid,
+                        album_artist_mbids=(manifest.artist_mbid,)
+                        if manifest.artist_mbid
+                        else (),
+                        artist_mbids=(value.artist_mbid,) if value.artist_mbid else (),
+                    ),
+                    track_number=value.track_number,
+                    track_number_text=str(value.track_number),
+                    total_tracks=disc_counts[value.disc_number],
+                    disc_number=value.disc_number,
+                    total_discs=total_discs,
+                    disc_subtitle=(
+                        str(metadata["disc_subtitle"])
+                        if metadata.get("disc_subtitle")
+                        else None
+                    ),
+                    media_format=value.file_format or None,
+                    duration_milliseconds=(
+                        round(value.duration_seconds * 1000)
+                        if value.duration_seconds is not None
+                        else None
+                    ),
+                    genres=(
+                        (
+                            CanonicalGenre(
+                                display_name=str(metadata["genre"]),
+                                provider_entity="custom_edition",
+                            ),
+                        )
+                        if metadata.get("genre")
+                        else ()
+                    ),
+                )
+            )
+        media = tuple(
+            CanonicalMedium(
+                position=disc_number,
+                title=None,
+                format=None,
+                track_count=disc_counts[disc_number],
+                tracks=tuple(
+                    sorted(
+                        by_disc.get(disc_number, []),
+                        key=lambda track: track.track_number,
+                    )
+                ),
+            )
+            for disc_number in sorted(by_disc)
+        )
+        year = album_metadata.get("year")
+        original_date = album_metadata.get("original_release_date")
+        primary_genre = album_metadata.get("primary_genre")
+        return CanonicalReleaseDocument(
+            local_album_id=identity.local_album_id,
+            source_album_revision=manifest.source_album_revision,
+            source_identity_revision=manifest.source_identity_revision or 0,
+            title=manifest.album_title,
+            artist_credits=(album_artist,),
+            identifiers=CanonicalIdentifierSet(
+                release_group_mbid=manifest.release_group_mbid,
+                release_mbid=None,
+                album_artist_mbids=(manifest.artist_mbid,)
+                if manifest.artist_mbid
+                else (),
+            ),
+            date=_canonical_date(str(year)) if year else None,
+            original_date=_canonical_date(str(original_date))
+            if original_date
+            else None,
+            release_status=None,
+            release_country=None,
+            primary_release_type=None,
+            secondary_release_types=(),
+            packaging=None,
+            barcode=None,
+            asin=None,
+            language=None,
+            script=None,
+            compilation=bool(album_metadata.get("is_compilation")),
+            total_discs=total_discs,
+            labels=(),
+            genres=(
+                (
+                    CanonicalGenre(
+                        display_name=str(primary_genre),
+                        provider_entity="custom_edition",
+                    ),
+                )
+                if primary_genre
+                else ()
+            ),
+            media=media,
+            organization_audio_medium_count=total_discs,
+            identity_kind="custom_edition",
+            custom_manifest_id=manifest.id,
+        )
 
     def _project(
         self,
@@ -701,22 +903,32 @@ class CanonicalReleaseMetadataService:
         snapshot_id = str(
             uuid.uuid5(
                 _SNAPSHOT_NAMESPACE,
-                f"{document.identifiers.release_mbid}:{input_hash}:{payload_hash}",
+                f"{document.identity_kind}:{document.identifiers.release_mbid or document.custom_manifest_id}:{input_hash}:{payload_hash}",
             )
         )
         now = self._clock()
+        custom = document.identity_kind == "custom_edition"
         snapshot = await self._store.put_management_metadata_snapshot(
             LibraryManagementMetadataSnapshot(
                 id=snapshot_id,
-                provider="musicbrainz",
-                entity_kind="release",
-                entity_id=document.identifiers.release_mbid,
+                provider="droppedneedle" if custom else "musicbrainz",
+                entity_kind="custom_edition" if custom else "release",
+                entity_id=(
+                    document.custom_manifest_id
+                    if custom
+                    else document.identifiers.release_mbid
+                )
+                or "",
                 input_hash=input_hash,
                 canonical_payload_json=payload_json,
                 payload_sha256=payload_hash,
                 fetched_at=now,
-                expires_at=now + 3600,
-                provider_version_notes=_PROVIDER_NOTES,
+                expires_at=None if custom else now + 3600,
+                provider_version_notes=(
+                    "Immutable DroppedNeedle Custom edition manifest"
+                    if custom
+                    else _PROVIDER_NOTES
+                ),
             )
         )
         return CanonicalReleaseProjection(

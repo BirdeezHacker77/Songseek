@@ -25,10 +25,12 @@ export interface ReleaseEditionResult {
 	musicbrainz_url: string;
 	score: number;
 	belongs_to_current_release_group: boolean;
+	is_current_release: boolean;
 }
 
 export interface ReleaseEditionSearchResponse {
-	query: string;
+	title_query: string;
+	artist_query: string;
 	items: ReleaseEditionResult[];
 	total: number;
 	offset: number;
@@ -38,21 +40,29 @@ export interface ReleaseEditionSearchResponse {
 export function getReleaseEditionSearchQuery(
 	getUserId: Getter<string | undefined>,
 	getAlbumId: Getter<string>,
-	getQuery: Getter<string>,
+	getTitle: Getter<string>,
+	getArtist: Getter<string>,
 	getOffset: Getter<number>,
 	getEnabled: Getter<boolean> = () => true
 ) {
 	return createQuery(() => {
 		const userId = getUserId();
 		const albumId = getAlbumId();
-		const q = getQuery();
+		const title = getTitle();
+		const artist = getArtist();
 		const offset = getOffset();
 		return {
-			enabled: getEnabled() && Boolean(albumId && q.trim()),
-			queryKey: LibraryQueryKeyFactory.reidentificationReleases(userId, albumId, q, offset),
+			enabled: getEnabled() && Boolean(albumId && title.trim()),
+			queryKey: LibraryQueryKeyFactory.reidentificationReleases(
+				userId,
+				albumId,
+				title,
+				artist,
+				offset
+			),
 			queryFn: ({ signal }) =>
 				api.global.get<ReleaseEditionSearchResponse>(
-					API.library.reidentificationReleases(albumId, q, 12, offset),
+					API.library.reidentificationReleases(albumId, title, artist, 12, offset),
 					{ signal }
 				)
 		};

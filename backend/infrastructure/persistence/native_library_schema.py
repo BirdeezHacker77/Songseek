@@ -1724,6 +1724,199 @@ CREATE INDEX IF NOT EXISTS idx_target_playlist_tracks_artist ON library_playlist
 CREATE UNIQUE INDEX IF NOT EXISTS idx_target_compat_id_internal
 ON library_compat_id_map(kind, internal_id, jf_id);
 
+CREATE TABLE IF NOT EXISTS library_custom_edition_manifests (
+    id TEXT PRIMARY KEY,
+    local_album_id TEXT NOT NULL REFERENCES local_albums(id) ON DELETE RESTRICT,
+    version INTEGER NOT NULL CHECK(version > 0),
+    release_group_mbid TEXT NOT NULL,
+    album_title TEXT NOT NULL,
+    album_artist_name TEXT NOT NULL,
+    artist_mbid TEXT,
+    album_metadata_json TEXT NOT NULL DEFAULT '{}',
+    source_album_revision INTEGER NOT NULL CHECK(source_album_revision > 0),
+    source_identity_revision INTEGER CHECK(source_identity_revision IS NULL OR source_identity_revision > 0),
+    input_revision TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    selected_candidate_key TEXT,
+    sealed_by_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE RESTRICT,
+    sealed_at REAL NOT NULL,
+    UNIQUE(local_album_id, version),
+    UNIQUE(local_album_id, content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS library_custom_edition_tracks (
+    manifest_id TEXT NOT NULL REFERENCES library_custom_edition_manifests(id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    local_track_id TEXT NOT NULL REFERENCES local_tracks(id) ON DELETE RESTRICT,
+    source_track_revision INTEGER NOT NULL CHECK(source_track_revision > 0),
+    source_identity_revision INTEGER CHECK(source_identity_revision IS NULL OR source_identity_revision > 0),
+    stat_revision TEXT NOT NULL,
+    tag_revision TEXT NOT NULL,
+    title TEXT NOT NULL,
+    artist_name TEXT NOT NULL,
+    album_title TEXT NOT NULL,
+    album_artist_name TEXT NOT NULL,
+    disc_number INTEGER NOT NULL CHECK(disc_number > 0),
+    track_number INTEGER NOT NULL CHECK(track_number > 0),
+    recording_mbid TEXT,
+    artist_mbid TEXT,
+    album_artist_mbid TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    file_format TEXT NOT NULL DEFAULT '',
+    duration_seconds REAL,
+    PRIMARY KEY(manifest_id, ordinal),
+    UNIQUE(manifest_id, local_track_id),
+    UNIQUE(manifest_id, disc_number, track_number)
+);
+
+CREATE TABLE IF NOT EXISTS library_custom_edition_active (
+    local_album_id TEXT PRIMARY KEY REFERENCES local_albums(id) ON DELETE RESTRICT,
+    manifest_id TEXT NOT NULL UNIQUE REFERENCES library_custom_edition_manifests(id) ON DELETE RESTRICT,
+    activated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1 CHECK(row_revision > 0)
+);
+
+CREATE TABLE IF NOT EXISTS library_management_exclusions (
+    local_album_id TEXT PRIMARY KEY REFERENCES local_albums(id) ON DELETE RESTRICT,
+    reason TEXT NOT NULL,
+    excluded_by_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE RESTRICT,
+    excluded_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1 CHECK(row_revision > 0)
+);
+
+CREATE TABLE IF NOT EXISTS library_edition_conversion_jobs (
+    id TEXT PRIMARY KEY,
+    local_album_id TEXT NOT NULL REFERENCES local_albums(id) ON DELETE RESTRICT,
+    target_release_group_mbid TEXT NOT NULL,
+    target_release_mbid TEXT NOT NULL,
+    target_album_title TEXT NOT NULL,
+    target_artist_name TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN (
+        'preflight','acquiring','ready','needs_recheck','cancelled','failed','applied'
+    )),
+    expected_album_revision INTEGER NOT NULL CHECK(expected_album_revision > 0),
+    expected_input_revision TEXT NOT NULL,
+    expected_identity_revision TEXT NOT NULL,
+    preflight_token_hash TEXT NOT NULL,
+    download_source_ready INTEGER NOT NULL CHECK(download_source_ready IN (0,1)),
+    required_temporary_bytes INTEGER NOT NULL DEFAULT 0 CHECK(required_temporary_bytes >= 0),
+    kept_count INTEGER NOT NULL DEFAULT 0 CHECK(kept_count >= 0),
+    acquire_count INTEGER NOT NULL DEFAULT 0 CHECK(acquire_count >= 0),
+    recycle_count INTEGER NOT NULL DEFAULT 0 CHECK(recycle_count >= 0),
+    staged_count INTEGER NOT NULL DEFAULT 0 CHECK(staged_count >= 0),
+    failed_count INTEGER NOT NULL DEFAULT 0 CHECK(failed_count >= 0),
+    final_preview_job_id TEXT REFERENCES library_operation_jobs(id) ON DELETE RESTRICT,
+    final_preview_token_hash TEXT,
+    final_bundle_json TEXT,
+    final_bundle_hash TEXT,
+    requested_by_user_id TEXT NOT NULL REFERENCES auth_users(id) ON DELETE RESTRICT,
+    error_code TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    row_revision INTEGER NOT NULL DEFAULT 1 CHECK(row_revision > 0)
+);
+
+CREATE TABLE IF NOT EXISTS library_edition_conversion_targets (
+    job_id TEXT NOT NULL REFERENCES library_edition_conversion_jobs(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    disc_number INTEGER NOT NULL CHECK(disc_number > 0),
+    track_number INTEGER NOT NULL CHECK(track_number > 0),
+    release_track_mbid TEXT NOT NULL,
+    recording_mbid TEXT NOT NULL,
+    title TEXT NOT NULL,
+    duration_seconds REAL,
+    state TEXT NOT NULL CHECK(state IN ('kept','pending','downloading','staged','failed')),
+    kept_local_track_id TEXT REFERENCES local_tracks(id) ON DELETE RESTRICT,
+    staged_artifact_id TEXT,
+    failure_code TEXT,
+    row_revision INTEGER NOT NULL DEFAULT 1 CHECK(row_revision > 0),
+    PRIMARY KEY(job_id, ordinal),
+    UNIQUE(job_id, disc_number, track_number),
+    UNIQUE(job_id, release_track_mbid)
+);
+
+CREATE TABLE IF NOT EXISTS library_edition_conversion_local_files (
+    job_id TEXT NOT NULL REFERENCES library_edition_conversion_jobs(id) ON DELETE CASCADE,
+    local_track_id TEXT NOT NULL REFERENCES local_tracks(id) ON DELETE RESTRICT,
+    action TEXT NOT NULL CHECK(action IN (
+        'keep','recycle_conflict','recycle_duplicate','recycle_extra'
+    )),
+    target_ordinal INTEGER,
+    evidence_kind TEXT NOT NULL,
+    expected_track_revision INTEGER NOT NULL CHECK(expected_track_revision > 0),
+    expected_identity_revision INTEGER CHECK(expected_identity_revision IS NULL OR expected_identity_revision > 0),
+    expected_stat_revision TEXT NOT NULL,
+    PRIMARY KEY(job_id, local_track_id),
+    FOREIGN KEY(job_id, target_ordinal)
+        REFERENCES library_edition_conversion_targets(job_id, ordinal) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS library_edition_conversion_artifacts (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    target_ordinal INTEGER NOT NULL,
+    held_path TEXT NOT NULL UNIQUE,
+    file_sha256 TEXT NOT NULL,
+    fingerprint TEXT,
+    release_track_mbid TEXT NOT NULL,
+    recording_mbid TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('download','free_music','retained_copy')),
+    source_task_id TEXT,
+    file_size_bytes INTEGER NOT NULL CHECK(file_size_bytes >= 0),
+    created_at REAL NOT NULL,
+    UNIQUE(job_id, target_ordinal),
+    FOREIGN KEY(job_id, target_ordinal)
+        REFERENCES library_edition_conversion_targets(job_id, ordinal) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS library_edition_conversion_downloads (
+    job_id TEXT NOT NULL,
+    target_ordinal INTEGER NOT NULL,
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('download','free_music')),
+    task_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(job_id, target_ordinal, task_id),
+    UNIQUE(source_kind, task_id),
+    FOREIGN KEY(job_id, target_ordinal)
+        REFERENCES library_edition_conversion_targets(job_id, ordinal) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_edition_album
+ON library_custom_edition_manifests(local_album_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_custom_edition_track_local
+ON library_custom_edition_tracks(local_track_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edition_conversion_active_album
+ON library_edition_conversion_jobs(local_album_id)
+WHERE state IN ('preflight','acquiring','ready','needs_recheck');
+CREATE INDEX IF NOT EXISTS idx_edition_conversion_download_task
+ON library_edition_conversion_downloads(source_kind, task_id);
+
+CREATE TRIGGER IF NOT EXISTS trg_custom_edition_manifest_immutable_update
+BEFORE UPDATE ON library_custom_edition_manifests
+BEGIN
+    SELECT RAISE(ABORT, 'custom edition manifests are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_custom_edition_manifest_immutable_delete
+BEFORE DELETE ON library_custom_edition_manifests
+BEGIN
+    SELECT RAISE(ABORT, 'custom edition manifests are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_custom_edition_tracks_immutable_update
+BEFORE UPDATE ON library_custom_edition_tracks
+BEGIN
+    SELECT RAISE(ABORT, 'custom edition tracks are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_custom_edition_tracks_immutable_delete
+BEFORE DELETE ON library_custom_edition_tracks
+BEGIN
+    SELECT RAISE(ABORT, 'custom edition tracks are immutable');
+END;
+
 CREATE TRIGGER IF NOT EXISTS trg_management_metadata_snapshot_immutable
 BEFORE UPDATE ON library_management_metadata_snapshots
 BEGIN

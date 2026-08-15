@@ -541,9 +541,7 @@ Drop a better-quality copy of an album you already have and it upgrades in place
 
 Album and artist pages show you where to buy the music. Links come from MusicBrainz purchase relationships, with an iTunes fallback (set your region in Settings) and a Bandcamp search behind that, so there is always a way through. Digital, vinyl and CD, and free downloads are listed separately.
 
-Stores are ordered by how fairly they pay artists. Bandcamp comes first, always, and it pays DroppedNeedle nothing.
-
-DroppedNeedle can attach its affiliate tags to Amazon, Apple, and Qobuz links, which earns the project a small commission at no extra cost to you. While that is on, a disclosure line sits under the links. One toggle in Settings turns it off, and every link becomes a plain direct link. Commission never affects the ordering.
+Stores are ordered with Bandcamp first.
 
 ### Scrobbling
 

@@ -251,8 +251,11 @@ class ReidentificationRequest(AppStruct):
 
 class ReidentificationCandidateRequest(AppStruct):
     expected_row_revision: int
-    candidate_key: str
+    candidate_key: str = ""
     confirmation: bool = False
+    decision_mode: Literal["exact_release", "custom_edition", "leave_unmanaged"] = (
+        "exact_release"
+    )
 
 
 class MembershipPreviewRequest(AppStruct):
@@ -316,7 +319,7 @@ class RepairCreateRequest(AppStruct):
     idempotency_key: str
     root_ids: list[str] = msgspec.field(default_factory=list)
     source_matcher_version: str | None = None
-    target_matcher_version: str = "feedback-fixes-v1"
+    target_matcher_version: str = "feedback-fixes-v2"
 
 
 class RepairEstimateResponse(AppStruct):
@@ -367,3 +370,5 @@ class RepairFindingListResponse(AppStruct):
     items: list[RepairFindingResponse]
     next_cursor: str | None = None
     has_more: bool = False
+    current_counts_by_finding: dict[str, int] = msgspec.field(default_factory=dict)
+    refresh_required: bool = False

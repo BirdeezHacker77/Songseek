@@ -60,23 +60,26 @@ class MusicBrainzIdentificationRepository:
 
     async def search_release_editions(
         self,
-        query: str,
+        title: str,
+        artist: str,
         limit: int,
         offset: int,
         priority: RequestPriority,
     ) -> ReleaseEditionSearchPage:
         return await self._musicbrainz.search_release_editions(
-            query, limit=limit, offset=offset, priority=priority
+            title, artist, limit=limit, offset=offset, priority=priority
         )
 
     async def search_album_candidate_ids(
         self,
-        query: str,
+        artist: str,
+        title: str,
         limit: int,
         priority: RequestPriority,
     ) -> list[str]:
-        results = await self._musicbrainz.search_albums(
-            query,
+        results = await self._musicbrainz.search_release_groups(
+            artist,
+            title,
             limit=limit,
             include_all_types=True,
             priority=priority,

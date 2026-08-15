@@ -804,6 +804,38 @@ class LibraryManagementProfileService:
             )
         return settings, assignment, effective, policy
 
+    def prepare_conversion_profile(
+        self,
+        *,
+        root_id: str,
+        expected_policy_revision: str,
+    ) -> tuple[
+        LibraryManagementSettings,
+        LibraryManagementRootAssignment,
+        LibraryManagementProfile,
+        LibraryPolicyResolver,
+    ]:
+        """Resolve the current root profile for an administrator-confirmed conversion."""
+
+        settings = self._preferences.get_library_management_settings_raw()
+        policy = self._validate_root_assignments(settings)
+        if policy.policy_revision != expected_policy_revision:
+            raise StaleRevisionError(
+                "Library policy changed before edition conversion."
+            )
+        assignment = next(
+            (value for value in settings.root_assignments if value.root_id == root_id),
+            LibraryManagementRootAssignment(
+                root_id=root_id, profile_id=settings.default_profile_id
+            ),
+        )
+        return (
+            settings,
+            assignment,
+            self._effective_profile(settings, assignment),
+            policy,
+        )
+
     def prepare_tag_editor_profile(
         self,
         *,
@@ -1103,6 +1135,21 @@ class LibraryManagementProfileService:
                 harmless.append(
                     f"An automatic trigger is enabled for root {root_id}; the "
                     "authorized write profile is unchanged."
+                )
+                affected.add(root_id)
+            old_custom_automatic = (
+                old_assignment.enabled
+                and old_assignment.automatic_scan_discovered
+                and old_assignment.automatic_custom_editions
+            )
+            new_custom_automatic = (
+                new_assignment.enabled
+                and new_assignment.automatic_scan_discovered
+                and new_assignment.automatic_custom_editions
+            )
+            if new_custom_automatic and not old_custom_automatic:
+                destructive.append(
+                    f"Automatic Custom edition management is enabled for root {root_id}."
                 )
                 affected.add(root_id)
             if old_payload != new_payload:

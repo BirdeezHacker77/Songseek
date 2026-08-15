@@ -53,6 +53,10 @@ from services.native.library_management_profile_service import (
 )
 from services.native.library_management_undo_service import LibraryManagementUndoService
 from services.native.library_policy_resolver import LibraryPolicyResolver
+from services.native.identification_revisions import (
+    album_identity_revision,
+    album_input_revisions,
+)
 from services.native.target_import_library_service import TargetImportLibraryService
 from models.audio import AudioTag
 from models.audio_metadata import (
@@ -62,19 +66,27 @@ from models.audio_metadata import (
 )
 from models.library_management import (
     BUNDLE_BLOCKED,
+    MANAGEMENT_RECYCLE_ROOT_ID,
     PATH_COLLISION_DIFFERENT,
     POLICY_CHANGED,
     ROOT_UNAVAILABLE,
     LibraryManagementImportArtifact,
     LibraryManagementImportBundle,
     LibraryManagementImportFile,
+    LibraryManagementJobSnapshot,
     LibraryManagementMetadataSnapshot,
+)
+from models.edition_management import (
+    EditionConversionJob,
+    EditionConversionLocalFile,
+    EditionConversionTarget,
 )
 from models.library_management_planning import (
     LibraryManagementSelection,
     naming_policy_revision,
     pin_library_management_profile,
 )
+from models.library_work import OperationJob
 from repositories.musicbrainz_management_models import MbManagementRelease
 from tests.services.native.test_library_management_planner import _configured, _planner
 from tests.services.native.test_library_management_planner import (
@@ -871,6 +883,457 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
     assert (root / "Incoming/album.cue").read_text() == "FILE original.flac WAVE"
     assert not (root / "Managed Artist/Managed Album/cover.jpg").exists()
     assert not (root / "Managed Artist/Managed Album/album.cue").exists()
+
+
+@pytest.mark.asyncio
+async def test_edition_conversion_apply_and_undo_restore_a_different_track_set(
+    tmp_path: Path,
+) -> None:
+    root, source, preferences, store, _settings_revision, policy_revision = _configured(
+        tmp_path
+    )
+    _add_second_album_track(root, preferences, store)
+    recycle = tmp_path / "managed-recycle"
+    recycle.mkdir()
+    current = preferences.get_library_management_settings()
+    management = preferences.get_library_management_settings_raw()
+    management.recycle_bin_path = str(recycle)
+    saved = preferences.save_library_management_settings_if_current(
+        management, expected_settings_revision=current.settings_revision
+    )
+    management = preferences.get_library_management_settings_raw()
+    profile = next(
+        value
+        for value in management.profiles
+        if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    pinned = pin_library_management_profile(management, profile)
+    naming_revision = naming_policy_revision(pinned)
+    audio = AudioMetadataEngine()
+    filesystem = LibraryFilesystemCoordinator()
+    blobs = LibraryManagementBlobStore(tmp_path / "conversion-blobs", store)
+    publisher = LibraryManagementPublisher(
+        store,
+        preferences,
+        audio,
+        AudioWritePlanningService(audio),
+        blobs,
+        filesystem,
+        clock=lambda: 110.0,
+    )
+    service = TargetImportLibraryService(
+        store,
+        lambda: LibraryPolicyResolver(preferences.get_typed_library_settings_raw()),
+        AsyncMock(),
+        filesystem_coordinator=filesystem,
+        management_publisher=publisher,
+    )
+    metadata_snapshot = await store.put_management_metadata_snapshot(
+        LibraryManagementMetadataSnapshot(
+            id="conversion-metadata-snapshot",
+            provider="musicbrainz",
+            entity_kind="release",
+            entity_id="77777777-7777-4777-8777-777777777777",
+            input_hash="a" * 64,
+            canonical_payload_json="{}",
+            payload_sha256=hashlib.sha256(b"{}").hexdigest(),
+            fetched_at=100.0,
+        )
+    )
+    target_release_group = "dcff25f1-702d-3b5e-b0da-d48172e6e62a"
+    target_release = "77777777-7777-4777-8777-777777777777"
+    target_recordings = (
+        "33333333-3333-4333-8333-333333333333",
+        "88888888-8888-4888-8888-888888888888",
+    )
+    target_release_tracks = (
+        "77777777-7777-4777-8777-000000000001",
+        "77777777-7777-4777-8777-000000000002",
+    )
+
+    def desired_document(position: int) -> DesiredAudioDocument:
+        return DesiredAudioDocument(
+            fields=(
+                DesiredAudioField(
+                    name="title", action="set", value=f"Exact Track {position}"
+                ),
+                DesiredAudioField(name="artist", action="set", value=("Alpha",)),
+                DesiredAudioField(
+                    name="album", action="set", value="Target Exact Edition"
+                ),
+                DesiredAudioField(name="album_artist", action="set", value=("Alpha",)),
+                DesiredAudioField(name="disc_number", action="set", value=1),
+                DesiredAudioField(name="track_number", action="set", value=position),
+                DesiredAudioField(
+                    name="musicbrainz_release_group_id",
+                    action="set",
+                    value=target_release_group,
+                ),
+                DesiredAudioField(
+                    name="musicbrainz_release_id",
+                    action="set",
+                    value=target_release,
+                ),
+                DesiredAudioField(
+                    name="musicbrainz_recording_id",
+                    action="set",
+                    value=target_recordings[position - 1],
+                ),
+                DesiredAudioField(
+                    name="musicbrainz_release_track_id",
+                    action="set",
+                    value=target_release_tracks[position - 1],
+                ),
+            ),
+            artist_display="Alpha",
+            album_artist_display="Alpha",
+        )
+
+    held_retained = tmp_path / "retained-track.flac"
+    held_acquired = tmp_path / "acquired-track.flac"
+    shutil.copy2(source, held_retained)
+    shutil.copy2(source, held_acquired)
+    second_source = root / "source2.flac"
+    target_requests: list[LibraryManagementImportFile] = []
+    for ordinal, held in enumerate((held_retained, held_acquired)):
+        position = ordinal + 1
+        request = _import_file(
+            audio,
+            held,
+            ordinal=ordinal,
+            relative_path=f"Converted/0{position} Exact Track {position}.flac",
+        )
+        target_requests.append(
+            msgspec.structs.replace(
+                request,
+                release_group_mbid=target_release_group,
+                release_mbid=target_release,
+                recording_mbid=target_recordings[ordinal],
+                source="edition_conversion",
+                source_path=str(held),
+                download_task_id=None,
+                replacement_local_track_id="track-1" if ordinal == 0 else None,
+                replacement_root_id="root-1" if ordinal == 0 else None,
+                replacement_relative_path="source.flac" if ordinal == 0 else None,
+                recycle_bin_path=str(recycle) if ordinal == 0 else None,
+                authoritative_mapping=True,
+                release_track_mbid=target_release_tracks[ordinal],
+                medium_position=1,
+                release_track_position=position,
+                baseline_relative_path=("source.flac" if ordinal == 0 else held.name),
+                desired_document=desired_document(position),
+                pinned_profile=pinned,
+                metadata_snapshot_id=metadata_snapshot.id,
+                projection_hash="c" * 64,
+                settings_revision=saved.settings_revision,
+                naming_policy_revision=naming_revision,
+                undo_retention_days=management.undo_retention_days,
+            )
+        )
+    second_tag, second_info = legacy_audio_projection(audio.read(second_source))
+    recycle_request = msgspec.structs.replace(
+        _import_file(
+            audio,
+            second_source,
+            ordinal=2,
+            relative_path="conversion-job/track-2-source2.flac",
+        ),
+        destination_root_id=MANAGEMENT_RECYCLE_ROOT_ID,
+        tag=second_tag,
+        info=second_info,
+        release_group_mbid=None,
+        release_mbid=None,
+        recording_mbid=None,
+        source="edition_conversion",
+        source_path=str(second_source),
+        download_task_id=None,
+        replacement_local_track_id="track-2",
+        replacement_root_id="root-1",
+        replacement_relative_path="source2.flac",
+        recycle_bin_path=str(recycle),
+        baseline_relative_path="source2.flac",
+        desired_document=DesiredAudioDocument(fields=()),
+        pinned_profile=pinned,
+        metadata_snapshot_id=metadata_snapshot.id,
+        projection_hash="c" * 64,
+        settings_revision=saved.settings_revision,
+        naming_policy_revision=naming_revision,
+        undo_retention_days=management.undo_retention_days,
+        conversion_recycle_only=True,
+    )
+    conversion_job_id = "conversion-job"
+    preview_job_id = "conversion-final-preview"
+    bundle = LibraryManagementImportBundle(
+        idempotency_key="edition-conversion:different-track-set",
+        origin="edition_conversion",
+        policy_revision=policy_revision,
+        files=(*target_requests, recycle_request),
+        conversion_job_id=conversion_job_id,
+        conversion_expected_row_revision=1,
+        conversion_local_album_id="album-1",
+        conversion_preview_job_id=preview_job_id,
+        conversion_recycle_bin_path=str(recycle),
+    )
+    bundle_json = msgspec.json.encode(bundle).decode()
+    bundle_hash = hashlib.sha256(bundle_json.encode()).hexdigest()
+    catalog_revision = await store.get_catalog_revision()
+    preview_token = "sealed-conversion-preview"
+    await store.create_library_management_job(
+        OperationJob(
+            id=preview_job_id,
+            kind="library_management",
+            state="ready",
+            requested_by_user_id="admin",
+            input_catalog_revision=catalog_revision,
+            expected_work_count=1,
+            idempotency_key="edition-conversion-preview:different-track-set",
+            created_at=100.0,
+        ),
+        LibraryManagementJobSnapshot(
+            job_id=preview_job_id,
+            mode="preview",
+            origin="manual",
+            phase="ready",
+            selection_json='{"kind":"albums","ids":["album-1"]}',
+            profile_revision=pinned.profile.revision,
+            settings_revision=saved.settings_revision,
+            naming_revision=naming_revision,
+            policy_revision=policy_revision,
+            catalog_revision=catalog_revision,
+            profile_snapshot_json=msgspec.json.encode(pinned).decode(),
+            preview_token_hash=hashlib.sha256(preview_token.encode()).hexdigest(),
+            preview_created_at=100.0,
+            preview_expires_at=1_000.0,
+            target_root_id="root-1",
+            intent_json='{"edition_conversion_job_id":"conversion-job"}',
+            created_at=100.0,
+            updated_at=100.0,
+        ),
+        metadata_snapshot_ids=[metadata_snapshot.id],
+    )
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    tracks = context["tracks"]
+    tracks_by_id = {str(value["id"]): value for value in tracks}
+    await store.create_edition_conversion(
+        EditionConversionJob(
+            id=conversion_job_id,
+            local_album_id="album-1",
+            target_release_group_mbid=target_release_group,
+            target_release_mbid=target_release,
+            target_album_title="Target Exact Edition",
+            target_artist_name="Alpha",
+            state="ready",
+            expected_album_revision=int(context["album"]["row_revision"]),
+            expected_input_revision=":".join(album_input_revisions(tracks)),
+            expected_identity_revision=album_identity_revision(
+                context["identity"], tracks
+            ),
+            preflight_token_hash=hashlib.sha256(b"preflight").hexdigest(),
+            download_source_ready=True,
+            required_temporary_bytes=sum(
+                path.stat().st_size for path in root.glob("*.flac")
+            ),
+            kept_count=1,
+            acquire_count=1,
+            recycle_count=1,
+            staged_count=2,
+            failed_count=0,
+            final_preview_job_id=preview_job_id,
+            final_preview_token_hash=hashlib.sha256(preview_token.encode()).hexdigest(),
+            final_bundle_json=bundle_json,
+            final_bundle_hash=bundle_hash,
+            requested_by_user_id="admin",
+            error_code=None,
+            created_at=100.0,
+            updated_at=100.0,
+        ),
+        (
+            EditionConversionTarget(
+                job_id=conversion_job_id,
+                ordinal=0,
+                disc_number=1,
+                track_number=1,
+                release_track_mbid=target_release_tracks[0],
+                recording_mbid=target_recordings[0],
+                title="Exact Track 1",
+                duration_seconds=None,
+                state="kept",
+                kept_local_track_id="track-1",
+            ),
+            EditionConversionTarget(
+                job_id=conversion_job_id,
+                ordinal=1,
+                disc_number=1,
+                track_number=2,
+                release_track_mbid=target_release_tracks[1],
+                recording_mbid=target_recordings[1],
+                title="Exact Track 2",
+                duration_seconds=None,
+                state="staged",
+                staged_artifact_id="verified-held-artifact",
+            ),
+        ),
+        (
+            EditionConversionLocalFile(
+                job_id=conversion_job_id,
+                local_track_id="track-1",
+                action="keep",
+                target_ordinal=0,
+                evidence_kind="recording",
+                expected_track_revision=int(tracks_by_id["track-1"]["row_revision"]),
+                expected_identity_revision=int(
+                    tracks_by_id["track-1"]["identity_row_revision"]
+                ),
+                expected_stat_revision=str(tracks_by_id["track-1"]["stat_revision"]),
+            ),
+            EditionConversionLocalFile(
+                job_id=conversion_job_id,
+                local_track_id="track-2",
+                action="recycle_extra",
+                target_ordinal=None,
+                evidence_kind="extra",
+                expected_track_revision=int(tracks_by_id["track-2"]["row_revision"]),
+                expected_identity_revision=int(
+                    tracks_by_id["track-2"]["identity_row_revision"]
+                ),
+                expected_stat_revision=str(tracks_by_id["track-2"]["stat_revision"]),
+            ),
+        ),
+    )
+    operation = await store.get_operation_job(preview_job_id)
+    assert operation is not None
+    await store.begin_edition_conversion_apply(
+        conversion_job_id,
+        preview_job_id=preview_job_id,
+        preview_token_hash=hashlib.sha256(preview_token.encode()).hexdigest(),
+        expected_operation_row_revision=int(operation["row_revision"]),
+        apply_idempotency_key="apply-different-track-set",
+        now=105.0,
+    )
+
+    await service.publish_import_bundle(bundle)
+
+    after_apply = await store.get_target_album_tracks(
+        "album-1", include_unavailable=True
+    )
+    acquired_track_id = next(
+        str(value["id"])
+        for value in after_apply
+        if str(value["id"]) not in {"track-1", "track-2"}
+    )
+    assert {
+        str(value["id"]) for value in after_apply if value["availability"] == "indexed"
+    } == {"track-1", acquired_track_id}
+    recycled_extra = next(value for value in after_apply if value["id"] == "track-2")
+    assert recycled_extra["root_id"] == MANAGEMENT_RECYCLE_ROOT_ID
+    assert (recycle / "conversion-job/track-2-source2.flac").is_file()
+    assert not source.exists()
+    assert not second_source.exists()
+    assert (root / "Converted/01 Exact Track 1.flac").is_file()
+    assert (root / "Converted/02 Exact Track 2.flac").is_file()
+    exact_identity = await store.get_accepted_library_management_identity(
+        "album-1", local_track_ids=("track-1", acquired_track_id)
+    )
+    assert exact_identity is not None
+    assert exact_identity.release_mbid == target_release
+    assert {value.release_track_mbid for value in exact_identity.tracks} == set(
+        target_release_tracks
+    )
+    source_snapshot = await store.get_library_management_job_snapshot(preview_job_id)
+    assert source_snapshot is not None
+    assert len(await store.list_management_operation_snapshots(preview_job_id)) == 3
+
+    source_job = await store.get_operation_job(preview_job_id)
+    assert source_job is not None
+    undo = LibraryManagementUndoService(
+        store,
+        preferences,
+        audio,
+        blobs,
+        filesystem,
+        clock=lambda: 120.0,
+    )
+    undo_preview = await undo.create_preview(
+        preview_job_id,
+        LibraryManagementUndoPreviewRequest(
+            expected_operation_row_revision=int(source_job["row_revision"]),
+            idempotency_key="undo-different-track-set-preview",
+        ),
+        "admin",
+    )
+    claimed_preview = await store.claim_operation_job(
+        "conversion-undo-preview-worker",
+        now=121.0,
+        lease_seconds=60.0,
+        kind="library_management",
+    )
+    assert claimed_preview is not None
+    await undo.run_claimed_preview(claimed_preview, "conversion-undo-preview-worker")
+    assert len(await store.list_library_management_plan_items(undo_preview.job_id)) == 3
+    ready = await store.get_operation_job(undo_preview.job_id)
+    assert ready is not None and ready["state"] == "ready"
+    await store.begin_library_management_apply(
+        undo_preview.job_id,
+        preview_token_hash=hashlib.sha256(
+            undo_preview.preview_token.encode()
+        ).hexdigest(),
+        expected_job_revision=int(ready["row_revision"]),
+        idempotency_key="undo-different-track-set-apply",
+        now=122.0,
+    )
+    claimed_apply = await store.claim_operation_job(
+        "conversion-undo-apply-worker",
+        now=123.0,
+        lease_seconds=60.0,
+        kind="library_management",
+    )
+    assert claimed_apply is not None
+    work = await store.claim_operation_work(
+        undo_preview.job_id, "conversion-undo-apply-worker", now=124.0
+    )
+    assert work is not None
+    undo_publisher = LibraryManagementPublisher(
+        store,
+        preferences,
+        audio,
+        AudioWritePlanningService(audio),
+        blobs,
+        filesystem,
+        clock=lambda: 125.0,
+    )
+
+    await undo_publisher.publish_bundle(
+        undo_preview.job_id,
+        int(work["ordinal"]),
+        "conversion-undo-apply-worker",
+    )
+
+    after_undo = await store.get_target_album_tracks(
+        "album-1", include_unavailable=True
+    )
+    assert {
+        str(value["id"]) for value in after_undo if value["availability"] == "indexed"
+    } == {"track-1", "track-2"}
+    assert (
+        next(value for value in after_undo if value["id"] == acquired_track_id)[
+            "availability"
+        ]
+        == "missing"
+    )
+    assert source.is_file()
+    assert second_source.is_file()
+    assert not (root / "Converted/01 Exact Track 1.flac").exists()
+    assert not (root / "Converted/02 Exact Track 2.flac").exists()
+    restored_identity = await store.get_accepted_library_management_identity(
+        "album-1", local_track_ids=("track-1", "track-2")
+    )
+    assert restored_identity is not None
+    assert restored_identity.release_mbid == "aff0622e-7bd3-4fb6-9ca3-0fa19dd2340b"
+    assert {value.release_track_mbid for value in restored_identity.tracks} == {
+        "22222222-2222-4222-8222-222222222222",
+        "66666666-6666-4666-8666-666666666666",
+    }
 
 
 def test_automatic_publication_rejects_a_tampered_pinned_profile(

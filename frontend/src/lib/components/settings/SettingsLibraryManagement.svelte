@@ -291,6 +291,7 @@
 			automatic_acquisitions: false,
 			automatic_drop_imports: false,
 			automatic_scan_discovered: false,
+			automatic_custom_editions: false,
 			activation_profile_revision: null,
 			activation_naming_policy_revision: null,
 			activation_policy_revision: null,
@@ -1089,11 +1090,31 @@
 											onchange={(event) =>
 												updateAssignment(root.id, (value) => ({
 													...value,
-													automatic_scan_discovered: event.currentTarget.checked
+													automatic_scan_discovered: event.currentTarget.checked,
+													automatic_custom_editions: event.currentTarget.checked
+														? value.automatic_custom_editions
+														: false
 												}))}
 										/><span
 											><strong>Scan-discovered</strong><small
 												>Off by default. Accepted release and track identity required.</small
+											></span
+										></label
+									>
+									<label class="management-trigger pl-6"
+										><input
+											type="checkbox"
+											class="checkbox checkbox-sm"
+											disabled={!assignment.enabled || !assignment.automatic_scan_discovered}
+											checked={assignment.automatic_custom_editions}
+											onchange={(event) =>
+												updateAssignment(root.id, (value) => ({
+													...value,
+													automatic_custom_editions: event.currentTarget.checked
+												}))}
+										/><span
+											><strong>Include Custom editions</strong><small
+												>Requires a current sealed manifest and a fresh dry run.</small
 											></span
 										></label
 									>

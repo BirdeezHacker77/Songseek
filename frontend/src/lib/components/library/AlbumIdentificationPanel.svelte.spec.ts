@@ -1,8 +1,10 @@
 import { page } from '@vitest/browser/context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { ApiError } from '$lib/api/client';
 import type { LibraryAlbumDetail } from '$lib/types';
 import type { OperationResponse } from '$lib/queries/library/LibraryOperationsTypes';
+import type { EditionConversionStatus } from '$lib/queries/library/EditionConversionQueries.svelte';
 
 const album: LibraryAlbumDetail = {
 	id: 'album-1',
@@ -28,6 +30,18 @@ const album: LibraryAlbumDetail = {
 	identification_status: 'local_metadata',
 	review_id: null,
 	review_revision: null,
+	management_identity_readiness: 'exact_release_required',
+	mapped_track_count: 0,
+	management_identity_kind: null,
+	custom_manifest_id: null,
+	custom_manifest_version: null,
+	custom_manifest_track_count: 0,
+	custom_manifest_recognized_track_count: 0,
+	custom_manifest_stale: false,
+	management_excluded: false,
+	management_exclusion_revision: null,
+	management_excluded_at: null,
+	active_edition_conversion: null,
 	contribution_id: null,
 	contribution_state: null
 };
@@ -81,12 +95,58 @@ const candidateJob = job({
 				margin: 0.4,
 				reason_code: 'COMPLETE_SUPPORT',
 				matcher_version: 'v1',
-				track_evidence: [],
+				track_evidence: [
+					{
+						local_track_id: 'track-1',
+						classification: 'supported',
+						evidence_kinds: ['release_track_id'],
+						candidate_track_title: 'First Song',
+						candidate_disc_number: 1,
+						candidate_track_position: 1,
+						recording_mbid: 'recording-1',
+						release_track_mbid: 'release-track-1'
+					},
+					{
+						local_track_id: 'track-2',
+						classification: 'supported',
+						evidence_kinds: ['release_track_id'],
+						candidate_track_title: 'Second Song',
+						candidate_disc_number: 1,
+						candidate_track_position: 2,
+						recording_mbid: 'recording-2',
+						release_track_mbid: 'release-track-2'
+					}
+				],
 				unmatched_expected_tracks: []
 			}
 		}
 	]
 } as unknown as Partial<OperationResponse>);
+
+const conversionPreflightStatus: EditionConversionStatus = {
+	job_id: 'conversion-1',
+	local_album_id: 'album-1',
+	release_group_mbid: 'rg-1',
+	release_mbid: 'release-1',
+	album_title: 'The Right Release',
+	artist_name: 'Signal Artist',
+	state: 'preflight',
+	download_source_ready: true,
+	required_temporary_bytes: 1000,
+	kept_count: 1,
+	acquire_count: 1,
+	recycle_count: 1,
+	staged_count: 0,
+	failed_count: 0,
+	row_revision: 3,
+	created_at: 1,
+	updated_at: 1,
+	targets: [],
+	local_files: [],
+	final_preview_job_id: null,
+	preflight_token: null,
+	error_code: null
+};
 
 const h = vi.hoisted(() => ({
 	jobs: {} as Record<string, OperationResponse>,
@@ -97,8 +157,12 @@ const h = vi.hoisted(() => ({
 	resume: vi.fn(),
 	stop: vi.fn(),
 	resetSelect: vi.fn(),
-	selectError: false,
-	queryError: false
+	selectError: null as ApiError | null,
+	queryError: false,
+	conversionData: null as EditionConversionStatus | null,
+	conversionPreflightData: null as EditionConversionStatus | null,
+	conversionStart: vi.fn(),
+	conversionRefetch: vi.fn()
 }));
 
 vi.mock('$lib/stores/authStore.svelte', () => ({
@@ -120,7 +184,14 @@ vi.mock('$lib/queries/library/LibraryOperationQueries.svelte', () => ({
 }));
 vi.mock('$lib/queries/library/LibraryEditionQueries.svelte', () => ({
 	getReleaseEditionSearchQuery: () => ({
-		data: { query: 'Signal Artist Local Signals', items: [], total: 0, offset: 0, limit: 12 },
+		data: {
+			title_query: 'Local Signals',
+			artist_query: 'Signal Artist',
+			items: [],
+			total: 0,
+			offset: 0,
+			limit: 12
+		},
 		isLoading: false,
 		isFetching: false,
 		isError: false,
@@ -129,14 +200,39 @@ vi.mock('$lib/queries/library/LibraryEditionQueries.svelte', () => ({
 }));
 vi.mock('$lib/queries/library/LibraryCatalogMutations.svelte', () => ({
 	reidentifyLibraryAlbum: () => ({ mutateAsync: h.start, isPending: false, isError: false }),
+	reenableAlbumManagement: () => ({ mutateAsync: vi.fn(), isPending: false }),
 	selectReidentificationCandidate: () => ({
 		mutateAsync: h.select,
 		isPending: false,
 		get isError() {
+			return h.selectError !== null;
+		},
+		get error() {
 			return h.selectError;
 		},
 		reset: h.resetSelect
 	})
+}));
+vi.mock('$lib/queries/library/EditionConversionQueries.svelte', () => ({
+	getEditionConversionQuery: () => ({
+		get data() {
+			return h.conversionData ?? undefined;
+		},
+		refetch: h.conversionRefetch
+	}),
+	createEditionConversionPreflight: () => ({
+		mutateAsync: vi.fn(),
+		isPending: false,
+		reset: vi.fn(),
+		get data() {
+			return h.conversionPreflightData ?? undefined;
+		}
+	}),
+	createEditionConversionPreview: () => ({ mutateAsync: vi.fn(), isPending: false }),
+	startEditionConversion: () => ({ mutateAsync: h.conversionStart, isPending: false }),
+	retryEditionConversion: () => ({ mutateAsync: vi.fn(), isPending: false }),
+	recheckEditionConversion: () => ({ mutateAsync: vi.fn(), isPending: false }),
+	cancelEditionConversion: () => ({ mutateAsync: vi.fn(), isPending: false })
 }));
 vi.mock('$lib/queries/library/LibraryOperationMutations.svelte', () => ({
 	controlLibraryOperation: (action: string) => ({
@@ -151,15 +247,40 @@ beforeEach(() => {
 	sessionStorage.clear();
 	h.jobs = {};
 	h.queryError = false;
-	h.selectError = false;
+	h.selectError = null;
+	h.conversionData = null;
+	h.conversionPreflightData = null;
+	h.conversionStart.mockResolvedValue(undefined);
+	h.conversionRefetch.mockResolvedValue(undefined);
 	h.start.mockResolvedValue(job({ state: 'queued' }));
 	h.select.mockResolvedValue(job({ state: 'succeeded' }));
 	h.pause.mockResolvedValue(job({ state: 'paused' }));
 	h.resume.mockResolvedValue(job({ state: 'running' }));
 	h.stop.mockResolvedValue(job({ state: 'stopped' }));
+	album.musicbrainz_release_group_id = null;
+	album.musicbrainz_release_id = null;
+	album.album_identity_state = 'local_only';
+	album.identification_status = 'local_metadata';
+	album.management_identity_readiness = 'exact_release_required';
+	album.mapped_track_count = 0;
+	album.active_edition_conversion = null;
+	album.track_count = 2;
 });
 
 describe('AlbumIdentificationPanel', () => {
+	it('shows an accessible management-readiness warning on its trigger', async () => {
+		render(AlbumIdentificationPanel, {
+			props: { album, attentionLabel: 'Exact track map required' }
+		} as unknown as Parameters<typeof render>[1]);
+
+		const trigger = page.getByRole('button', { name: 'Re-identify…' });
+		await expect.element(trigger).toHaveClass(/identification-trigger-warning/);
+		await expect.element(page.getByText('Exact track map required')).toBeVisible();
+		await expect
+			.element(trigger)
+			.toHaveAttribute('aria-describedby', 'reidentify-attention-album-1');
+	});
+
 	it('starts a durable one-off Local metadata job and keeps it across closure', async () => {
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -172,6 +293,19 @@ describe('AlbumIdentificationPanel', () => {
 		await expect
 			.element(page.getByTestId('identification-scroll-region'))
 			.toHaveClass(/identification-scroll-region/);
+		expect(
+			page
+				.getByRole('heading', { name: 'Search exact releases' })
+				.element()
+				.closest('section')
+				?.classList.contains('edition-finder')
+		).toBe(true);
+		expect(
+			page
+				.getByRole('heading', { name: 'Search exact releases' })
+				.element()
+				.closest('.identification-launchpad')
+		).not.toBeNull();
 		await expect.element(page.getByText(/one-off identification check/)).toBeVisible();
 		await expect.element(page.getByText(/job continues/)).toBeVisible();
 		await page.getByRole('button', { name: 'Start identification' }).click();
@@ -210,6 +344,29 @@ describe('AlbumIdentificationPanel', () => {
 		expect(h.select).not.toHaveBeenCalled();
 	});
 
+	it('leads with the attached edition before offering replacements', async () => {
+		album.musicbrainz_release_group_id = 'group-1';
+		album.musicbrainz_release_id = '428b6417-8a4d-4a5b-b1a3-8762002167a8';
+		album.album_identity_state = 'release_linked';
+		album.identification_status = 'identified';
+		album.management_identity_readiness = 'ready';
+		album.mapped_track_count = 2;
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await expect
+			.element(page.getByRole('heading', { name: 'Attached exact release' }))
+			.toBeVisible();
+		await expect.element(page.getByText('Currently attached')).toBeVisible();
+		await expect.element(page.getByText('2 of 2 indexed files mapped')).toBeVisible();
+		await expect.element(page.getByText('Choose a different edition')).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Search', exact: true }))
+			.not.toBeInTheDocument();
+	});
+
 	it('keeps malformed exact release IDs on the client', async () => {
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -242,7 +399,8 @@ describe('AlbumIdentificationPanel', () => {
 			jobId: 'job-1',
 			expectedRevision: 8,
 			candidateKey: 'rg-1:release-1',
-			confirmation: false
+			confirmation: false,
+			decisionMode: 'exact_release'
 		});
 		expect(h.start).not.toHaveBeenCalled();
 	});
@@ -321,6 +479,7 @@ describe('AlbumIdentificationPanel', () => {
 	});
 
 	it('describes a complete track map with tag-only conflicts accurately', async () => {
+		album.track_count = 8;
 		const tagConflict = structuredClone(candidateJob);
 		const candidate = tagConflict.reidentification_candidates[0];
 		candidate.automatic_safe = false;
@@ -408,10 +567,10 @@ describe('AlbumIdentificationPanel', () => {
 		expect(AlbumIdentificationPanel.toString()).not.toContain('setTimeout');
 	});
 
-	it('shows the exact conflicts before confirming an unsafe candidate', async () => {
+	it('offers three honest outcomes when an exact track map is incomplete', async () => {
 		const unsafe = structuredClone(candidateJob);
 		unsafe.reidentification_candidates[0].automatic_safe = false;
-		unsafe.reidentification_candidates[0].evidence.album_title_classification = 'contradictory';
+		unsafe.reidentification_candidates[0].evidence.album_title_classification = 'supported';
 		unsafe.reidentification_candidates[0].evidence.album_artist_classification = 'unknown';
 		unsafe.reidentification_candidates[0].evidence.reason_code = 'CONTRADICTORY';
 		unsafe.reidentification_candidates[0].evidence.track_evidence = [
@@ -455,46 +614,83 @@ describe('AlbumIdentificationPanel', () => {
 
 		await page.getByRole('button', { name: 'Re-identify…' }).click();
 		await expect.element(page.getByText('Different Song')).toBeVisible();
-		await page.getByRole('button', { name: 'Review and use...' }).click();
-		const confirmation = page.getByRole('dialog', {
-			name: 'Use this identity despite conflicting evidence?'
-		});
+		await expect.element(page.getByRole('button', { name: 'Create Custom edition' })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Prepare conversion' })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Leave unmanaged' })).toBeVisible();
 		await expect
-			.element(
-				confirmation.getByRole('heading', {
-					name: 'Use this identity despite conflicting evidence?'
-				})
-			)
-			.toHaveFocus();
-		await expect
-			.element(confirmation.getByText('1 local track conflicts with this edition'))
-			.toBeVisible();
-		await expect
-			.element(confirmation.getByRole('heading', { name: 'Failed evidence gates' }))
-			.toBeVisible();
-		await expect.element(confirmation.getByText('track-1', { exact: true })).toBeVisible();
-		await expect.element(confirmation.getByText('track-unknown', { exact: true })).toBeVisible();
-		await confirmation.getByText('Technical identity record').click();
-		await expect.element(confirmation.getByText('Release group: rg-1')).toBeVisible();
-		await expect.element(confirmation.getByText('Release: release-1')).toBeVisible();
-		await expect
-			.element(confirmation.getByText(/track-supported.*recording-supported/))
-			.toBeVisible();
-		await expect.element(confirmation.getByText(/durable manual identity/)).toBeVisible();
-		await page.getByRole('button', { name: 'Use conflicting identity' }).click();
+			.element(page.getByRole('button', { name: 'Use conflicting identity' }))
+			.not.toBeInTheDocument();
+		await page.getByRole('button', { name: 'Create Custom edition' }).click();
 		expect(h.select).toHaveBeenCalledWith({
 			jobId: 'job-1',
 			expectedRevision: 8,
 			candidateKey: 'rg-1:release-1',
-			confirmation: true
+			confirmation: true,
+			decisionMode: 'custom_edition'
 		});
+	});
+
+	it('blocks a Custom edition when the selected release contradicts the album text', async () => {
+		const contradictory = structuredClone(candidateJob);
+		contradictory.reidentification_candidates[0].automatic_safe = false;
+		contradictory.reidentification_candidates[0].evidence.album_title_classification =
+			'contradictory';
+		contradictory.reidentification_candidates[0].evidence.track_evidence = [];
+		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		h.jobs = { 'job-1': contradictory };
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await expect
+			.element(page.getByRole('button', { name: 'Create Custom edition' }))
+			.toBeDisabled();
+		await expect
+			.element(page.getByText('This candidate conflicts with the album title or artist.'))
+			.toBeVisible();
+	});
+
+	it('restores a sealed conversion token after a page reload', async () => {
+		album.active_edition_conversion = {
+			job_id: 'conversion-1',
+			release_mbid: 'release-1',
+			state: 'preflight',
+			kept_count: 1,
+			acquire_count: 1,
+			staged_count: 0,
+			failed_count: 0,
+			recycle_count: 1,
+			row_revision: 3,
+			final_preview_job_id: null
+		};
+		h.conversionData = conversionPreflightStatus;
+		sessionStorage.setItem(
+			'droppedneedle:edition-conversion-preflight:admin-1:conversion-1',
+			'sealed-token'
+		);
+		render(AlbumIdentificationPanel, {
+			props: { album }
+		} as unknown as Parameters<typeof render>[1]);
+
+		await page.getByRole('button', { name: 'Re-identify…' }).click();
+		await page.getByRole('button', { name: 'Confirm and acquire missing tracks' }).click();
+
+		expect(h.conversionStart).toHaveBeenCalledWith({
+			jobId: 'conversion-1',
+			preflightToken: 'sealed-token',
+			expectedRevision: 3
+		});
+		expect(
+			sessionStorage.getItem('droppedneedle:edition-conversion-preflight:admin-1:conversion-1')
+		).toBeNull();
 	});
 
 	it('keeps a failed manual decision visible inside its confirmation dialog', async () => {
 		const unsafe = structuredClone(candidateJob);
 		unsafe.reidentification_candidates[0].automatic_safe = false;
 		unsafe.reidentification_candidates[0].evidence.album_title_classification = 'contradictory';
-		h.selectError = true;
+		h.selectError = new ApiError(409, 'Backend detail', 'STALE_REVISION');
 		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': unsafe };
 		render(AlbumIdentificationPanel, {
@@ -508,8 +704,6 @@ describe('AlbumIdentificationPanel', () => {
 		});
 
 		expect(h.resetSelect).toHaveBeenCalledOnce();
-		await expect
-			.element(confirmation.getByRole('alert'))
-			.toHaveTextContent(/album changed while this decision was open/i);
+		await expect.element(confirmation.getByRole('alert')).toHaveTextContent(/the album changed/i);
 	});
 });

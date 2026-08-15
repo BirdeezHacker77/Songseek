@@ -99,7 +99,7 @@ async def test_release_edition_search_parses_facets_escapes_and_pages():
         "repositories.musicbrainz_album.mb_api_get", AsyncMock(return_value=payload)
     ) as mock_get:
         page = await _Repo().search_release_editions(
-            'Album: "Deluxe"', limit=12, offset=12
+            'Album: "Deluxe"', "Artist+ Co", limit=12, offset=12
         )
 
     assert page.total == 27
@@ -114,7 +114,7 @@ async def test_release_edition_search_parses_facets_escapes_and_pages():
     assert page.items[0].packaging is None
     assert page.items[0].musicbrainz_url.endswith("/release/release-1")
     assert mock_get.await_args.kwargs["params"] == {
-        "query": 'Album\\: \\"Deluxe\\"',
+        "query": 'release:"Album\\: \\"Deluxe\\"" AND artist:"Artist\\+ Co"',
         "limit": 12,
         "offset": 12,
     }
@@ -128,11 +128,11 @@ async def test_release_edition_search_uses_dedicated_cache():
         "repositories.musicbrainz_album.mb_api_get",
         AsyncMock(return_value=MbReleaseSearchResponse()),
     ):
-        cached = await repo.search_release_editions("Artist Album")
+        cached = await repo.search_release_editions("Album", "Artist")
     repo._cache.get.return_value = cached
 
     with patch("repositories.musicbrainz_album.mb_api_get", AsyncMock()) as mock_get:
-        repeated = await repo.search_release_editions("Artist Album")
+        repeated = await repo.search_release_editions("Album", "Artist")
 
     assert repeated is cached
     mock_get.assert_not_awaited()
@@ -151,9 +151,26 @@ async def test_release_edition_search_normalizes_provider_failures():
             ExternalServiceError,
             match="MusicBrainz release search is temporarily unavailable",
         ) as raised:
-            await _Repo().search_release_editions("Artist Album")
+            await _Repo().search_release_editions("Album", "Artist")
 
     assert "private host detail" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_structured_release_group_search_keeps_artist_and_title_separate():
+    with patch(
+        "repositories.musicbrainz_album.mb_api_get",
+        AsyncMock(return_value=_ReleaseGroupSearchPayload()),
+    ) as mock_get:
+        await _Repo().search_release_groups(
+            "Clairo + band", 'Originals: "Deluxe"', include_all_types=True
+        )
+
+    assert mock_get.await_args.kwargs["params"]["query"] == (
+        '(releasegroup:"Originals\\: \\"Deluxe\\"" '
+        'OR release:"Originals\\: \\"Deluxe\\"") '
+        'AND artist:"Clairo \\+ band"'
+    )
 
 
 @pytest.mark.asyncio
@@ -176,3 +193,16 @@ async def test_search_recordings_forwards_background_priority():
             "artist", "title", priority=RequestPriority.BACKGROUND_SYNC
         )
     assert mock_get.await_args.kwargs["priority"] == RequestPriority.BACKGROUND_SYNC
+
+
+@pytest.mark.asyncio
+async def test_recording_search_escapes_structured_artist_and_title_fields():
+    with patch(
+        "repositories.musicbrainz_album.mb_api_get",
+        AsyncMock(return_value=_RecordingSearchPayload()),
+    ) as mock_get:
+        await _Repo().search_recordings("Artist + Co", 'Song: "Live"')
+
+    assert mock_get.await_args.kwargs["params"]["query"] == (
+        'recording:"Song\\: \\"Live\\"" AND artist:"Artist \\+ Co"'
+    )

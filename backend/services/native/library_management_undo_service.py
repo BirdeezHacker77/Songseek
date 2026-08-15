@@ -33,6 +33,7 @@ from infrastructure.persistence.native_library_store import (
     NativeLibraryStore,
 )
 from models.audio_metadata import (
+    DesiredAudioDocument,
     NativeMetadataSnapshot,
     NativeTagValue,
     ReadAudioDocument,
@@ -414,6 +415,16 @@ class LibraryManagementUndoService:
         now = self._clock()
         if original is None or journal is None or track is None:
             return self._stale_item(snapshot, before, original, FILE_CHANGED, now)
+        try:
+            original_diff = json.loads(original.diff_json)
+        except json.JSONDecodeError:
+            return self._stale_item(snapshot, before, original, FILE_CHANGED, now)
+        conversion_added_track = bool(
+            original_diff.get("edition_conversion_added_track")
+        )
+        conversion_recycled_original = bool(
+            original_diff.get("edition_conversion_recycled_original")
+        )
         management_settings = self._preferences.get_library_management_settings_raw()
         resolver = LibraryPolicyResolver(
             self._preferences.get_typed_library_settings_raw()
@@ -426,13 +437,22 @@ class LibraryManagementUndoService:
                 management_settings.recycle_bin_path
             )
         source_root_id = str(track["root_id"])
-        destination_root_id = before.before_root_id
+        destination_root_id = (
+            MANAGEMENT_RECYCLE_ROOT_ID
+            if conversion_added_track
+            else before.before_root_id
+        )
+        destination_relative_path = (
+            f"undo-{snapshot.job_id}/{before.local_track_id}-{Path(str(track['relative_path'])).name}"
+            if conversion_added_track
+            else before.before_relative_path
+        )
         source_root = roots.get(source_root_id)
         destination_root = roots.get(destination_root_id)
         if source_root is None or destination_root is None:
             return self._stale_item(snapshot, before, original, ROOT_UNAVAILABLE, now)
         source = self._safe_path(source_root, str(track["relative_path"]))
-        destination = self._safe_path(destination_root, before.before_relative_path)
+        destination = self._safe_path(destination_root, destination_relative_path)
         reason: str | None = None
         collision: list[dict] = []
         ancillary: list[dict] = []
@@ -462,12 +482,13 @@ class LibraryManagementUndoService:
                         {
                             "classification": "destination_created_after_preview",
                             "destination_root_id": destination_root_id,
-                            "destination_relative_path": before.before_relative_path,
+                            "destination_relative_path": destination_relative_path,
                         }
                     )
-                ancillary = await self.plan_ancillary_restore(
-                    before.ancillary_snapshot_json, roots, source, destination
-                )
+                if not conversion_added_track:
+                    ancillary = await self.plan_ancillary_restore(
+                        before.ancillary_snapshot_json, roots, source, destination
+                    )
         except (OSError, ValidationError, ConflictError):
             reason = reason or FILE_CHANGED
 
@@ -491,15 +512,20 @@ class LibraryManagementUndoService:
         mapped = (
             identity.tracks[0] if identity is not None and identity.tracks else None
         )
-        if (
+        identity_incomplete = (
             identity is None
             or identity.identity_revision is None
             or identity.release_mbid is None
             or mapped is None
-            or mapped.identity_revision is None
-            or mapped.recording_mbid is None
-            or mapped.release_track_mbid is None
-        ):
+        )
+        if not conversion_recycled_original:
+            identity_incomplete = identity_incomplete or (
+                mapped is None
+                or mapped.identity_revision is None
+                or mapped.recording_mbid is None
+                or mapped.release_track_mbid is None
+            )
+        if identity_incomplete:
             reason = reason or IDENTITY_NOT_ACCEPTED
         album_overrides, album_revision = await self._store.list_management_overrides(
             subject_kind="album", subject_id=str(track["local_album_id"])
@@ -511,6 +537,65 @@ class LibraryManagementUndoService:
         override_revision = hashlib.sha256(
             f"{album_revision}\x00{track_revision}".encode()
         ).hexdigest()
+        if conversion_added_track:
+            desired_json = msgspec.json.encode(DesiredAudioDocument(fields=())).decode()
+            diff = {
+                "requires_write": True,
+                "tags_changed": False,
+                "artwork_changed": False,
+                "path_changed": True,
+                "sidecars_changed": False,
+                "duplicate_recycle_only": True,
+                "edition_conversion_added_track_undo": True,
+                "undo_source_job_id": source_job_id,
+            }
+            return LibraryManagementPlanItem(
+                job_id=snapshot.job_id,
+                ordinal=original.ordinal,
+                bundle_ordinal=before.work_ordinal,
+                local_album_id=str(track["local_album_id"]),
+                local_track_id=before.local_track_id,
+                expected_album_revision=(identity.album_revision if identity else None),
+                expected_track_revision=int(track["row_revision"]),
+                expected_identity_revision=(
+                    mapped.identity_revision if mapped else None
+                ),
+                expected_album_identity_revision=(
+                    identity.identity_revision if identity else None
+                ),
+                expected_override_revision=override_revision,
+                expected_catalog_revision=snapshot.catalog_revision,
+                expected_policy_revision=snapshot.policy_revision,
+                expected_profile_revision=snapshot.profile_revision,
+                expected_root_id=source_root_id,
+                expected_relative_path=str(track["relative_path"]),
+                expected_stat_revision=str(track["stat_revision"]),
+                expected_tag_revision=str(track["tag_revision"]),
+                expected_file_fingerprint=(
+                    fingerprint or journal.staged_fingerprint or "missing"
+                ),
+                source_path_identity=str(source),
+                destination_root_id=destination_root_id,
+                destination_relative_path=destination_relative_path,
+                destination_collision_key=self._collision_key(
+                    destination_relative_path
+                ),
+                desired_document_json=desired_json,
+                desired_document_hash=hashlib.sha256(desired_json.encode()).hexdigest(),
+                artwork_choices_json="[]",
+                diff_json=_json(diff),
+                capability_json=_json(
+                    {
+                        "audio_format": str(track["file_format"]),
+                        "recycle_only": True,
+                    }
+                ),
+                collision_json=_json(collision),
+                eligibility="stale" if reason else "eligible",
+                reason_code=reason,
+                estimated_temporary_bytes=int(track["file_size_bytes"] or 0),
+                created_at=now,
+            )
         try:
             restore_bytes = await self._blobs.read_bytes(
                 before.semantic_snapshot_blob_sha256
@@ -555,6 +640,7 @@ class LibraryManagementUndoService:
             "restoration": restoration,
             "restore_management_state": json.loads(before.before_management_state_json),
             "undo_source_job_id": source_job_id,
+            "edition_conversion_restore_unmapped": conversion_recycled_original,
             "sidecars": [
                 value["sidecar"]
                 for value in ancillary

@@ -186,6 +186,7 @@ def _manifest(
     release_mbid=None,
     is_track=False,
     expected_tracks=(),
+    origin="user",
 ) -> DownloadManifest:
     return DownloadManifest(
         task_id=task_id,
@@ -200,7 +201,37 @@ def _manifest(
         year=1997,
         is_track=is_track,
         expected_tracks=list(expected_tracks),
+        origin=origin,
     )
+
+
+@pytest.mark.asyncio
+async def test_edition_conversion_requires_recording_fingerprint_proof(
+    tmp_path: Path,
+) -> None:
+    fp, _manager, _client, _library, downloads = _make_processor(
+        tmp_path, verify=False, fingerprinter=None
+    )
+    _place(downloads, "A/track.flac")
+    manifest = _manifest(
+        ExpectedFile(filename="A/track.flac", size=1),
+        release_mbid="release-1",
+        is_track=True,
+        expected_tracks=[
+            ExpectedTrack(
+                track_number=1,
+                title="Airbag",
+                recording_mbid="recording-1",
+                release_track_mbid="release-track-1",
+            )
+        ],
+        origin="edition_conversion",
+    )
+
+    result = await fp.process_downloaded(manifest)
+
+    assert result.succeeded == []
+    assert result.failed[0].reason == "fingerprint_unavailable"
 
 
 def _make_processor(

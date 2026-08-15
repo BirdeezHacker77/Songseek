@@ -228,6 +228,7 @@ export interface LibraryManagementRootAssignment {
 	automatic_acquisitions: boolean;
 	automatic_drop_imports: boolean;
 	automatic_scan_discovered: boolean;
+	automatic_custom_editions: boolean;
 	activation_profile_revision: string | null;
 	activation_naming_policy_revision: string | null;
 	activation_policy_revision: string | null;

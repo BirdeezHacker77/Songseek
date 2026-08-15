@@ -447,8 +447,16 @@ class TargetImportLibraryService:
             )
         writes: list[tuple[int, ScannedTrackWrite]] = []
         replacements: dict[int, str] = {}
+        recycle_track_ids: dict[int, str] = {}
         for value in files:
             request = value.request
+            if request.conversion_recycle_only:
+                if request.replacement_local_track_id is None:
+                    raise ValidationError(
+                        "A conversion recycle publication lost its catalog track."
+                    )
+                recycle_track_ids[request.ordinal] = request.replacement_local_track_id
+                continue
             write = await self._build_published_import_write(
                 Path(value.destination_path),
                 value.tag,
@@ -462,6 +470,30 @@ class TargetImportLibraryService:
                 source_path=request.source_path,
                 file_mtime=request.file_mtime,
             )
+            if bundle_id and request.source == "edition_conversion":
+                record = await self._store.get_library_management_import_bundle(
+                    bundle_id
+                )
+                if record is None:
+                    raise StaleRevisionError(
+                        "The conversion publication bundle disappeared."
+                    )
+                sealed = msgspec.json.decode(
+                    record.request_json.encode(), type=LibraryManagementImportBundle
+                )
+                if sealed.conversion_local_album_id is None:
+                    raise ValidationError(
+                        "The conversion publication lost its target album."
+                    )
+                write = msgspec.structs.replace(
+                    write,
+                    album=msgspec.structs.replace(
+                        write.album, id=sealed.conversion_local_album_id
+                    ),
+                    track=msgspec.structs.replace(
+                        write.track, local_album_id=sealed.conversion_local_album_id
+                    ),
+                )
             writes.append((request.ordinal, write))
             if request.replacement_local_track_id is not None:
                 replacements[request.ordinal] = request.replacement_local_track_id
@@ -469,6 +501,7 @@ class TargetImportLibraryService:
             bundle_id,
             writes=writes,
             replacement_track_ids=replacements,
+            recycle_track_ids=recycle_track_ids,
             requests_by_ordinal={
                 value.request.ordinal: value.request for value in files
             },
@@ -476,9 +509,12 @@ class TargetImportLibraryService:
                 value.request.ordinal: value.request
                 for value in files
                 if value.request.pinned_profile is not None
+                and not value.request.conversion_recycle_only
             },
             expected_policy_revision=expected_policy_revision,
-            result_paths=[value.destination_path for value in files],
+            result_paths_by_ordinal={
+                value.request.ordinal: value.destination_path for value in files
+            },
             updated_at=time.time(),
         )
         automatic_ordinals = {

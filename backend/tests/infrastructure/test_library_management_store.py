@@ -1718,9 +1718,12 @@ async def _seed_published_management_bundle(
                 + hashlib.sha256(b"[]").hexdigest()
             ).encode()
         ).hexdigest(),
+        expected_identity_kind="exact_release",
+        expected_release_group_mbid="release-group-1",
         expected_release_mbid="release-1",
         expected_recording_mbid="recording-1",
         expected_release_track_mbid="release-track-1",
+        expected_custom_manifest_id=None,
         destination_root_id="root-1",
         destination_relative_path="organized/track.flac",
         destination_file_path="/music/organized/track.flac",

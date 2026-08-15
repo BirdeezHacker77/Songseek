@@ -103,6 +103,7 @@ class EffectiveMetadataProjectionService:
         album_overrides: Sequence[LibraryManagementOverride] = (),
         track_overrides: Sequence[LibraryManagementOverride] = (),
         manual_overrides: Mapping[str, object] | None = None,
+        forced_clear_fields: frozenset[str] = frozenset(),
     ) -> EffectiveMetadataProjection:
         enriched = enriched_values or {}
         transformed = transformed_values or {}
@@ -186,6 +187,11 @@ class EffectiveMetadataProjectionService:
                 value = manual_value
                 source = "manual_override"
                 cleared = _is_empty(value)
+
+            if name in forced_clear_fields:
+                value = _clear_value(definition)
+                source = "explicit_clear"
+                cleared = True
 
             projected.append(
                 EffectiveManagedField(

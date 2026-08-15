@@ -758,6 +758,7 @@ describe('SettingsLibraryManagement', () => {
 				automatic_acquisitions: true,
 				automatic_drop_imports: false,
 				automatic_scan_discovered: false,
+				automatic_custom_editions: false,
 				activation_profile_revision: null,
 				activation_naming_policy_revision: null,
 				activation_policy_revision: null,
@@ -818,6 +819,7 @@ describe('SettingsLibraryManagement', () => {
 				automatic_acquisitions: true,
 				automatic_drop_imports: false,
 				automatic_scan_discovered: false,
+				automatic_custom_editions: false,
 				activation_profile_revision: null,
 				activation_naming_policy_revision: null,
 				activation_policy_revision: null,
@@ -1201,6 +1203,7 @@ describe('SettingsLibraryManagement', () => {
 						automatic_acquisitions: false,
 						automatic_drop_imports: false,
 						automatic_scan_discovered: false,
+						automatic_custom_editions: false,
 						activation_profile_revision: null,
 						activation_naming_policy_revision: null,
 						activation_policy_revision: null,
@@ -1424,6 +1427,7 @@ describe('SettingsLibraryManagement', () => {
 				automatic_acquisitions: true,
 				automatic_drop_imports: false,
 				automatic_scan_discovered: false,
+				automatic_custom_editions: false,
 				activation_profile_revision: 'profile-1',
 				activation_naming_policy_revision: 'script-1',
 				activation_policy_revision: 'policy-1',
@@ -1472,6 +1476,38 @@ describe('SettingsLibraryManagement', () => {
 			.element(page.getByRole('heading', { name: 'Enable Library Management' }))
 			.not.toBeInTheDocument();
 		await expect.element(page.getByText('Configuration saved')).toBeVisible();
+	});
+
+	it('clears Custom edition automation when Scan-discovered is disabled', async () => {
+		const settings = baseSettings();
+		settings.root_assignments = [
+			{
+				root_id: 'root-1',
+				profile_id: profileId,
+				overrides: null,
+				enabled: true,
+				automatic_acquisitions: true,
+				automatic_drop_imports: false,
+				automatic_scan_discovered: true,
+				automatic_custom_editions: true,
+				activation_profile_revision: 'profile-1',
+				activation_naming_policy_revision: 'script-1',
+				activation_policy_revision: 'policy-1',
+				activation_settings_revision: 'settings-1',
+				activation_preview_token: 'verified',
+				activation_preview_hash: 'preview-hash',
+				activation_confirmed_at: 1
+			}
+		];
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		const custom = page.getByRole('checkbox', { name: /Include Custom editions/ });
+		await expect.element(custom).toBeChecked();
+		await page.getByRole('checkbox', { name: /Scan-discovered/ }).click();
+		await expect.element(custom).not.toBeChecked();
+		await expect.element(custom).toBeDisabled();
 	});
 
 	it('rechecks a ready dry run before accepting it for activation', async () => {

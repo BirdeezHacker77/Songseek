@@ -7,6 +7,7 @@
 		CirclePlay,
 		Database,
 		Disc3,
+		Download,
 		FileCheck2,
 		Fingerprint,
 		Info,
@@ -14,25 +15,40 @@
 		OctagonX,
 		RefreshCw,
 		ShieldCheck,
+		Sparkles,
+		TriangleAlert,
 		X
 	} from 'lucide-svelte';
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import MusicBrainzEditionFinder from './MusicBrainzEditionFinder.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
+	import { ApiError } from '$lib/api/client';
 	import type { LibraryAlbumDetail } from '$lib/types';
 	import type { OperationResponse } from '$lib/queries/library/LibraryOperationsTypes';
 	import { getLibraryOperationQuery } from '$lib/queries/library/LibraryOperationQueries.svelte';
 	import { controlLibraryOperation } from '$lib/queries/library/LibraryOperationMutations.svelte';
 	import {
 		reidentifyLibraryAlbum,
+		reenableAlbumManagement,
 		selectReidentificationCandidate
 	} from '$lib/queries/library/LibraryCatalogMutations.svelte';
+	import {
+		cancelEditionConversion,
+		createEditionConversionPreflight,
+		createEditionConversionPreview,
+		getEditionConversionQuery,
+		recheckEditionConversion,
+		retryEditionConversion,
+		startEditionConversion
+	} from '$lib/queries/library/EditionConversionQueries.svelte';
+	import { rememberLibraryManagementPreviewToken } from '$lib/queries/library-management/LibraryManagementPreviewTokens';
 
 	interface Props {
 		album: LibraryAlbumDetail;
 		className?: string;
 		autoOpen?: boolean;
 		showTrigger?: boolean;
+		attentionLabel?: string | null;
 		onclose?: () => void;
 	}
 	type Candidate = OperationResponse['reidentification_candidates'][number];
@@ -41,6 +57,7 @@
 		className = 'btn btn-outline btn-sm gap-2',
 		autoOpen = false,
 		showTrigger = true,
+		attentionLabel = null,
 		onclose
 	}: Props = $props();
 	let dialog: HTMLDialogElement;
@@ -52,13 +69,39 @@
 	let confirmationCandidate = $state<Candidate | null>(null);
 	let selectedCandidateKey = $state<string | null>(null);
 	let jobId = $state<string | null>(null);
+	let conversionJobId = $state<string | null>(null);
+	let conversionPreflightToken = $state<string | null>(null);
 	let openedAutomatically = $state(false);
 	const storageKey = $derived(
 		`droppedneedle:album-identification:${authStore.user?.id ?? 'anonymous'}:${album.id}`
 	);
+	const conversionStorageKey = $derived(
+		conversionJobId
+			? `droppedneedle:edition-conversion-preflight:${authStore.user?.id ?? 'anonymous'}:${conversionJobId}`
+			: null
+	);
+	const attentionDescriptionId = $derived(`reidentify-attention-${album.id}`);
 	const operation = getLibraryOperationQuery(() => jobId);
 	const start = reidentifyLibraryAlbum();
 	const selectCandidate = selectReidentificationCandidate();
+	const reenableManagement = reenableAlbumManagement();
+	const conversionPreflight = createEditionConversionPreflight();
+	const conversionStart = startEditionConversion();
+	const conversionPreview = createEditionConversionPreview();
+	const conversionRetry = retryEditionConversion();
+	const conversionRecheck = recheckEditionConversion();
+	const conversionCancel = cancelEditionConversion();
+	const conversionQuery = getEditionConversionQuery(
+		() => authStore.user?.id,
+		() => conversionJobId
+	);
+	const conversionCandidate = $derived(conversionQuery.data ?? conversionPreflight.data ?? null);
+	const conversion = $derived(
+		conversionCandidate &&
+			['preflight', 'acquiring', 'ready', 'needs_recheck'].includes(conversionCandidate.state)
+			? conversionCandidate
+			: null
+	);
 	const pause = controlLibraryOperation('pause');
 	const resume = controlLibraryOperation('resume');
 	const stop = controlLibraryOperation('stop');
@@ -78,6 +121,18 @@
 	$effect(() => {
 		if (typeof sessionStorage === 'undefined') return;
 		jobId = sessionStorage.getItem(storageKey);
+	});
+
+	$effect(() => {
+		if (!conversionJobId && album.active_edition_conversion?.job_id) {
+			conversionJobId = album.active_edition_conversion.job_id;
+		}
+	});
+
+	$effect(() => {
+		if (typeof sessionStorage === 'undefined' || !conversionStorageKey || conversionPreflightToken)
+			return;
+		conversionPreflightToken = sessionStorage.getItem(conversionStorageKey);
 	});
 
 	$effect(() => {
@@ -151,10 +206,15 @@
 
 	function hasCompleteTrackMap(candidate: Candidate): boolean {
 		return (
-			candidate.evidence.track_evidence.length > 0 &&
-			countEvidence(candidate, 'contradictory') === 0 &&
-			countEvidence(candidate, 'unknown') === 0 &&
-			candidate.evidence.unmatched_expected_tracks.length === 0
+			candidate.evidence.track_evidence.length === album.track_count &&
+			countEvidence(candidate, 'supported') === album.track_count
+		);
+	}
+
+	function canSealCustomEdition(candidate: Candidate): boolean {
+		return (
+			candidate.evidence.album_title_classification !== 'contradictory' &&
+			candidate.evidence.album_artist_classification !== 'contradictory'
 		);
 	}
 
@@ -180,6 +240,8 @@
 		const labels: Record<string, string> = {
 			CONTRADICTORY: 'The local evidence conflicts with this release',
 			MANUAL_EXACT_RELEASE_REQUEST: 'This exact edition was supplied by an administrator',
+			RELEASE_TYPE_REQUIRES_CONFIRMATION: 'Compilation or live edition needs confirmation',
+			UNSAFE_RELEASE_TYPE: 'Compilation or live edition needs confirmation',
 			MULTIPLE_LIKELY_RELEASES: 'More than one release is equally likely',
 			UNKNOWN_EXTRAS: 'Some local tracks cannot be matched safely',
 			INCOMPLETE_SUPPORT: 'The available evidence does not support the whole album'
@@ -213,15 +275,105 @@
 		return reasonLabel(candidate.evidence.reason_code);
 	}
 
-	async function applyCandidate(candidate: Candidate, confirmation: boolean): Promise<void> {
+	async function applyCandidate(
+		candidate: Candidate,
+		confirmation: boolean,
+		decisionMode: 'exact_release' | 'custom_edition' | 'leave_unmanaged' = 'exact_release'
+	): Promise<void> {
 		const job = operation.data;
 		if (!job) return;
 		await selectCandidate.mutateAsync({
 			jobId: job.id,
 			expectedRevision: job.row_revision,
 			candidateKey: candidate.candidate_key,
-			confirmation
+			confirmation,
+			decisionMode
 		});
+	}
+
+	async function createCustomEdition(candidate: Candidate): Promise<void> {
+		await applyCandidate(candidate, true, 'custom_edition');
+	}
+
+	async function leaveUnmanaged(candidate: Candidate): Promise<void> {
+		await applyCandidate(candidate, true, 'leave_unmanaged');
+	}
+
+	async function prepareEditionConversion(candidate: Candidate): Promise<void> {
+		if (!candidate.evidence.release_mbid) return;
+		const result = await conversionPreflight.mutateAsync({
+			albumId: album.id,
+			releaseGroupMbid: candidate.evidence.release_group_mbid,
+			releaseMbid: candidate.evidence.release_mbid
+		});
+		conversionJobId = result.job_id;
+		conversionPreflightToken = result.preflight_token;
+		if (result.preflight_token) {
+			try {
+				sessionStorage.setItem(
+					`droppedneedle:edition-conversion-preflight:${authStore.user?.id ?? 'anonymous'}:${result.job_id}`,
+					result.preflight_token
+				);
+			} catch {
+				// The server-side preflight remains durable if browser storage is unavailable.
+			}
+		}
+	}
+
+	async function confirmEditionConversion(): Promise<void> {
+		if (!conversion || !conversionPreflightToken) return;
+		await conversionStart.mutateAsync({
+			jobId: conversion.job_id,
+			preflightToken: conversionPreflightToken,
+			expectedRevision: conversion.row_revision
+		});
+		if (conversionStorageKey) {
+			try {
+				sessionStorage.removeItem(conversionStorageKey);
+			} catch {
+				// A consumed token is harmless if browser storage cannot be updated.
+			}
+		}
+		conversionPreflightToken = null;
+		await conversionQuery.refetch();
+	}
+
+	async function cancelConversion(): Promise<void> {
+		if (!conversion) return;
+		await conversionCancel.mutateAsync({
+			jobId: conversion.job_id,
+			expectedRevision: conversion.row_revision
+		});
+		if (conversionStorageKey) {
+			try {
+				sessionStorage.removeItem(conversionStorageKey);
+			} catch {
+				// The cancelled server job remains authoritative.
+			}
+		}
+		conversionPreflightToken = null;
+		await conversionQuery.refetch();
+		conversionJobId = null;
+		conversionPreflight.reset();
+	}
+
+	async function openFinalPreview(): Promise<void> {
+		if (!conversion) return;
+		const result = await conversionPreview.mutateAsync({
+			jobId: conversion.job_id,
+			expectedRevision: conversion.row_revision
+		});
+		if (!result.status.final_preview_job_id) return;
+		rememberLibraryManagementPreviewToken(result.status.final_preview_job_id, result.preview_token);
+		window.location.assign(`/library/management/previews/${result.status.final_preview_job_id}`);
+	}
+
+	function candidateErrorMessage(): string {
+		const error = selectCandidate.error;
+		if (!(error instanceof ApiError)) return 'Could not save this album decision.';
+		return error.code === 'STALE_REVISION'
+			? 'The album changed. Review the current evidence and try again.'
+			: error.message;
 	}
 
 	function chooseCandidate(
@@ -252,9 +404,20 @@
 </script>
 
 {#if showTrigger}
-	<button class={className} onclick={open}>
-		<RefreshCw class="h-4 w-4" /> Re-identify…
-	</button>
+	<div
+		class="identification-trigger"
+		class:identification-trigger--attention={Boolean(attentionLabel)}
+	>
+		<button
+			class={attentionLabel ? `${className} identification-trigger-warning` : className}
+			aria-describedby={attentionLabel ? attentionDescriptionId : undefined}
+			onclick={open}
+		>
+			{#if attentionLabel}<TriangleAlert class="h-4 w-4" />{:else}<RefreshCw class="h-4 w-4" />{/if}
+			Re-identify…
+		</button>
+		{#if attentionLabel}<span id={attentionDescriptionId}>{attentionLabel}</span>{/if}
+	</div>
 {/if}
 
 <dialog
@@ -290,6 +453,155 @@
 		</header>
 
 		<div class="identification-scroll-region" data-testid="identification-scroll-region">
+			{#if album.management_identity_kind === 'custom_edition'}
+				<section class="identification-current-edition" aria-label="Current Custom edition">
+					<div class="identification-current-edition-mark"><Sparkles class="h-5 w-5" /></div>
+					<div class="min-w-0 flex-1">
+						<p class="identification-kicker">Currently attached · Custom edition</p>
+						<h3 class="hero-title text-lg font-bold">
+							Library Management uses your local track list
+						</h3>
+						<p>
+							{album.custom_manifest_recognized_track_count} of {album.custom_manifest_track_count}
+							tracks recognized; {Math.max(
+								0,
+								album.custom_manifest_track_count - album.custom_manifest_recognized_track_count
+							)} keep their local identity.
+						</p>
+					</div>
+					<span class:badge-warning={album.custom_manifest_stale} class="badge badge-sm">
+						{album.custom_manifest_stale
+							? 'Review and reseal required'
+							: `Manifest v${album.custom_manifest_version ?? 1}`}
+					</span>
+				</section>
+			{/if}
+
+			{#if album.management_excluded}
+				<section class="identification-current-edition" aria-label="Library Management excluded">
+					<div class="identification-current-edition-mark"><CirclePause class="h-5 w-5" /></div>
+					<div class="min-w-0 flex-1">
+						<p class="identification-kicker">Left unmanaged</p>
+						<h3 class="hero-title text-lg font-bold">Management warnings are paused</h3>
+						<p>Valid MusicBrainz links remain attached. Files and tags are unchanged.</p>
+					</div>
+					<button
+						class="btn btn-outline btn-sm"
+						disabled={reenableManagement.isPending || album.management_exclusion_revision === null}
+						onclick={() =>
+							album.management_exclusion_revision !== null &&
+							void reenableManagement.mutateAsync({
+								albumId: album.id,
+								expectedRevision: album.management_exclusion_revision
+							})}>Re-enable management</button
+					>
+				</section>
+			{/if}
+
+			{#if conversion}
+				<section class="identification-conversion" aria-labelledby="edition-conversion-title">
+					<header>
+						<div>
+							<p class="identification-kicker">Match exact edition</p>
+							<h3 id="edition-conversion-title" class="hero-title text-xl font-bold">
+								{conversion.album_title}
+							</h3>
+							<p>{conversion.artist_name}</p>
+						</div>
+						<span class="badge badge-outline">{conversion.state.replaceAll('_', ' ')}</span>
+					</header>
+					<div class="identification-conversion-counts">
+						<span><strong>{conversion.kept_count}</strong> keep</span>
+						<span><strong>{conversion.acquire_count}</strong> acquire</span>
+						<span><strong>{conversion.recycle_count}</strong> recycle</span>
+					</div>
+					{#if conversion.state === 'preflight'}
+						<p class="identification-conversion-note">
+							No library files change while the missing recordings are acquired and verified.
+						</p>
+						{#if !conversion.download_source_ready}
+							<p class="identification-policy-note" data-tone="warning">
+								<CircleAlert class="h-4 w-4 shrink-0" /> Set up any music acquisition source before starting
+								this conversion.
+							</p>
+						{/if}
+						<button
+							class="btn btn-primary btn-sm gap-2"
+							disabled={!conversion.download_source_ready ||
+								!conversionPreflightToken ||
+								conversionStart.isPending}
+							onclick={() => void confirmEditionConversion()}
+						>
+							<Download class="h-4 w-4" /> Confirm and acquire missing tracks
+						</button>
+					{:else if conversion.state === 'acquiring'}
+						<progress
+							class="progress progress-primary w-full"
+							value={conversion.staged_count}
+							max={Math.max(1, conversion.acquire_count)}
+							aria-label="Edition acquisition progress"
+						></progress>
+						<p class="identification-conversion-note">
+							{conversion.staged_count} of {conversion.acquire_count} acquired and verified.
+						</p>
+						{#if conversion.failed_count}
+							<button
+								class="btn btn-outline btn-sm"
+								disabled={conversionRetry.isPending}
+								onclick={() =>
+									void conversionRetry
+										.mutateAsync({
+											jobId: conversion.job_id,
+											targetOrdinals: conversion.targets
+												.filter((target) => target.state === 'failed')
+												.map((target) => target.ordinal),
+											expectedRevision: conversion.row_revision
+										})
+										.then(() => conversionQuery.refetch())}
+								>Retry {conversion.failed_count} unresolved</button
+							>
+						{/if}
+					{:else if conversion.state === 'needs_recheck'}
+						<p class="identification-policy-note" data-tone="warning">
+							<CircleAlert class="h-4 w-4 shrink-0" /> The album or its provider identity changed. Recheck
+							before continuing.
+						</p>
+						<button
+							class="btn btn-primary btn-sm gap-2"
+							disabled={conversionRecheck.isPending}
+							onclick={() =>
+								void conversionRecheck
+									.mutateAsync({
+										jobId: conversion.job_id,
+										expectedRevision: conversion.row_revision
+									})
+									.then(() => conversionQuery.refetch())}
+							><RefreshCw class="h-4 w-4" /> Recheck album</button
+						>
+					{:else if conversion.state === 'ready'}
+						<p class="identification-conversion-note">
+							Every exact-release track has one verified source. Review the single sealed file plan
+							before anything changes.
+						</p>
+						<button
+							class="btn btn-primary btn-sm gap-2"
+							disabled={conversionPreview.isPending}
+							onclick={() => void openFinalPreview()}
+						>
+							<FileCheck2 class="h-4 w-4" /> Review final changes
+						</button>
+					{/if}
+					{#if ['preflight', 'acquiring', 'ready', 'needs_recheck'].includes(conversion.state)}
+						<button
+							class="btn btn-ghost btn-sm text-error"
+							disabled={conversionCancel.isPending}
+							onclick={() => void cancelConversion().catch(() => undefined)}
+							>Cancel conversion</button
+						>
+					{/if}
+				</section>
+			{/if}
+
 			{#if album.identification_status === 'local_metadata' && !operation.data}
 				<div class="identification-policy-note">
 					<Info class="h-4 w-4 shrink-0" />
@@ -312,34 +624,45 @@
 					<button class="btn btn-primary btn-sm" onclick={forgetJob}>Start a new check</button>
 				</div>
 			{:else if !operation.data}
-				<div class="identification-empty-state identification-empty-state--ready">
-					<div class="identification-empty-illustration" aria-hidden="true">
-						<Disc3 class="h-10 w-10" />
-						<Fingerprint class="h-5 w-5" />
-					</div>
-					<div class="max-w-xl">
-						<p class="identification-kicker">Evidence check</p>
-						<h3 class="hero-title mt-1 text-2xl font-bold">Find the exact edition</h3>
-						<p class="mt-2 text-sm leading-6 text-base-content/60">
-							DroppedNeedle compares album, artist, and per-track evidence. The job continues on the
-							server if you close this dialog.
-						</p>
-					</div>
-					<div class="identification-start-actions">
-						<button
-							class="btn btn-primary gap-2"
-							disabled={start.isPending}
-							onclick={() => void begin()}
-						>
-							{#if start.isPending}<span class="loading loading-spinner loading-sm"
-								></span>{:else}<Fingerprint class="h-4 w-4" />{/if}
-							Start identification
-						</button>
+				<div class="identification-launchpad">
+					<div class="identification-empty-state identification-empty-state--ready">
+						<div class="identification-empty-illustration" aria-hidden="true">
+							<Disc3 class="h-10 w-10" />
+							<Fingerprint class="h-5 w-5" />
+						</div>
+						<div class="max-w-xl">
+							<p class="identification-kicker">
+								{album.musicbrainz_release_id ? 'Attached identity' : 'Evidence check'}
+							</p>
+							<h3 class="hero-title mt-1 text-2xl font-bold">
+								{album.musicbrainz_release_id
+									? 'Check or replace the exact edition'
+									: 'Find the exact edition'}
+							</h3>
+							<p class="mt-2 text-sm leading-6 text-base-content/60">
+								DroppedNeedle compares album, artist, and per-track evidence. The job continues on
+								the server if you close this dialog.
+							</p>
+						</div>
+						<div class="identification-start-actions">
+							<button
+								class="btn btn-primary gap-2"
+								disabled={start.isPending}
+								onclick={() => void begin()}
+							>
+								{#if start.isPending}<span class="loading loading-spinner loading-sm"
+									></span>{:else}<Fingerprint class="h-4 w-4" />{/if}
+								{album.musicbrainz_release_id ? 'Check attached identity' : 'Start identification'}
+							</button>
+						</div>
 					</div>
 					<MusicBrainzEditionFinder
 						albumId={album.id}
 						artistName={album.artist_name}
 						albumTitle={album.title}
+						currentReleaseMbid={album.musicbrainz_release_id}
+						mappedTrackCount={album.mapped_track_count}
+						totalTrackCount={album.track_count}
 						oncheck={checkFoundEdition}
 						checking={start.isPending}
 					/>
@@ -685,32 +1008,101 @@
 								</details>
 							</div>
 
-							<footer class="identification-dossier-action">
-								<div>
-									<strong>Attach catalog identity</strong>
-									<span>Audio, tags, artwork, and file paths stay untouched.</span>
-								</div>
-								<button
-									class="btn btn-primary gap-2"
-									disabled={job.state !== 'ready' || selectCandidate.isPending}
-									onclick={(event) => chooseCandidate(selectedCandidate, event)}
-								>
-									{selectedCandidate.automatic_safe ? 'Use this identity' : 'Review and use...'}
-									<ChevronRight class="h-4 w-4" />
-								</button>
-							</footer>
+							{#if hasCompleteTrackMap(selectedCandidate)}
+								<footer class="identification-dossier-action">
+									<div>
+										<strong>Attach exact edition</strong>
+										<span>Audio, tags, artwork, and file paths stay untouched.</span>
+									</div>
+									<button
+										class="btn btn-primary gap-2"
+										disabled={job.state !== 'ready' || selectCandidate.isPending}
+										onclick={(event) => chooseCandidate(selectedCandidate, event)}
+									>
+										{selectedCandidate.automatic_safe ? 'Use this identity' : 'Review and use...'}
+										<ChevronRight class="h-4 w-4" />
+									</button>
+								</footer>
+							{:else}
+								<section class="identification-choice-grid" aria-labelledby="album-outcome-title">
+									<div class="identification-choice-heading">
+										<p class="identification-kicker">Choose what to do next</p>
+										<h4 id="album-outcome-title" class="hero-title text-xl font-bold">
+											This album does not match one exact edition
+										</h4>
+									</div>
+									<article>
+										<div class="identification-choice-icon"><Sparkles class="h-5 w-5" /></div>
+										<h5>Manage my current album</h5>
+										<p>
+											Seal its current titles and order as a Custom edition. {countEvidence(
+												selectedCandidate,
+												'supported'
+											)} of {album.track_count} tracks are recognized; {Math.max(
+												0,
+												album.track_count - countEvidence(selectedCandidate, 'supported')
+											)} keep their local identity.
+										</p>
+										<button
+											class="btn btn-primary btn-sm"
+											disabled={selectCandidate.isPending ||
+												!canSealCustomEdition(selectedCandidate)}
+											onclick={() =>
+												void createCustomEdition(selectedCandidate).catch(() => undefined)}
+											>Create Custom edition</button
+										>
+										{#if !canSealCustomEdition(selectedCandidate)}
+											<small>This candidate conflicts with the album title or artist.</small>
+										{/if}
+									</article>
+									<article>
+										<div class="identification-choice-icon"><Download class="h-5 w-5" /></div>
+										<h5>Match this edition's track list</h5>
+										<p>
+											Keep verified local audio, acquire {selectedCandidate.evidence
+												.unmatched_expected_tracks.length} missing tracks, and recycle conflicts only
+											after one final preview.
+										</p>
+										<button
+											class="btn btn-outline btn-sm"
+											disabled={!selectedCandidate.evidence.release_mbid ||
+												conversionPreflight.isPending ||
+												Boolean(conversion)}
+											onclick={() =>
+												void prepareEditionConversion(selectedCandidate).catch(() => undefined)}
+											>Prepare conversion</button
+										>
+									</article>
+									<article>
+										<div class="identification-choice-icon"><CirclePause class="h-5 w-5" /></div>
+										<h5>Leave unmanaged</h5>
+										<p>
+											Keep valid release-group and recording links, remove the unsupported
+											exact-edition claim, and pause management warnings.
+										</p>
+										<button
+											class="btn btn-ghost btn-sm"
+											disabled={selectCandidate.isPending}
+											onclick={() => void leaveUnmanaged(selectedCandidate).catch(() => undefined)}
+											>Leave unmanaged</button
+										>
+									</article>
+								</section>
+							{/if}
 						</article>
 					</section>
-					<details class="identification-find-another">
-						<summary>Find another edition</summary>
+					<div class="identification-find-another">
 						<MusicBrainzEditionFinder
 							albumId={album.id}
 							artistName={album.artist_name}
 							albumTitle={album.title}
+							currentReleaseMbid={album.musicbrainz_release_id}
+							mappedTrackCount={album.mapped_track_count}
+							totalTrackCount={album.track_count}
 							oncheck={checkFoundEdition}
 							checking={start.isPending}
 						/>
-					</details>
+					</div>
 				{:else if job.state === 'ready' || job.state === 'succeeded'}
 					<div class="identification-empty-state">
 						<CircleAlert class="h-9 w-9 text-warning" />
@@ -730,6 +1122,9 @@
 							albumId={album.id}
 							artistName={album.artist_name}
 							albumTitle={album.title}
+							currentReleaseMbid={album.musicbrainz_release_id}
+							mappedTrackCount={album.mapped_track_count}
+							totalTrackCount={album.track_count}
 							oncheck={checkFoundEdition}
 							checking={start.isPending}
 						/>
@@ -739,9 +1134,7 @@
 				{#if selectCandidate.isError}
 					<div class="identification-policy-note" data-tone="warning">
 						<CircleAlert class="h-4 w-4 shrink-0" />
-						<p>
-							The candidate evidence changed. Review the current candidates before choosing again.
-						</p>
+						<p>{candidateErrorMessage()}</p>
 					</div>
 				{/if}
 			{/if}
@@ -936,10 +1329,7 @@
 			{#if selectCandidate.isError}
 				<div class="identification-policy-note" data-tone="warning" role="alert">
 					<CircleAlert class="h-4 w-4 shrink-0" />
-					<p>
-						The album changed while this decision was open. Close this confirmation, review the
-						current evidence, and try again.
-					</p>
+					<p>{candidateErrorMessage()}</p>
 				</div>
 			{/if}
 		</div>

@@ -53,6 +53,7 @@ from models.library_management import (
     LibraryManagementImportArtifact,
     LibraryManagementImportBundle,
     LibraryManagementImportFile,
+    MANAGEMENT_RECYCLE_ROOT_ID,
 )
 from models.library_management_artwork import ExistingArtworkDescriptor, ArtworkOutput
 from models.library_management_enrichment import (
@@ -130,15 +131,39 @@ class AutomaticImportManagementService:
     async def prepare(
         self, bundle: LibraryManagementImportBundle
     ) -> LibraryManagementImportBundle:
+        managed = [value.pinned_profile is not None for value in bundle.files]
+        if managed and all(managed):
+            return bundle
+        if any(managed):
+            raise AutomaticManagementHoldError(
+                PROFILE_CHANGED,
+                "The sealed import projection is incomplete.",
+            )
         trigger = bundle.origin
         prepared = list(bundle.files)
         automatic: dict[int, tuple[object, object]] = {}
         try:
             for request in bundle.files:
-                resolved = self._profiles.prepare_automatic_profile(
-                    root_id=request.destination_root_id,
-                    trigger=trigger,
-                    expected_policy_revision=bundle.policy_revision,
+                root_id = (
+                    request.replacement_root_id
+                    if request.conversion_recycle_only
+                    else request.destination_root_id
+                )
+                if root_id is None:
+                    raise ConfigurationError(
+                        "An edition-conversion recycle item lost its source root."
+                    )
+                resolved = (
+                    self._profiles.prepare_conversion_profile(
+                        root_id=root_id,
+                        expected_policy_revision=bundle.policy_revision,
+                    )
+                    if trigger == "edition_conversion"
+                    else self._profiles.prepare_automatic_profile(
+                        root_id=root_id,
+                        trigger=trigger,
+                        expected_policy_revision=bundle.policy_revision,
+                    )
                 )
                 if resolved is None:
                     continue
@@ -163,6 +188,8 @@ class AutomaticImportManagementService:
                     continue
                 request_settings, values = resolved
                 profile, _policy, pinned = values
+                if request.conversion_recycle_only:
+                    continue
                 if (
                     not request.authoritative_mapping
                     or not request.release_group_mbid
@@ -349,10 +376,39 @@ class AutomaticImportManagementService:
                         artifacts=tuple(artifacts),
                     )
                 assert sidecars_added
+                for request in sorted(
+                    (value for value in bundle.files if value.conversion_recycle_only),
+                    key=lambda value: value.ordinal,
+                ):
+                    recycle_settings, recycle_values = automatic[request.ordinal]
+                    recycle_profile, _recycle_policy, recycle_pinned = recycle_values
+                    if profile_revision(recycle_profile) != profile_revision(
+                        profile
+                    ) or settings_revision(recycle_settings) != settings_revision(
+                        settings
+                    ):
+                        raise ConfigurationError(
+                            "One edition conversion must use one current management profile."
+                        )
+                    by_ordinal[request.ordinal] = msgspec.structs.replace(
+                        request,
+                        baseline_relative_path=str(request.replacement_relative_path),
+                        desired_document=DesiredAudioDocument(fields=()),
+                        pinned_profile=recycle_pinned,
+                        metadata_snapshot_id=projection.metadata_snapshot_id,
+                        projection_hash=projection.payload_sha256,
+                        settings_revision=settings_revision(recycle_settings),
+                        naming_policy_revision=naming_policy_revision(recycle_pinned),
+                        undo_retention_days=recycle_settings.undo_retention_days,
+                    )
             result = msgspec.structs.replace(
                 bundle,
                 files=tuple(by_ordinal[value.ordinal] for value in bundle.files),
             )
+            if bundle.conversion_recycle_bin_path is not None:
+                roots[MANAGEMENT_RECYCLE_ROOT_ID] = Path(
+                    bundle.conversion_recycle_bin_path
+                )
             await self._validate_capacity(result, roots)
             contract_hash = hashlib.sha256(
                 msgspec.json.encode(result.files)

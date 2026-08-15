@@ -84,6 +84,7 @@ from services.native.explicit_reidentification_worker import (
     ExplicitReidentificationWorker,
 )
 from services.native.target_native_library_service import TargetNativeLibraryService
+from services.native.edition_conversion_service import EditionConversionService
 from services.native.library_contribution_service import LibraryContributionService
 from services.native.target_catalog_writer_service import TargetCatalogWriterService
 from services.native.wanted_watcher_service import WantedWatcherService
@@ -176,6 +177,7 @@ from .service_providers import (
     get_target_library_diagnostics_service,
     get_target_explicit_reidentification_worker,
     get_target_native_library_service,
+    get_edition_conversion_service,
     get_library_contribution_service,
     get_target_catalog_writer_service,
     get_wanted_watcher_service,
@@ -329,6 +331,9 @@ ExplicitReidentificationWorkerDep = Annotated[
 ]
 TargetNativeLibraryServiceDep = Annotated[
     TargetNativeLibraryService, Depends(get_target_native_library_service)
+]
+EditionConversionServiceDep = Annotated[
+    EditionConversionService, Depends(get_edition_conversion_service)
 ]
 LibraryContributionServiceDep = Annotated[
     LibraryContributionService, Depends(get_library_contribution_service)

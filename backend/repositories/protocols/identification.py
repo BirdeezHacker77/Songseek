@@ -7,7 +7,8 @@ from models.identification import AlbumCandidate, ReleaseEditionSearchPage
 class IdentificationProviderProtocol(Protocol):
     async def search_release_editions(
         self,
-        query: str,
+        title: str,
+        artist: str,
         limit: int,
         offset: int,
         priority: RequestPriority,
@@ -15,7 +16,8 @@ class IdentificationProviderProtocol(Protocol):
 
     async def search_album_candidate_ids(
         self,
-        query: str,
+        artist: str,
+        title: str,
         limit: int,
         priority: RequestPriority,
     ) -> list[str]: ...

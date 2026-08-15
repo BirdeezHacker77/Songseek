@@ -1,5 +1,13 @@
 <script lang="ts">
-	import { ArrowLeft, ArrowRight, Disc3, ExternalLink, Search, ShieldCheck } from 'lucide-svelte';
+	import {
+		ArrowLeft,
+		ArrowRight,
+		BadgeCheck,
+		Disc3,
+		ExternalLink,
+		Search,
+		ShieldCheck
+	} from 'lucide-svelte';
 
 	import AlbumImage from '$lib/components/AlbumImage.svelte';
 	import { API } from '$lib/constants';
@@ -10,36 +18,64 @@
 		albumId: string;
 		artistName: string;
 		albumTitle: string;
+		currentReleaseMbid?: string | null;
+		mappedTrackCount?: number;
+		totalTrackCount?: number;
 		oncheck: (releaseMbid: string) => void | Promise<void>;
 		checking?: boolean;
 	}
 
-	let { albumId, artistName, albumTitle, oncheck, checking = false }: Props = $props();
-	let queryInput = $state('');
-	let submittedQuery = $state('');
-	let initialized = $state(false);
+	let {
+		albumId,
+		artistName,
+		albumTitle,
+		currentReleaseMbid = null,
+		mappedTrackCount = 0,
+		totalTrackCount = 0,
+		oncheck,
+		checking = false
+	}: Props = $props();
+	let releaseTitleInput = $state('');
+	let artistInput = $state('');
+	let submittedTitle = $state('');
+	let submittedArtist = $state('');
 	let offset = $state(0);
+	let suggestionsOpen = $state(false);
+	let initialized = $state(false);
+	let releaseTitleField: HTMLInputElement | undefined;
 	let advancedValue = $state('');
 	let advancedAttempted = $state(false);
 
 	const searchQuery = getReleaseEditionSearchQuery(
 		() => authStore.user?.id,
 		() => albumId,
-		() => submittedQuery,
-		() => offset
+		() => submittedTitle,
+		() => submittedArtist,
+		() => offset,
+		() => suggestionsOpen
 	);
 	const result = $derived(searchQuery.data);
+	const currentEdition = $derived(
+		result?.items.find((edition) => edition.is_current_release) ?? null
+	);
+	const suggestedEditions = $derived(
+		result?.items.filter((edition) => !edition.is_current_release) ?? []
+	);
 	const hasPrevious = $derived(offset > 0);
 	const hasNext = $derived(Boolean(result && result.offset + result.items.length < result.total));
+	const musicBrainzQuery = $derived(buildMusicBrainzQuery(submittedTitle, submittedArtist));
 	const musicBrainzSearchUrl = $derived(
-		`https://musicbrainz.org/search?query=${encodeURIComponent(submittedQuery)}&type=release&method=indexed`
+		`https://musicbrainz.org/search?query=${encodeURIComponent(musicBrainzQuery)}&type=release&method=indexed`
 	);
 	const parsedAdvancedMbid = $derived(parseMusicBrainzReleaseId(advancedValue));
 
 	$effect(() => {
 		if (initialized) return;
-		queryInput = `${artistName} ${albumTitle}`.trim();
-		submittedQuery = queryInput;
+		releaseTitleInput = albumTitle;
+		artistInput = artistName;
+		submittedTitle = albumTitle.trim();
+		submittedArtist = artistName.trim();
+		suggestionsOpen = !currentReleaseMbid;
 		initialized = true;
 	});
 
@@ -51,11 +87,26 @@
 		return match?.[1] ?? null;
 	}
 
+	function escapeLucenePhrase(value: string): string {
+		return value.replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, '\\$&');
+	}
+
+	function buildMusicBrainzQuery(title: string, artist: string): string {
+		const release = `release:"${escapeLucenePhrase(title)}"`;
+		return artist ? `${release} AND artist:"${escapeLucenePhrase(artist)}"` : release;
+	}
+
 	function search(): void {
-		const normalized = queryInput.trim();
-		if (!normalized) return;
+		const normalizedTitle = releaseTitleInput.trim();
+		if (!normalizedTitle) return;
 		offset = 0;
-		submittedQuery = normalized;
+		submittedTitle = normalizedTitle;
+		submittedArtist = artistInput.trim();
+	}
+
+	function toggleReplacement(event: Event & { currentTarget: HTMLDetailsElement }): void {
+		suggestionsOpen = event.currentTarget.open;
+		if (suggestionsOpen) requestAnimationFrame(() => releaseTitleField?.focus());
 	}
 
 	function checkAdvanced(): void {
@@ -64,15 +115,7 @@
 	}
 </script>
 
-<section class="edition-finder" aria-labelledby="edition-finder-title">
-	<div class="edition-finder-heading">
-		<div>
-			<p class="identification-kicker">MusicBrainz edition finder</p>
-			<h3 id="edition-finder-title" class="hero-title text-xl font-bold">Search exact releases</h3>
-		</div>
-		<span class="edition-finder-suggestion">Suggestions only</span>
-	</div>
-
+{#snippet editionSuggestions()}
 	<form
 		class="edition-finder-search"
 		onsubmit={(event) => {
@@ -80,12 +123,25 @@
 			search();
 		}}
 	>
-		<label class="input input-bordered flex flex-1 items-center gap-2">
-			<Search class="h-4 w-4 text-base-content/45" />
-			<span class="sr-only">Search MusicBrainz releases</span>
-			<input bind:value={queryInput} autocomplete="off" class="min-w-0 flex-1" />
-		</label>
-		<button class="btn btn-primary" type="submit" disabled={!queryInput.trim()}>Search</button>
+		<div class="edition-finder-fields">
+			<label>
+				<span>Artist <small>optional</small></span>
+				<input class="input input-bordered w-full" bind:value={artistInput} autocomplete="off" />
+			</label>
+			<label>
+				<span>Release title</span>
+				<input
+					class="input input-bordered w-full"
+					bind:this={releaseTitleField}
+					bind:value={releaseTitleInput}
+					autocomplete="off"
+					required
+				/>
+			</label>
+		</div>
+		<button class="btn btn-primary gap-2" type="submit" disabled={!releaseTitleInput.trim()}>
+			<Search class="h-4 w-4" /> Search
+		</button>
 	</form>
 
 	{#if searchQuery.isLoading || searchQuery.isFetching}
@@ -105,27 +161,27 @@
 				onclick={() => void searchQuery.refetch()}>Retry</button
 			>
 		</div>
-	{:else if result && result.items.length === 0}
+	{:else if result && suggestedEditions.length === 0}
 		<div class="edition-finder-state" aria-live="polite">
 			<Disc3 class="h-7 w-7" />
 			<div>
-				<strong>No editions found</strong>
-				<p>Adjust the artist, title, year, label, or catalogue number.</p>
+				<strong>{currentEdition ? 'No different editions found' : 'No editions found'}</strong>
+				<p>Adjust the artist or release title.</p>
 			</div>
 		</div>
 	{:else if result}
 		<div class="edition-finder-list" aria-live="polite">
-			{#each result.items as edition (edition.release_mbid)}
+			{#each suggestedEditions as edition (edition.release_mbid)}
 				<article class="edition-finder-row">
 					<AlbumImage
 						customUrl={API.library.exactReleaseArtwork(edition.release_mbid)}
 						alt={`Cover for ${edition.title}`}
 						size="sm"
-						className="h-16 w-16 border border-base-content/10"
+						className="edition-finder-art border border-base-content/10"
 						retryOnError={false}
 					/>
-					<div class="min-w-0 flex-1">
-						<div class="flex flex-wrap items-baseline gap-x-2">
+					<div class="edition-finder-copy">
+						<div class="edition-finder-title">
 							<strong>{edition.title}</strong>{#if edition.belongs_to_current_release_group}<span
 									class="badge badge-primary badge-sm">Current release group</span
 								>{/if}
@@ -158,7 +214,7 @@
 								{edition.disambiguation}
 							</p>{/if}
 					</div>
-					<div class="flex shrink-0 flex-col items-end gap-1">
+					<div class="edition-finder-action">
 						<span class="text-xs text-base-content/45">{edition.score}% match</span><button
 							class="btn btn-outline btn-sm"
 							disabled={checking}
@@ -209,4 +265,56 @@
 				Enter a MusicBrainz release UUID or canonical release URL.
 			</p>{/if}
 	</details>
+{/snippet}
+
+<section class="edition-finder" aria-labelledby="edition-finder-title">
+	<div class="edition-finder-heading">
+		<div>
+			<p class="identification-kicker">MusicBrainz edition finder</p>
+			<h3 id="edition-finder-title" class="hero-title text-xl font-bold">
+				{currentReleaseMbid ? 'Attached exact release' : 'Search exact releases'}
+			</h3>
+		</div>
+		<span class="edition-finder-suggestion">Catalog only</span>
+	</div>
+
+	{#if currentReleaseMbid}
+		<article class="edition-finder-current">
+			<AlbumImage
+				customUrl={API.library.exactReleaseArtwork(currentReleaseMbid)}
+				alt={`Cover for ${currentEdition?.title ?? albumTitle}`}
+				size="sm"
+				className="edition-finder-current-art border border-base-content/10"
+				retryOnError={false}
+			/>
+			<div class="min-w-0 flex-1">
+				<div class="flex flex-wrap items-center gap-2">
+					<span class="badge badge-success badge-sm gap-1"
+						><BadgeCheck class="h-3 w-3" /> Currently attached</span
+					>
+					<strong class="hero-title truncate">{currentEdition?.title ?? albumTitle}</strong>
+				</div>
+				<p class="mt-1 text-sm text-base-content/60">
+					{currentEdition?.artist_name || artistName || 'Unknown artist'}
+				</p>
+				<p class="mt-1 text-xs text-base-content/50">
+					{mappedTrackCount} of {totalTrackCount} indexed
+					{totalTrackCount === 1 ? 'file' : 'files'} mapped
+				</p>
+			</div>
+			<a
+				class="btn btn-ghost btn-sm"
+				href={`https://musicbrainz.org/release/${currentReleaseMbid}`}
+				target="_blank"
+				rel="noreferrer">MusicBrainz <ExternalLink class="h-4 w-4" /></a
+			>
+		</article>
+
+		<details class="edition-finder-replacement" ontoggle={toggleReplacement}>
+			<summary>Choose a different edition</summary>
+			<div class="edition-finder-replacement-body">{@render editionSuggestions()}</div>
+		</details>
+	{:else}
+		{@render editionSuggestions()}
+	{/if}
 </section>

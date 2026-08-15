@@ -56,6 +56,7 @@ from core.dependencies import (
     LibraryManagementProfileServiceDep,
     LibraryManagementRecoveryServiceDep,
     LibraryManagementUndoServiceDep,
+    EditionConversionServiceDep,
 )
 from core.exceptions import ValidationError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
@@ -519,8 +520,12 @@ async def discard_library_management_preview(
 async def apply_library_management_preview(
     job_id: str,
     service: LibraryManagementPreviewServiceDep,
+    conversion_service: EditionConversionServiceDep,
     request: LibraryManagementApplyRequest = MsgSpecBody(LibraryManagementApplyRequest),
 ) -> OperationResponse:
+    converted = await conversion_service.apply_preview(job_id, request)
+    if converted is not None:
+        return converted
     return await service.apply(job_id, request)
 
 

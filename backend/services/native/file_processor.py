@@ -819,6 +819,22 @@ class FileProcessor:
                 )
 
         if planned:
+            if manifest.origin == "edition_conversion":
+                try:
+                    succeeded.extend(
+                        await self._hold_conversion_bundle(planned, manifest)
+                    )
+                except Exception:  # noqa: BLE001 - an undurable hold preserves source
+                    logger.exception(
+                        "Could not durably hold conversion audio for task %s",
+                        manifest.task_id,
+                    )
+                    failed.extend(
+                        FileFailure(filename=value.source.name, reason=IMPORT_FAILED)
+                        for value in planned
+                    )
+                planned = []
+        if planned:
             try:
                 published = await self._publish_planned_imports(
                     planned,
@@ -855,7 +871,7 @@ class FileProcessor:
                     for value in planned
                 )
 
-        if succeeded:
+        if succeeded and manifest.origin != "edition_conversion":
             # targeted reconcile so new files surface immediately and stale rows in
             # the album dir are cleaned; best-effort, never fails the import
             parents = list({Path(p).parent for p in succeeded})
@@ -981,6 +997,22 @@ class FileProcessor:
                 )
 
         if planned:
+            if manifest.origin == "edition_conversion":
+                try:
+                    succeeded.extend(
+                        await self._hold_conversion_bundle(planned, manifest)
+                    )
+                except Exception:  # noqa: BLE001 - an undurable hold preserves source
+                    logger.exception(
+                        "Could not durably hold conversion folder for task %s",
+                        manifest.task_id,
+                    )
+                    failed.extend(
+                        FileFailure(filename=value.source.name, reason=IMPORT_FAILED)
+                        for value in planned
+                    )
+                planned = []
+        if planned:
             try:
                 published = await self._publish_planned_imports(
                     planned,
@@ -1018,7 +1050,7 @@ class FileProcessor:
                     for value in planned
                 )
 
-        if succeeded:
+        if succeeded and manifest.origin != "edition_conversion":
             parents = list({Path(p).parent for p in succeeded})
             try:
                 await self._library.reconcile_with_filesystem(targets=parents)
@@ -1119,6 +1151,69 @@ class FileProcessor:
                     "Could not remove obsolete held copy %s", _basename(value)
                 )
 
+    async def _hold_conversion_bundle(
+        self,
+        planned: list[_PlannedImport],
+        manifest: DownloadManifest,
+    ) -> list[str]:
+        if self._download_store is None or self._held_dir is None:
+            raise RuntimeError("Edition conversion holding storage is unavailable.")
+        task = await self._download_store.get_task(manifest.task_id)
+        user_id = task.user_id if task is not None else manifest.requested_by_user_id
+        if user_id is None:
+            raise RuntimeError("The conversion acquisition task is unavailable.")
+        self._held_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[Path] = []
+        try:
+            for value in planned:
+                held_path = self._held_dir / f"{uuid4().hex}_{value.source.name}"
+                await asyncio.to_thread(shutil.copy2, value.source, held_path)
+                copied.append(held_path)
+                held_id = await self._download_store.record_held_import(
+                    user_id=user_id,
+                    held_path=str(held_path),
+                    reason="edition_conversion",
+                    reason_detail="Verified for a pending exact-edition conversion.",
+                    source=(task.source or "soulseek")
+                    if task is not None
+                    else "free_music",
+                    origin="edition_conversion",
+                    source_task_id=manifest.task_id,
+                    release_group_mbid=manifest.release_group_mbid,
+                    release_mbid=manifest.release_mbid,
+                    release_track_mbid=value.release_track_mbid,
+                    recording_mbid=value.recording_mbid,
+                    track_number=value.release_track_position or value.tag.track_number,
+                    disc_number=value.medium_position or value.tag.disc_number or 1,
+                    track_title=value.tag.title,
+                    artist_name=manifest.artist_name,
+                    artist_mbid=manifest.artist_mbid,
+                    album_title=manifest.album_title,
+                    year=manifest.year,
+                    original_filename=value.source.name,
+                    file_format=value.info.file_format,
+                    duration_seconds=value.info.duration_seconds,
+                    naming_template=manifest.naming_template,
+                )
+                if held_id is None:
+                    await asyncio.to_thread(held_path.unlink, missing_ok=True)
+                    copied.pop()
+            if not copied:
+                existing = await self._download_store.list_held_imports(
+                    user_id,
+                    "admin",
+                    source_task_id=manifest.task_id,
+                )
+                return [value.held_path for value in existing]
+            return [str(value) for value in copied]
+        except Exception:
+            for path in copied:
+                try:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                except OSError:
+                    logger.warning("Could not compensate conversion hold %s", path.name)
+            raise
+
     async def _place_matched_file(
         self,
         manifest: DownloadManifest,
@@ -1179,7 +1274,16 @@ class FileProcessor:
                 replacement = present
 
         fp = None
-        if self._verify_downloads and self._fingerprinter is not None:
+        conversion_verification = manifest.origin == "edition_conversion"
+        if conversion_verification and self._fingerprinter is None:
+            raise VerificationFailed(
+                "Recording verification is unavailable for this edition conversion",
+                reason="fingerprint_unavailable",
+                filename=source.name,
+            )
+        if (
+            self._verify_downloads or conversion_verification
+        ) and self._fingerprinter is not None:
             fp = await self._fingerprinter.fingerprint(source)
             if _fingerprint_disagrees(fp, track, manifest.artist_name):
                 await self._hold_for_review(
@@ -1199,6 +1303,17 @@ class FileProcessor:
                 raise VerificationFailed(
                     "AcoustID identified a different recording",
                     reason="fingerprint_mismatch",
+                    filename=source.name,
+                )
+            if conversion_verification and (
+                not track.recording_mbid
+                or getattr(fp, "status", None) != "pass"
+                or (getattr(fp, "recording_id", None) or "").casefold()
+                != track.recording_mbid.casefold()
+            ):
+                raise VerificationFailed(
+                    "AcoustID could not prove the requested recording",
+                    reason="fingerprint_unverified",
                     filename=source.name,
                 )
 
@@ -1826,7 +1941,16 @@ class FileProcessor:
         # different ARTIST is rejected. NOT a release-group check - that false-rejects
         # valid reissue/compilation tracks whose AcoustID RG coverage is incomplete.
         fp = None
-        if self._verify_downloads and self._fingerprinter is not None:
+        conversion_verification = manifest.origin == "edition_conversion"
+        if conversion_verification and self._fingerprinter is None:
+            raise VerificationFailed(
+                "Recording verification is unavailable for this edition conversion",
+                reason="fingerprint_unavailable",
+                filename=expected.filename,
+            )
+        if (
+            self._verify_downloads or conversion_verification
+        ) and self._fingerprinter is not None:
             fp = await self._fingerprinter.fingerprint(source)
             if _fingerprint_disagrees(fp, expected_track, manifest.artist_name):
                 await self._hold_for_review(
@@ -1846,6 +1970,18 @@ class FileProcessor:
                 raise VerificationFailed(
                     "AcoustID identified a different recording",
                     reason="fingerprint_mismatch",
+                    filename=expected.filename,
+                )
+            if conversion_verification and (
+                expected_track is None
+                or not expected_track.recording_mbid
+                or getattr(fp, "status", None) != "pass"
+                or (getattr(fp, "recording_id", None) or "").casefold()
+                != expected_track.recording_mbid.casefold()
+            ):
+                raise VerificationFailed(
+                    "AcoustID could not prove the requested recording",
+                    reason="fingerprint_unverified",
                     filename=expected.filename,
                 )
             if (

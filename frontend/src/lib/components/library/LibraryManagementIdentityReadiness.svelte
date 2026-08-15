@@ -86,6 +86,9 @@
 		() => activeTab
 	);
 	const findings = $derived(findingsQuery.data?.pages.flatMap((page) => page.items) ?? []);
+	const findingsMeta = $derived(findingsQuery.data?.pages[0] ?? null);
+	const refreshRequired = $derived(findingsMeta?.refresh_required ?? false);
+	const currentCounts = $derived(findingsMeta?.current_counts_by_finding ?? null);
 	const tabs = [
 		{ id: 'mapping_ready', label: 'Mappings ready' },
 		{ id: 'ready', label: 'Already ready' },
@@ -132,7 +135,7 @@
 	}
 
 	function tabCount(item: OperationResponse, tab: (typeof tabs)[number]['id']): number {
-		const counts = item.repair_summary?.counts_by_finding ?? {};
+		const counts = currentCounts ?? item.repair_summary?.counts_by_finding ?? {};
 		return tab === 'unverifiable'
 			? (counts.unverifiable ?? 0) + (counts.stale ?? 0)
 			: (counts[tab] ?? 0);
@@ -179,6 +182,8 @@
 				SELECTED_RELEASE_UNAVAILABLE: 'Selected edition is unavailable',
 				SELECTED_RELEASE_CONFLICT: 'Selected edition conflicts with the release',
 				CONFLICTING_TRACK_EVIDENCE: 'Track evidence conflicts',
+				RELEASE_TYPE_REQUIRES_CONFIRMATION: 'Compilation or live edition needs confirmation',
+				UNSAFE_RELEASE_TYPE: 'Compilation or live edition needs confirmation',
 				PROVIDER_DEFERRED: 'MusicBrainz could not be reached',
 				IDENTITY_CHANGED: 'Release changed during the check',
 				STALE_SUBJECT: 'Release changed before Apply'
@@ -302,7 +307,7 @@
 					</p>
 				</div>
 				<div class="flex flex-wrap gap-1">
-					{#if report.state === 'ready' && report.repair_summary.mapping_candidate_count > 0}
+					{#if report.state === 'ready' && !refreshRequired && (currentCounts?.mapping_ready ?? report.repair_summary.mapping_candidate_count) > 0}
 						<button
 							class="btn btn-primary btn-sm"
 							onclick={(event) => openConfirmation('apply', event.currentTarget)}
@@ -326,6 +331,12 @@
 				</div>
 			{/if}
 
+			{#if refreshRequired}
+				<div class="alert alert-warning mt-3 text-sm" role="status">
+					These checks used older rules. Run a fresh identity check.
+				</div>
+			{/if}
+
 			<div class="tabs tabs-box mt-4 overflow-x-auto" role="group" aria-label="Identity findings">
 				{#each tabs as tab (tab.id)}
 					<button
@@ -338,6 +349,10 @@
 					>
 				{/each}
 			</div>
+			<p class="mt-3 text-xs leading-5 text-base-content/50">
+				Counts and rows reflect work that is still current. Resolved and superseded findings remain
+				in the audit history.
+			</p>
 
 			{#if findingsQuery.isLoading}
 				<div class="skeleton mt-3 h-20"></div>
@@ -377,9 +392,14 @@
 									{finding.state === 'stale' ? 'Changed after this report' : finding.confidence}
 								</p>
 							</div>
-							{#if activeTab === 'exact_release_required'}
+							{#if !refreshRequired && activeTab === 'exact_release_required'}
 								<IdentityFindingEditionButton albumId={finding.local_album_id} />
-							{:else}
+							{:else if !refreshRequired && activeTab === 'needs_review'}
+								<IdentityFindingEditionButton
+									albumId={finding.local_album_id}
+									label="Re-identify"
+								/>
+							{:else if !refreshRequired}
 								<a
 									class="btn btn-ghost btn-xs"
 									href={`/album/${encodeURIComponent(finding.local_album_id)}`}

@@ -79,10 +79,15 @@ export const LibraryQueryKeyFactory = {
 	album: (mbid: string) => [...LibraryQueryKeyFactory.all, 'album', mbid] as const,
 	albumDetail: (albumId: string) =>
 		[...LibraryQueryKeyFactory.all, 'album-detail', albumId] as const,
+	editionConversionsPrefix: (userId: string | undefined) =>
+		[...LibraryQueryKeyFactory.all, 'edition-conversions', userId ?? 'anonymous'] as const,
+	editionConversion: (userId: string | undefined, jobId: string | null) =>
+		[...LibraryQueryKeyFactory.editionConversionsPrefix(userId), jobId ?? 'inactive'] as const,
 	reidentificationReleases: (
 		userId: string | undefined,
 		albumId: string,
-		q: string,
+		title: string,
+		artist: string,
 		offset: number
 	) =>
 		[
@@ -90,7 +95,8 @@ export const LibraryQueryKeyFactory = {
 			'reidentification-releases',
 			userId ?? 'anonymous',
 			albumId,
-			q,
+			title,
+			artist,
 			offset
 		] as const,
 	albumCopies: (albumId: string) =>

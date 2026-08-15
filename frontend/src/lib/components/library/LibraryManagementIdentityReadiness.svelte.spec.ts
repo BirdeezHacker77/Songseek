@@ -27,6 +27,13 @@ const h = vi.hoisted(() => ({
 		data: {
 			pages: [
 				{
+					current_counts_by_finding: {
+						mapping_ready: 1,
+						ready: 4,
+						exact_release_required: 3,
+						needs_review: 1
+					},
+					refresh_required: false,
 					items: [
 						{
 							id: 'finding-1',
@@ -72,6 +79,13 @@ vi.mock('$lib/queries/library/LibraryIdentityPreparationMutations.svelte', () =>
 vi.mock('$lib/queries/library/LibraryOperationMutations.svelte', () => ({
 	controlLibraryOperation: () => ({ mutateAsync: vi.fn(), isPending: false })
 }));
+vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
+	getLibraryAlbumDetailQuery: () => ({
+		data: undefined,
+		isLoading: false,
+		isError: false
+	})
+}));
 
 import LibraryManagementIdentityReadiness from './LibraryManagementIdentityReadiness.svelte';
 
@@ -105,7 +119,7 @@ function readyReport() {
 			playable_after_detach_track_count: 100,
 			estimated_apply_changes: 12,
 			catalog_snapshot_revision: 4,
-			target_matcher_version: 'management-exact-release-v1',
+			target_matcher_version: 'management-exact-release-v2',
 			counts_by_finding: {
 				mapping_ready: 12,
 				ready: 4,
@@ -135,6 +149,14 @@ beforeEach(() => {
 		isLoading: false,
 		isError: false
 	};
+	h.findings.data.pages[0].current_counts_by_finding = {
+		mapping_ready: 1,
+		ready: 4,
+		exact_release_required: 3,
+		needs_review: 1
+	};
+	h.findings.data.pages[0].refresh_required = false;
+	h.findings.data.pages[0].items[0].reason_code = 'EXACT_RELEASE_MAPPING_SUPPORTED';
 });
 
 describe('LibraryManagementIdentityReadiness', () => {
@@ -165,6 +187,9 @@ describe('LibraryManagementIdentityReadiness', () => {
 		await expect.element(page.getByText('Circa Survive')).toBeVisible();
 		await expect.element(page.getByText('2005')).toBeVisible();
 		await expect.element(page.getByText(/Exact track map verified/)).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: /Mappings ready/ }))
+			.toHaveTextContent('1');
 		await expect
 			.element(page.getByRole('link', { name: 'Open release' }))
 			.toHaveAttribute('href', '/album/album-1');
@@ -202,5 +227,46 @@ describe('LibraryManagementIdentityReadiness', () => {
 			jobId: 'preparation-1',
 			expectedRevision: 7
 		});
+	});
+
+	it('opens re-identification directly from a needs-review finding', async () => {
+		h.preparations = {
+			data: { pages: [{ items: [readyReport()] }] },
+			isLoading: false,
+			isError: false
+		};
+		h.findings.data.pages[0].items[0].reason_code = 'RELEASE_TYPE_REQUIRES_CONFIRMATION';
+		render(LibraryManagementIdentityReadiness, { roots });
+		await page.getByRole('button', { name: /Needs review/ }).click();
+		await expect.element(page.getByRole('button', { name: 'Re-identify' })).toBeVisible();
+		await expect
+			.element(page.getByText('Compilation or live edition needs confirmation'))
+			.toBeVisible();
+		await expect
+			.element(page.getByText(/Counts and rows reflect work that is still current/))
+			.toBeVisible();
+		await expect.element(page.getByRole('link', { name: 'Open release' })).not.toBeInTheDocument();
+	});
+
+	it('requires a fresh check and hides report actions for old matcher rules', async () => {
+		h.preparations = {
+			data: { pages: [{ items: [readyReport()] }] },
+			isLoading: false,
+			isError: false
+		};
+		h.findings.data.pages[0].refresh_required = true;
+		h.findings.data.pages[0].items[0].reason_code = 'UNSAFE_RELEASE_TYPE';
+		render(LibraryManagementIdentityReadiness, { roots });
+
+		await expect
+			.element(page.getByText('These checks used older rules. Run a fresh identity check.'))
+			.toBeVisible();
+		await expect
+			.element(page.getByText('Compilation or live edition needs confirmation'))
+			.toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Accept mappings...' }))
+			.not.toBeInTheDocument();
+		await expect.element(page.getByRole('link', { name: 'Open release' })).not.toBeInTheDocument();
 	});
 });

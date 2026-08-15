@@ -75,7 +75,7 @@ class AlbumCandidateService:
             if checkpoint is not None and not await checkpoint():
                 return []
             for release_group_id in await self._provider.search_album_candidate_ids(
-                f"{artist} {album}", ALBUM_SEARCH_LIMIT, priority
+                artist, album, ALBUM_SEARCH_LIMIT, priority
             ):
                 ids.append((release_group_id, "album_tags"))
             if checkpoint is not None and not await checkpoint():

@@ -81,8 +81,48 @@ const COVERAGE: Array<[string, string, string]> = [
 	['local album detail', API.library.albumDetail('A1'), '/api/v1/library/albums/A1'],
 	[
 		'MusicBrainz edition search',
-		API.library.reidentificationReleases('A1', 'Artist Album'),
-		'/api/v1/library/albums/A1/reidentification/releases?q=Artist+Album&limit=12&offset=0'
+		API.library.reidentificationReleases('A1', 'Album', 'Artist'),
+		'/api/v1/library/albums/A1/reidentification/releases?title=Album&artist=Artist&limit=12&offset=0'
+	],
+	[
+		're-enable album management',
+		API.library.reenableAlbumManagement('A1'),
+		'/api/v1/library/albums/A1/management/re-enable'
+	],
+	[
+		'edition conversion preflight',
+		API.library.editionConversionPreflight('A1'),
+		'/api/v1/library/albums/A1/edition-conversions/preflight'
+	],
+	[
+		'edition conversion status',
+		API.library.editionConversion('J1'),
+		'/api/v1/library/edition-conversions/J1'
+	],
+	[
+		'create edition conversion preview',
+		API.library.editionConversionPreview('J1'),
+		'/api/v1/library/edition-conversions/J1/preview'
+	],
+	[
+		'start edition conversion',
+		API.library.editionConversionStart('J1'),
+		'/api/v1/library/edition-conversions/J1/start'
+	],
+	[
+		'retry edition conversion',
+		API.library.editionConversionRetry('J1'),
+		'/api/v1/library/edition-conversions/J1/retry'
+	],
+	[
+		'recheck edition conversion',
+		API.library.editionConversionRecheck('J1'),
+		'/api/v1/library/edition-conversions/J1/recheck'
+	],
+	[
+		'cancel edition conversion',
+		API.library.editionConversionCancel('J1'),
+		'/api/v1/library/edition-conversions/J1/cancel'
 	],
 	[
 		'exact MusicBrainz release artwork',

@@ -95,6 +95,14 @@ class ProviderIdentityRequiredError(ValidationError):
     error_code = "PROVIDER_IDENTITY_REQUIRED"
 
 
+class ExactReleaseMappingIncompleteError(ValidationError):
+    error_code = "EXACT_RELEASE_MAPPING_INCOMPLETE"
+
+
+class CustomEditionNotSealableError(ValidationError):
+    error_code = "CUSTOM_EDITION_NOT_SEALABLE"
+
+
 class RangeNotSatisfiableError(ValidationError):
     def __init__(self, file_size: int):
         super().__init__("Requested byte range is not satisfiable")

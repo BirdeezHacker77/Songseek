@@ -102,7 +102,7 @@ EXACT_RELEASE_TRACK = "44444444-4444-4444-8444-444444444444"
 
 
 class _IdentificationProvider:
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         return ["rg-explicit"]
 
     async def search_recording_candidate_ids(self, artist, title, limit, priority):
@@ -122,6 +122,7 @@ class _IdentificationProvider:
                     position=1,
                     absolute_position=1,
                     recording_mbid="recording-explicit",
+                    release_track_mbid="release-track-explicit",
                 )
             ],
         )
@@ -136,9 +137,9 @@ class _CountingIdentificationProvider(_IdentificationProvider):
     def __init__(self) -> None:
         self.calls = 0
 
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         self.calls += 1
-        return await super().search_album_candidate_ids(query, limit, priority)
+        return await super().search_album_candidate_ids(artist, title, limit, priority)
 
 
 class _RepairProvider(_IdentificationProvider):
@@ -187,11 +188,13 @@ class _CanonicalReleaseProvider:
         unavailable: bool = False,
         recording_redirects: dict[str, str] | None = None,
         recording_unavailable: bool = False,
+        secondary_types: tuple[str, ...] = (),
     ) -> None:
         self.conflict = conflict
         self.unavailable = unavailable
         self.recording_redirects = recording_redirects or {}
         self.recording_unavailable = recording_unavailable
+        self.secondary_types = secondary_types
         self.calls: list[str] = []
         self.recording_calls: list[str] = []
 
@@ -230,7 +233,12 @@ class _CanonicalReleaseProvider:
                     ],
                 )
             ],
-            release_group=MbManagementReleaseGroup(id="rg-1", title="Album 1"),
+            release_group=MbManagementReleaseGroup(
+                id="rg-1",
+                title="Album 1",
+                primary_type="Album",
+                secondary_types=list(self.secondary_types),
+            ),
         )
 
     async def resolve_recording_mbid(self, recording_mbid, *, priority):
@@ -287,15 +295,15 @@ class _FlakyIdentificationProvider(_IdentificationProvider):
     def __init__(self) -> None:
         self.calls = 0
 
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         self.calls += 1
         if self.calls == 1:
             raise ExternalServiceError("temporary private provider failure")
-        return await super().search_album_candidate_ids(query, limit, priority)
+        return await super().search_album_candidate_ids(artist, title, limit, priority)
 
 
 class _FingerprintIdentificationProvider(_IdentificationProvider):
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         return ["rg-a", "rg-b"]
 
     async def search_recording_candidate_ids(self, artist, title, limit, priority):
@@ -319,6 +327,7 @@ class _FingerprintIdentificationProvider(_IdentificationProvider):
                     position=1,
                     absolute_position=1,
                     recording_mbid=f"recording-{release_group_mbid}",
+                    release_track_mbid=f"release-track-{release_group_mbid}",
                 )
             ],
         )
@@ -360,9 +369,9 @@ class _ExactOverrideProvider(_IdentificationProvider):
         self.exact_calls: list[str] = []
         self.search_calls = 0
 
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         self.search_calls += 1
-        return await super().search_album_candidate_ids(query, limit, priority)
+        return await super().search_album_candidate_ids(artist, title, limit, priority)
 
     async def search_recording_candidate_ids(self, artist, title, limit, priority):
         self.search_calls += 1
@@ -392,13 +401,14 @@ class _ContradictoryFingerprintProvider(_IdentificationProvider):
                     position=1,
                     absolute_position=1,
                     recording_mbid="recording-explicit",
+                    release_track_mbid="release-track-explicit",
                 )
             ],
         )
 
 
 class _LegacyTrackIdentityProvider(_IdentificationProvider):
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         return ["rg-1"]
 
     async def search_recording_candidate_ids(self, artist, title, limit, priority):
@@ -429,7 +439,7 @@ class _ExistingIdentityConflictProvider(_LegacyTrackIdentityProvider):
         self.release_group_mbid = release_group_mbid
         self.release_mbid = release_mbid
 
-    async def search_album_candidate_ids(self, query, limit, priority):
+    async def search_album_candidate_ids(self, artist, title, limit, priority):
         return [self.release_group_mbid]
 
     async def search_recording_candidate_ids(self, artist, title, limit, priority):
@@ -3573,7 +3583,7 @@ async def test_confirmed_incomplete_exact_map_is_rejected_without_identity_chang
     assert claimed is not None
     ready = await worker.run_claimed(claimed, "worker", now=3)
 
-    with pytest.raises(ValidationError, match="map every indexed track uniquely"):
+    with pytest.raises(ValidationError, match="does not map every local file uniquely"):
         await worker.select_candidate(
             created["id"],
             expected_job_revision=int(ready["row_revision"]),
@@ -3590,6 +3600,159 @@ async def test_confirmed_incomplete_exact_map_is_rejected_without_identity_chang
         "track-1-1": "recording-track-1-1",
         "track-1-2": "recording-track-1-2",
     }
+
+
+@pytest.mark.asyncio
+async def test_custom_edition_seals_local_only_tracks_and_every_reseal_is_immutable(
+    store: NativeLibraryStore,
+    db_path: Path,
+) -> None:
+    await _seed_album(store, "1", two_tracks=True)
+    candidate = AlbumCandidate(
+        release_group_mbid=EXACT_GROUP,
+        release_mbid=EXACT_RELEASE,
+        album_title="Album 1",
+        album_artist_name="Artist 1",
+        tracks=[
+            CandidateTrack(
+                title="Track 1",
+                position=1,
+                absolute_position=1,
+                recording_mbid=EXACT_RECORDING,
+                release_track_mbid=EXACT_RELEASE_TRACK,
+            )
+        ],
+    )
+    worker = ExplicitReidentificationWorker(
+        store,
+        AlbumCandidateService(_ExactOverrideProvider(candidate=candidate)),
+        AlbumEvidenceEngine(),
+    )
+
+    async def seal(idempotency_key: str, now: float) -> None:
+        created = await ReidentificationService(store).create_or_coalesce(
+            "album-1",
+            "admin",
+            release_mbid=EXACT_RELEASE,
+            idempotency_key=idempotency_key,
+            now=now,
+        )
+        claimed = await store.claim_operation_job(
+            "worker",
+            now=now + 1,
+            lease_seconds=60,
+            kind="explicit_reidentification",
+        )
+        assert claimed is not None
+        ready = await worker.run_claimed(claimed, "worker", now=now + 2)
+        selected = await worker.select_candidate(
+            created["id"],
+            expected_job_revision=int(ready["row_revision"]),
+            candidate_key=f"{EXACT_GROUP}:{EXACT_RELEASE}",
+            confirmation=True,
+            actor_user_id="admin",
+            decision_mode="custom_edition",
+            now=now + 3,
+        )
+        assert selected["terminal_code"] == "CUSTOM_EDITION_SEALED"
+
+    await seal("custom-first", 10)
+    first = await store.get_custom_edition_state("album-1")
+    assert first is not None
+    assert first.manifest.version == 1
+    assert len(first.manifest.tracks) == 2
+    assert first.recognized_track_count == 1
+    assert first.stale is False
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    assert context["identity"]["release_mbid"] is None
+    assert all(value["release_track_mbid"] is None for value in context["tracks"])
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE local_tracks SET title='Locally renamed',title_folded='locally renamed',"
+            "row_revision=row_revision+1 WHERE id='track-1-1'"
+        )
+    stale = await store.get_custom_edition_state("album-1")
+    assert stale is not None
+    assert stale.stale is True
+
+    await seal("custom-second", 20)
+    second = await store.get_custom_edition_state("album-1")
+    assert second is not None
+    assert second.manifest.version == 2
+    assert second.manifest.id != first.manifest.id
+    assert second.stale is False
+    assert second.manifest.tracks[0].title == "Locally renamed"
+
+
+@pytest.mark.asyncio
+async def test_leave_unmanaged_retains_truthful_group_and_can_be_reenabled(
+    store: NativeLibraryStore,
+) -> None:
+    await _seed_album(store, "1")
+    candidate = AlbumCandidate(
+        release_group_mbid=EXACT_GROUP,
+        release_mbid=EXACT_RELEASE,
+        album_title="Album 1",
+        album_artist_name="Artist 1",
+        tracks=[
+            CandidateTrack(
+                title="Track 1",
+                position=1,
+                absolute_position=1,
+                recording_mbid=EXACT_RECORDING,
+                release_track_mbid=EXACT_RELEASE_TRACK,
+            )
+        ],
+    )
+    created = await ReidentificationService(store).create_or_coalesce(
+        "album-1",
+        "admin",
+        release_mbid=EXACT_RELEASE,
+        idempotency_key="leave-unmanaged",
+        now=10,
+    )
+    worker = ExplicitReidentificationWorker(
+        store,
+        AlbumCandidateService(_ExactOverrideProvider(candidate=candidate)),
+        AlbumEvidenceEngine(),
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=11, lease_seconds=60, kind="explicit_reidentification"
+    )
+    assert claimed is not None
+    ready = await worker.run_claimed(claimed, "worker", now=12)
+
+    selected = await worker.select_candidate(
+        created["id"],
+        expected_job_revision=int(ready["row_revision"]),
+        candidate_key=f"{EXACT_GROUP}:{EXACT_RELEASE}",
+        confirmation=True,
+        actor_user_id="admin",
+        decision_mode="leave_unmanaged",
+        now=13,
+    )
+
+    assert selected["terminal_code"] == "LEFT_UNMANAGED"
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    assert context["identity"]["release_group_mbid"] == EXACT_GROUP
+    assert context["identity"]["release_mbid"] is None
+    assert context["tracks"][0]["recording_mbid"] is None
+    exclusion = await store.get_management_exclusion("album-1")
+    assert exclusion is not None
+    assert exclusion.reason == "administrator_choice"
+
+    reenabled = await store.clear_management_exclusion(
+        "album-1",
+        expected_row_revision=exclusion.row_revision,
+        actor_user_id="admin",
+        now=14,
+    )
+
+    assert reenabled is True
+    assert await store.get_management_exclusion("album-1") is None
 
 
 @pytest.mark.asyncio
@@ -4474,7 +4637,7 @@ async def test_repair_dry_run_and_apply_detach_only_complete_hard_failure(
     assert ready.repair_summary.playable_after_detach_track_count == 1
     assert ready.repair_summary.estimated_apply_changes == 1
     assert ready.repair_summary.catalog_snapshot_revision >= 1
-    assert ready.repair_summary.target_matcher_version == "feedback-fixes-v1"
+    assert ready.repair_summary.target_matcher_version == "feedback-fixes-v2"
     assert findings.items[0].finding_code == "safe_detach"
     assert findings.items[0].apply_eligible is True
     apply_job = await repair.begin_apply(
@@ -4671,7 +4834,7 @@ async def test_repair_audit_generates_missing_evidence_and_provider_failure_is_u
             "SELECT trigger, matcher_version FROM library_identification_attempts "
             "WHERE local_album_id = 'album-1' AND trigger = 'repair_audit'"
         ).fetchone()
-    assert generated == ("repair_audit", "feedback-fixes-v1")
+    assert generated == ("repair_audit", "feedback-fixes-v2")
 
     await _seed_album(store, "2")
     context = await store.get_album_identification_context("album-2")
@@ -5002,6 +5165,85 @@ async def test_management_identity_preparation_maps_only_the_accepted_exact_rele
 
 
 @pytest.mark.asyncio
+async def test_management_findings_hide_changed_identities_but_keep_audit_history(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    preparation = IdentityRepairService(
+        store, canonical_provider=_CanonicalReleaseProvider()
+    )
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(idempotency_key="current-findings"),
+        "admin",
+        now=3,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    await preparation.run_claimed_audit(claimed, "worker", now=5)
+
+    current = await preparation.findings(created.id)
+    assert current.current_counts_by_finding == {"mapping_ready": 1}
+    assert [item.local_album_id for item in current.items] == ["album-1"]
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE local_album_external_identities "
+            "SET row_revision = row_revision + 1 WHERE local_album_id = 'album-1'"
+        )
+
+    superseded = await preparation.findings(created.id)
+    assert superseded.items == []
+    assert superseded.current_counts_by_finding == {}
+    with sqlite3.connect(db_path) as connection:
+        audit_row = connection.execute(
+            "SELECT finding_code, state FROM library_identity_repair_findings "
+            "WHERE job_id = ? AND local_album_id = 'album-1'",
+            (created.id,),
+        ).fetchone()
+    assert audit_row == ("mapping_ready", "open")
+
+
+@pytest.mark.asyncio
+async def test_old_management_report_requires_a_fresh_identity_check(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    preparation = IdentityRepairService(
+        store, canonical_provider=_CanonicalReleaseProvider()
+    )
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(idempotency_key="old-rules-report"),
+        "admin",
+        now=3,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    ready = await preparation.run_claimed_audit(claimed, "worker", now=5)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE library_repair_snapshots "
+            "SET target_matcher_version = 'management-exact-release-v1' "
+            "WHERE job_id = ?",
+            (created.id,),
+        )
+
+    findings = await preparation.findings(created.id)
+    assert findings.refresh_required is True
+    assert findings.items
+    with pytest.raises(ValidationError, match="older rules"):
+        await preparation.begin_management_preparation_apply(
+            created.id,
+            expected_row_revision=ready.row_revision,
+            confirmation=True,
+            now=6,
+        )
+
+
+@pytest.mark.asyncio
 async def test_operation_supervisor_renews_long_identity_audit_leases(
     store: NativeLibraryStore,
     monkeypatch: pytest.MonkeyPatch,
@@ -5126,6 +5368,80 @@ async def test_management_identity_preparation_provider_verifies_a_complete_mapp
     assert ready.repair_summary.estimated_apply_changes == 0
     assert finding.reason_code == "EXACT_RELEASE_MAPPINGS_VERIFIED"
     assert finding.apply_eligible is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secondary_type", ["Compilation", "Live"])
+@pytest.mark.parametrize("identity_source", ["manual", "legacy_import"])
+async def test_management_readiness_accepts_complete_special_release_mappings(
+    store: NativeLibraryStore,
+    db_path: Path,
+    secondary_type: str,
+    identity_source: str,
+) -> None:
+    await _seed_album(store, "1", identity_source=identity_source)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE local_track_external_identities SET "
+            "release_track_mbid='release-track-1', medium_position=1, "
+            "release_track_position=1 WHERE local_track_id='track-1-1'"
+        )
+    preparation = IdentityRepairService(
+        store,
+        canonical_provider=_CanonicalReleaseProvider(secondary_types=(secondary_type,)),
+    )
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(
+            idempotency_key=f"complete-{identity_source}-{secondary_type.casefold()}"
+        ),
+        "admin",
+        now=3,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+
+    ready = await preparation.run_claimed_audit(claimed, "worker", now=5)
+    findings = await preparation.findings(created.id, finding_category="ready")
+
+    assert ready.repair_summary is not None
+    assert ready.repair_summary.ready_album_count == 1
+    assert findings.current_counts_by_finding == {"ready": 1}
+    assert findings.items[0].reason_code == "EXACT_RELEASE_MAPPINGS_VERIFIED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secondary_type", ["Compilation", "Live"])
+async def test_manual_special_release_without_a_complete_map_still_needs_review(
+    store: NativeLibraryStore,
+    secondary_type: str,
+) -> None:
+    await _seed_album(store, "1", identity_source="manual")
+    preparation = IdentityRepairService(
+        store,
+        canonical_provider=_CanonicalReleaseProvider(secondary_types=(secondary_type,)),
+    )
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(
+            idempotency_key=f"incomplete-manual-{secondary_type.casefold()}"
+        ),
+        "admin",
+        now=3,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+
+    ready = await preparation.run_claimed_audit(claimed, "worker", now=5)
+    findings = await preparation.findings(created.id, finding_category="needs_review")
+
+    assert ready.repair_summary is not None
+    assert ready.repair_summary.needs_review_count == 1
+    assert findings.current_counts_by_finding == {"needs_review": 1}
+    assert findings.items[0].reason_code == "RELEASE_TYPE_REQUIRES_CONFIRMATION"
+    assert findings.items[0].apply_eligible is False
 
 
 @pytest.mark.asyncio
@@ -5348,11 +5664,15 @@ async def test_management_identity_preparation_skips_changed_redirect_alias_at_a
     assert context is not None
     assert context["tracks"][0]["recording_mbid"] == "different-retired-recording"
     assert context["tracks"][0]["release_track_mbid"] is None
-    finding = (
-        await preparation.findings(created.id, finding_category="unverifiable")
-    ).items[0]
-    assert finding.state == "stale"
-    assert finding.apply_result == "STALE_SUBJECT"
+    findings = await preparation.findings(created.id, finding_category="unverifiable")
+    assert findings.items == []
+    with sqlite3.connect(db_path) as connection:
+        audit_row = connection.execute(
+            "SELECT state, apply_result FROM library_identity_repair_findings "
+            "WHERE job_id = ? AND local_album_id = 'album-1'",
+            (created.id,),
+        ).fetchone()
+    assert audit_row == ("stale", "STALE_SUBJECT")
 
 
 @pytest.mark.asyncio
@@ -5868,11 +6188,15 @@ async def test_management_identity_preparation_skips_a_changed_album_at_apply(
     context = await store.get_album_identification_context("album-1")
     assert context is not None
     assert context["tracks"][0]["release_track_mbid"] is None
-    finding = (
-        await preparation.findings(created.id, finding_category="unverifiable")
-    ).items[0]
-    assert finding.state == "stale"
-    assert finding.apply_result == "STALE_SUBJECT"
+    findings = await preparation.findings(created.id, finding_category="unverifiable")
+    assert findings.items == []
+    with sqlite3.connect(db_path) as connection:
+        audit_row = connection.execute(
+            "SELECT state, apply_result FROM library_identity_repair_findings "
+            "WHERE job_id = ? AND local_album_id = 'album-1'",
+            (created.id,),
+        ).fetchone()
+    assert audit_row == ("stale", "STALE_SUBJECT")
 
 
 @pytest.mark.asyncio

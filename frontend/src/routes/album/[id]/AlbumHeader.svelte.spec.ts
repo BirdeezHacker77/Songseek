@@ -57,7 +57,19 @@ const localAlbum: LibraryAlbumDetail = {
 	input_revision: 'input-4',
 	identification_status: 'identified',
 	review_id: null,
-	review_revision: null
+	review_revision: null,
+	management_identity_readiness: 'ready',
+	mapped_track_count: 20,
+	management_identity_kind: 'exact_release',
+	custom_manifest_id: null,
+	custom_manifest_version: null,
+	custom_manifest_track_count: 0,
+	custom_manifest_recognized_track_count: 0,
+	custom_manifest_stale: false,
+	management_excluded: false,
+	management_exclusion_revision: null,
+	management_excluded_at: null,
+	active_edition_conversion: null
 };
 
 vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
@@ -84,12 +96,26 @@ vi.mock('$lib/queries/library/LibraryEditionQueries.svelte', () => ({
 
 vi.mock('$lib/queries/library/LibraryCatalogMutations.svelte', () => ({
 	reidentifyLibraryAlbum: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false }),
+	reenableAlbumManagement: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false }),
 	selectReidentificationCandidate: () => ({
 		mutateAsync: vi.fn(),
 		isPending: false,
 		isError: false
 	})
 }));
+
+vi.mock('$lib/queries/library/EditionConversionQueries.svelte', () => {
+	const mutation = () => ({ mutateAsync: vi.fn(), isPending: false, reset: vi.fn() });
+	return {
+		getEditionConversionQuery: () => ({ data: undefined, refetch: vi.fn() }),
+		createEditionConversionPreflight: mutation,
+		createEditionConversionPreview: mutation,
+		startEditionConversion: mutation,
+		retryEditionConversion: mutation,
+		recheckEditionConversion: mutation,
+		cancelEditionConversion: mutation
+	};
+});
 
 vi.mock('$lib/queries/library/LibraryOperationMutations.svelte', () => ({
 	controlLibraryOperation: () => ({ mutateAsync: vi.fn() })
