@@ -46,8 +46,10 @@ describe('coverWarmCoordinator', () => {
 
 		await vi.advanceTimersByTimeAsync(3000);
 		expect(mockGet).toHaveBeenCalledTimes(2);
-		expect(first.at(-1)).toMatchObject({ status: 'ready' });
-		expect(second.at(-1)).toEqual(first.at(-1));
+		await vi.waitFor(() => {
+			expect(first.at(-1)).toMatchObject({ status: 'ready' });
+			expect(second.at(-1)).toEqual(first.at(-1));
+		});
 
 		stopFirst();
 		stopSecond();
