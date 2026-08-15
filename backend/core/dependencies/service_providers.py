@@ -496,6 +496,7 @@ def get_target_album_identification_service() -> "AlbumIdentificationService":
     from services.native.conditional_fingerprint_service import (
         ConditionalFingerprintService,
     )
+    from repositories.musicbrainz_base import mb_circuit_breaker
 
     from .cache_providers import get_native_library_store
 
@@ -519,6 +520,7 @@ def get_target_album_identification_service() -> "AlbumIdentificationService":
         ConditionalFingerprintService(store, get_audio_fingerprinter()),
         invalidate,
         _schedule_identified_album_work,
+        provider_available=lambda: not mb_circuit_breaker.is_open(),
     )
 
 

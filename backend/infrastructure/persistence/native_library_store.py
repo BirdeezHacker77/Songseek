@@ -1248,6 +1248,7 @@ class NativeLibraryStore(PersistenceBase):
                 "ALTER TABLE library_management_import_journal ADD COLUMN baseline_ancillary_snapshot_json TEXT NOT NULL DEFAULT '[]'",
                 "ALTER TABLE library_management_import_journal ADD COLUMN baseline_file_mtime_ns INTEGER",
                 "ALTER TABLE library_management_import_journal ADD COLUMN baseline_file_mode INTEGER",
+                "ALTER TABLE library_operation_jobs ADD COLUMN next_attempt_at REAL",
             ):
                 try:
                     connection.execute(statement)
@@ -14902,6 +14903,7 @@ class NativeLibraryStore(PersistenceBase):
         input_revision: str,
         reason_code: str,
         now: float,
+        retry_not_before: float | None = None,
     ) -> dict[str, Any]:
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
             work_update = connection.execute(
@@ -14928,10 +14930,11 @@ class NativeLibraryStore(PersistenceBase):
             updated = connection.execute(
                 "UPDATE library_operation_jobs SET state = 'queued', lease_owner = NULL, "
                 "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
+                "next_attempt_at = ?, "
                 "row_revision = row_revision + 1, event_revision = event_revision + 1 "
                 "WHERE id = ? AND kind = 'repair' AND state = 'running' "
                 "AND lease_owner = ? RETURNING *",
-                (now, job_id, worker_id),
+                (now, retry_not_before, job_id, worker_id),
             ).fetchone()
             if updated is None:
                 raise StaleRevisionError(
@@ -26556,14 +26559,16 @@ class NativeLibraryStore(PersistenceBase):
             candidate = connection.execute(
                 "SELECT id, row_revision FROM library_operation_jobs "
                 f"WHERE state = 'queued' {kind_clause} "
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
                 "ORDER BY updated_at, created_at, id LIMIT 1",
-                parameters,
+                (*parameters, now),
             ).fetchone()
             if candidate is None:
                 return None
             updated = connection.execute(
                 "UPDATE library_operation_jobs SET state = 'running', started_at = COALESCE(started_at, ?), "
                 "lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, updated_at = ?, "
+                "next_attempt_at = NULL, "
                 "row_revision = row_revision + 1, event_revision = event_revision + 1 "
                 "WHERE id = ? AND state = 'queued' AND row_revision = ? AND row_revision < ? "
                 "AND event_revision < ? RETURNING *",
