@@ -63,6 +63,7 @@ from models.audio_metadata import (
     AudioWritePolicy,
     DesiredAudioDocument,
     DesiredAudioField,
+    SemanticTagSnapshot,
 )
 from models.library_management import (
     BUNDLE_BLOCKED,
@@ -781,8 +782,29 @@ async def test_automatic_import_commits_identity_baseline_undo_and_history(
     operation_snapshot = await store.get_library_management_job_snapshot(
         str(operations[0]["id"])
     )
-    assert (root / request.destination_relative_path).is_file()
+    before_snapshot = await store.get_management_operation_snapshot(
+        str(operations[0]["id"]), 0, track_id
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        bundle_id = str(
+            connection.execute(
+                "SELECT id FROM library_management_import_bundles "
+                "WHERE idempotency_key=?",
+                (bundle.idempotency_key,),
+            ).fetchone()[0]
+        )
+    journals = await store.list_library_management_import_journals(bundle_id)
     assert baseline is not None
+    decoded_baseline = msgspec.json.decode(
+        await blobs.read_bytes(baseline.semantic_snapshot_blob_sha256),
+        type=SemanticTagSnapshot,
+    )
+    assert (root / request.destination_relative_path).is_file()
+    assert baseline.image_snapshot_json == "[]"
+    assert before_snapshot is not None
+    assert before_snapshot.image_snapshot_json == "[]"
+    assert [journal.baseline_image_snapshot_json for journal in journals] == ["[]"]
+    assert decoded_baseline.artwork == original_snapshot.artwork
     assert baseline.original_relative_path == "Incoming/01 Original.flac"
     ancillary = json.loads(baseline.ancillary_snapshot_json)
     assert {value["kind"] for value in ancillary} == {"external_art", "sidecar"}
@@ -2303,6 +2325,7 @@ async def test_publisher_moves_validated_real_audio_and_is_idempotent(
     root, source, store, audio, publisher, job_id = await _ready_apply_operation(
         tmp_path
     )
+    original_snapshot = audio.snapshot(source)
 
     result = await publisher.publish_bundle(job_id, 0, "apply-worker")
     repeated = await publisher.publish_bundle(job_id, 0, "apply-worker")
@@ -2314,10 +2337,23 @@ async def test_publisher_moves_validated_real_audio_and_is_idempotent(
     document = audio.read(destination)
     row = await store.get_target_track("track-1")
     journals = await store.list_file_mutation_journals_for_bundle(job_id, 0)
+    baseline = await store.get_management_baseline("track-1")
+    before_snapshot = await store.get_management_operation_snapshot(
+        job_id, 0, "track-1"
+    )
+    assert baseline is not None
+    decoded_baseline = msgspec.json.decode(
+        await publisher._blobs.read_bytes(baseline.semantic_snapshot_blob_sha256),
+        type=SemanticTagSnapshot,
+    )
     assert result.catalog_revision == repeated.catalog_revision == 1
     assert source.exists() is False
     assert destination.is_file()
     assert document.metadata.value_for("title") == "Aria"
+    assert baseline.image_snapshot_json == "[]"
+    assert before_snapshot is not None
+    assert before_snapshot.image_snapshot_json == "[]"
+    assert decoded_baseline.artwork == original_snapshot.artwork
     assert row is not None
     assert row["relative_path"] == destination.relative_to(root).as_posix()
     assert (

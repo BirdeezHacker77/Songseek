@@ -55,6 +55,13 @@ def test_migration_is_idempotent(tmp_path: Path):
         held_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(held_imports)").fetchall()
         }
+        activity_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name LIKE 'download_activity_%'"
+            ).fetchall()
+        }
     assert {
         "preferred_quality_fallback_at",
         "quality_pool_key",
@@ -73,6 +80,28 @@ def test_migration_is_idempotent(tmp_path: Path):
         "management_next_retry_at",
         "file_cleanup_completed_at",
     } <= held_columns
+    assert activity_tables == {
+        "download_activity_global_revision",
+        "download_activity_user_revisions",
+    }
+
+
+def test_search_link_activity_trigger_is_added_to_existing_schema(tmp_path: Path):
+    db_path = tmp_path / "library.db"
+    lock = threading.Lock()
+    DownloadStore(db_path=db_path, write_lock=lock)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TRIGGER download_activity_task_search_link")
+        conn.commit()
+
+    DownloadStore(db_path=db_path, write_lock=lock)
+
+    with sqlite3.connect(db_path) as conn:
+        trigger = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+            ("download_activity_task_search_link",),
+        ).fetchone()
+    assert trigger == ("download_activity_task_search_link",)
 
 
 @pytest.mark.asyncio
@@ -213,6 +242,71 @@ async def test_list_tasks_filters_by_release_group(store):
     # no release-group filter -> all of user-a's tasks
     all_a = await store.list_tasks(user_id="user-a", user_role="user")
     assert len(all_a) == 2
+
+
+@pytest.mark.asyncio
+async def test_activity_summary_is_scoped_and_ignores_progress_only_updates(store):
+    user_task = await store.create_task(
+        user_id="user-a",
+        release_group_mbid="rg-a",
+        artist_name="A",
+        album_title="One",
+    )
+    await store.create_task(
+        user_id="user-b",
+        release_group_mbid="rg-b",
+        artist_name="B",
+        album_title="Two",
+        status="failed",
+    )
+
+    initial = await store.get_activity_summary("user-a", "user")
+    assert initial.active_count == 1
+    assert initial.failed_count == 0
+    assert initial.held_count == 0
+    assert initial.landed_release_group_mbids == []
+
+    await store.update_progress(
+        user_task.id,
+        bytes_downloaded=1,
+        files_completed=0,
+        progress_percent=1,
+    )
+    after_progress = await store.get_activity_summary("user-a", "user")
+    assert after_progress.revision == initial.revision
+
+    search = await store.create_search_job(
+        "user-a", "A", "One", None, None, "rg-a", "A - One"
+    )
+    await store.set_search_job_id_and_candidate(user_task.id, search.id, None)
+    awaiting_review = await store.get_activity_summary("user-a", "user")
+    assert awaiting_review.revision == initial.revision + 1
+    assert awaiting_review.active_count == initial.active_count
+
+    await store.update_status(user_task.id, "completed", completed_at=1234.5)
+    completed = await store.get_activity_summary("user-a", "user")
+    assert completed.revision == awaiting_review.revision + 1
+    assert completed.active_count == 0
+    assert completed.landed_release_group_mbids == ["rg-a"]
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "INSERT INTO held_imports "
+            "(user_id, held_path, reason, source, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'held', ?)",
+            ("user-a", "/isolated/test.flac", "duration_mismatch", "soulseek", 1.0),
+        )
+        conn.commit()
+
+    held = await store.get_activity_summary("user-a", "user")
+    assert held.revision == completed.revision + 1
+    assert held.held_count == 1
+
+    admin = await store.get_activity_summary("admin-1", "admin")
+    assert admin.active_count == 0
+    assert admin.failed_count == 1
+    assert admin.held_count == 1
+    assert set(admin.landed_release_group_mbids) == {"rg-a"}
 
 
 @pytest.mark.asyncio

@@ -1730,6 +1730,7 @@ async def test_identification_claim_is_atomic_and_active_dedupe_is_unique(
     store: NativeLibraryStore,
 ) -> None:
     await store.create_catalog_membership(_membership())
+    wake_revision = store.work_wakeups.revision("identification")
     first_id = await store.enqueue_identification_job(
         IdentificationJob(
             id="job-1", dedupe_key="album-1:input-1", local_album_id="album-1"
@@ -1746,6 +1747,7 @@ async def test_identification_claim_is_atomic_and_active_dedupe_is_unique(
     )
 
     assert first_id == second_id == "job-1"
+    assert store.work_wakeups.revision("identification") == wake_revision + 2
     assert len([claim for claim in claims if claim is not None]) == 1
     assert await store.get_stream_revision("identification") == 1
 
@@ -1833,6 +1835,7 @@ async def test_operation_materialization_claim_heartbeat_recovery_and_work_compl
     store: NativeLibraryStore, db_path: Path
 ) -> None:
     await store.create_catalog_membership(_membership())
+    wake_revision = store.work_wakeups.revision("operation")
     await store.create_operation_with_work(
         OperationJob(id="operation-1", kind="repair", created_at=1),
         [
@@ -1846,6 +1849,7 @@ async def test_operation_materialization_claim_heartbeat_recovery_and_work_compl
             )
         ],
     )
+    assert store.work_wakeups.revision("operation") == wake_revision + 1
     claim = await store.claim_operation_job("worker", now=1, lease_seconds=10)
     assert claim is not None
     assert await store.heartbeat_operation_job(
@@ -1875,6 +1879,39 @@ async def test_operation_materialization_claim_heartbeat_recovery_and_work_compl
         )
         == 1
     )
+
+
+@pytest.mark.asyncio
+async def test_start_repair_apply_wakes_sleeping_operation_worker(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO library_operation_jobs "
+            "(id, kind, state, created_at, updated_at) "
+            "VALUES ('repair-apply-1', 'repair', 'ready', 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO library_repair_snapshots "
+            "(job_id, scope_json, target_matcher_version, created_at) "
+            "VALUES ('repair-apply-1', '{}', 'matcher-1', 1)"
+        )
+        connection.commit()
+    revision = store.work_wakeups.revision("operation")
+    waiting = asyncio.create_task(
+        store.work_wakeups.wait(
+            "operation", after_revision=revision, timeout_seconds=1.0
+        )
+    )
+    await asyncio.sleep(0)
+
+    job = await store.start_repair_apply(
+        "repair-apply-1", expected_row_revision=1, now=2
+    )
+
+    assert job["state"] == "queued"
+    assert await waiting is True
+    assert store.work_wakeups.revision("operation") == revision + 1
 
 
 @pytest.mark.asyncio

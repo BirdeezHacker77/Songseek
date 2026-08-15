@@ -18,6 +18,7 @@
 		applyArtistEnrichment,
 		applyAlbumEnrichment
 	} from '$lib/utils/enrichment';
+	import { createSearchEnrichmentBatcher } from '$lib/utils/searchEnrichmentBatcher';
 	import { isAbortError } from '$lib/utils/errorHandling';
 	import { api } from '$lib/api/client';
 	import { Check, ArrowRight } from 'lucide-svelte';
@@ -38,7 +39,6 @@
 	let hasSearched = $state(false);
 	let showToast = $state(false);
 	let abortController: AbortController | null = null;
-	let enrichmentController: AbortController | null = null;
 	let enrichmentSource: EnrichmentSource = $state('none');
 
 	let isSearching = $derived(loadingArtists || loadingAlbums);
@@ -64,44 +64,18 @@
 		}, 3000);
 	}
 
-	async function fetchEnrichment() {
-		if (artists.length === 0 && albums.length === 0) return;
-
-		if (enrichmentController) {
-			enrichmentController.abort();
-		}
-		enrichmentController = new AbortController();
-
-		const artistRequests = artists.map((a) => ({
-			musicbrainz_id: a.musicbrainz_id,
-			name: a.title
-		}));
-		const albumRequests = albums.map((a) => ({
-			musicbrainz_id: a.musicbrainz_id,
-			artist_name: a.artist || '',
-			album_name: a.title
-		}));
-
-		try {
-			const enrichment = await fetchEnrichmentBatch(
-				artistRequests,
-				albumRequests,
-				enrichmentController.signal
-			);
-			if (!enrichment) return;
-
+	const enrichmentBatcher = createSearchEnrichmentBatcher({
+		load: fetchEnrichmentBatch,
+		onresult: (enrichment) => {
 			enrichmentSource = enrichment.source;
 			artists = applyArtistEnrichment(artists, enrichment);
 			albums = applyAlbumEnrichment(albums, enrichment);
 			searchStore.setEnrichmentSource(enrichmentSource);
-		} catch (error) {
-			if (isAbortError(error)) {
-				return;
-			}
 		}
-	}
+	});
 
 	async function performSearch(q: string) {
+		enrichmentBatcher.reset();
 		const normalizedQuery = q.trim();
 		const cached = searchStore.getCache(normalizedQuery, { allowStale: true });
 		const hasCachedResults = !!cached;
@@ -121,10 +95,6 @@
 		if (abortController) {
 			abortController.abort();
 		}
-		if (enrichmentController) {
-			enrichmentController.abort();
-		}
-
 		if (!normalizedQuery) {
 			artists = [];
 			albums = [];
@@ -178,8 +148,6 @@
 		}
 
 		searchStore.setResults(normalizedQuery, artists, albums, enrichmentSource, topArtist, topAlbum);
-
-		void fetchEnrichment();
 	}
 
 	let lastQuery = $state('');
@@ -219,10 +187,7 @@
 			abortController.abort();
 			abortController = null;
 		}
-		if (enrichmentController) {
-			enrichmentController.abort();
-			enrichmentController = null;
-		}
+		enrichmentBatcher.dispose();
 	});
 </script>
 
@@ -315,7 +280,11 @@
 					>
 						<ViewMoreArtistCard />
 						{#each displayedArtists.slice(0, 5) as artist (artist.musicbrainz_id)}
-							<SearchArtistCard {artist} {enrichmentSource} />
+							<SearchArtistCard
+								{artist}
+								{enrichmentSource}
+								onenrichmentrequest={() => enrichmentBatcher.requestArtist(artist)}
+							/>
 						{/each}
 					</div>
 				</div>
@@ -353,7 +322,12 @@
 					>
 						<ViewMoreAlbumCard />
 						{#each displayedAlbums as album (album.musicbrainz_id)}
-							<AlbumCard {album} {enrichmentSource} onadded={handleAlbumAdded} />
+							<AlbumCard
+								{album}
+								{enrichmentSource}
+								onadded={handleAlbumAdded}
+								onenrichmentrequest={() => enrichmentBatcher.requestAlbum(album)}
+							/>
 						{/each}
 					</div>
 				</div>

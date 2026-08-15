@@ -1443,6 +1443,17 @@ CREATE TABLE IF NOT EXISTS library_catalog_revision (
 );
 INSERT OR IGNORE INTO library_catalog_revision(singleton, value) VALUES (1, 0);
 
+CREATE TABLE IF NOT EXISTS library_foreign_key_validation_state (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    schema_sha256 TEXT NOT NULL DEFAULT '',
+    validator_revision INTEGER NOT NULL DEFAULT 0 CHECK(validator_revision >= 0),
+    clean INTEGER NOT NULL DEFAULT 0 CHECK(clean IN (0, 1)),
+    validated_at REAL
+);
+INSERT OR IGNORE INTO library_foreign_key_validation_state(
+    singleton, schema_sha256, validator_revision, clean, validated_at
+) VALUES (1, '', 0, 0, NULL);
+
 CREATE TABLE IF NOT EXISTS library_event_stream_revisions (
     stream_kind TEXT PRIMARY KEY CHECK(stream_kind IN ('scan','identification','operation')),
     value INTEGER NOT NULL CHECK(value BETWEEN 0 AND 9223372036854775807)

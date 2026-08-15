@@ -29,6 +29,7 @@ from core.exceptions import (
 )
 from infrastructure.persistence._database import PersistenceBase
 from infrastructure.persistence.native_library_schema import SCHEMA_SQL
+from infrastructure.queue.durable_work_wakeup import DurableWorkWakeups
 from infrastructure.validators import is_valid_mbid
 from models.audio import AudioArtistCredit
 from models.artist_reconciliation import (
@@ -121,6 +122,8 @@ from models.local_catalog import (
 )
 
 MAX_REVISION = 9_223_372_036_854_775_807
+_CATALOG_VALIDATION_MMAP_BYTES = 64 * 1024 * 1024
+_FOREIGN_KEY_VALIDATION_REVISION = 1
 _POST_PROCESSING_IDENTIFICATION_PRIORITY = 50
 VARIOUS_ARTISTS_ID = "00000000-0000-4000-8000-000000000001"
 UNKNOWN_ARTIST_ID = "00000000-0000-4000-8000-000000000002"
@@ -627,6 +630,7 @@ class NativeLibraryStore(PersistenceBase):
         write_lock: threading.Lock,
         invalidator: Callable[[], Awaitable[None]] | None = None,
         scan_invalidator: Callable[[], Awaitable[None]] | None = None,
+        work_wakeups: DurableWorkWakeups | None = None,
     ) -> None:
         self._invalidator = invalidator
         self._scan_invalidator = scan_invalidator or invalidator
@@ -636,6 +640,7 @@ class NativeLibraryStore(PersistenceBase):
         self._scan_catalog_dirty = False
         self._provider_album_snapshot: tuple[int, frozenset[str]] | None = None
         self._provider_album_snapshot_lock = asyncio.Lock()
+        self.work_wakeups = work_wakeups or DurableWorkWakeups()
         super().__init__(db_path, write_lock)
 
     async def _write(self, operation: Callable[[sqlite3.Connection], _T]) -> _T:
@@ -1074,6 +1079,41 @@ class NativeLibraryStore(PersistenceBase):
             connection.rollback()
             raise
 
+    @staticmethod
+    def _ensure_foreign_key_validation_triggers(
+        connection: sqlite3.Connection,
+    ) -> None:
+        table_rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        existing_tables = {str(row["name"]) for row in table_rows}
+        tracked_tables: set[str] = set()
+        for table in existing_tables:
+            quoted_table = table.replace('"', '""')
+            for foreign_key in connection.execute(
+                f'PRAGMA foreign_key_list("{quoted_table}")'
+            ).fetchall():
+                tracked_tables.add(table)
+                parent = str(foreign_key[2])
+                if parent in existing_tables:
+                    tracked_tables.add(parent)
+
+        for table in sorted(tracked_tables):
+            quoted_table = table.replace('"', '""')
+            trigger_fragment = "".join(
+                character if character.isalnum() else "_" for character in table
+            )
+            for event in ("INSERT", "UPDATE", "DELETE"):
+                trigger = f"trg_fk_validation_{trigger_fragment}_{event.casefold()}"
+                connection.execute(
+                    f'CREATE TRIGGER IF NOT EXISTS "{trigger}" '
+                    f'AFTER {event} ON "{quoted_table}" '
+                    "WHEN (SELECT foreign_keys FROM pragma_foreign_keys) = 0 "
+                    "BEGIN UPDATE library_foreign_key_validation_state "
+                    "SET clean = 0, validated_at = NULL WHERE singleton = 1; END"
+                )
+
     def _ensure_tables(self) -> None:
         connection = self._connect()
         try:
@@ -1387,6 +1427,7 @@ class NativeLibraryStore(PersistenceBase):
                     "Repaired legacy synthetic artist identities",
                     extra=artist_repairs,
                 )
+            self._ensure_foreign_key_validation_triggers(connection)
             connection.commit()
         finally:
             connection.close()
@@ -6432,7 +6473,14 @@ class NativeLibraryStore(PersistenceBase):
                         )
             return self._enqueue_identification_job_result(connection, job)
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result[0]:
+            self.work_wakeups.notify("identification")
+            if job.not_before > job.created_at:
+                self.work_wakeups.notify_after(
+                    "identification", job.not_before - job.created_at
+                )
+        return result
 
     async def enqueue_identification_job_results(
         self,
@@ -6482,8 +6530,19 @@ class NativeLibraryStore(PersistenceBase):
             return results
 
         if background:
-            return await super()._background_write(operation)
-        return await self._write(operation)
+            result = await super()._background_write(operation)
+        else:
+            result = await self._write(operation)
+        if any(job_id for job_id, _created in result):
+            self.work_wakeups.notify("identification")
+            delays = [
+                job.not_before - job.created_at
+                for job in jobs
+                if job.not_before > job.created_at
+            ]
+            for delay in delays:
+                self.work_wakeups.notify_after("identification", delay)
+        return result
 
     def _enqueue_identification_job_result(
         self, connection: sqlite3.Connection, job: IdentificationJob
@@ -7295,7 +7354,9 @@ class NativeLibraryStore(PersistenceBase):
             self._bump_stream(connection, "identification")
             return int(row["row_revision"])
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify_after("identification", not_before - now)
+        return result
 
     async def pause_identification_queue(
         self,
@@ -7407,7 +7468,9 @@ class NativeLibraryStore(PersistenceBase):
             self._bump_stream(connection, "identification")
             return int(row["row_revision"])
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify("identification")
+        return result
 
     async def get_identification_control(self) -> dict[str, Any]:
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -8005,7 +8068,10 @@ class NativeLibraryStore(PersistenceBase):
                 queued_reason=None if active is None else "Another scan is active.",
             )
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result.disposition != "conflict":
+            self.work_wakeups.notify("scan")
+        return result
 
     async def get_scan_run(
         self, run_id: str
@@ -8495,7 +8561,7 @@ class NativeLibraryStore(PersistenceBase):
         if control not in {"pause", "resume", "stop"}:
             raise StaleRevisionError("Unknown scan control request.")
 
-        def operation(connection: sqlite3.Connection) -> tuple[ScanRun, int]:
+        def operation(connection: sqlite3.Connection) -> tuple[ScanRun, int, bool]:
             row = connection.execute(
                 "SELECT * FROM library_scan_runs WHERE id = ?", (run_id,)
             ).fetchone()
@@ -8503,20 +8569,26 @@ class NativeLibraryStore(PersistenceBase):
                 raise ResourceNotFoundError(f"Scan run not found: {run_id}")
             state = str(row["state"])
             if control == "pause" and state in {"pausing", "paused"}:
-                return self._scan_state_from_row(row), self.get_stream_revision_sync(
-                    connection, "scan"
+                return (
+                    self._scan_state_from_row(row),
+                    self.get_stream_revision_sync(connection, "scan"),
+                    False,
                 )
             if control == "stop" and state in {"stopping", "cancelled"}:
-                return self._scan_state_from_row(row), self.get_stream_revision_sync(
-                    connection, "scan"
+                return (
+                    self._scan_state_from_row(row),
+                    self.get_stream_revision_sync(connection, "scan"),
+                    False,
                 )
             if (
                 control == "resume"
                 and state in {"discovering", "indexing", "reconciling"}
                 and row["requested_control"] == "none"
             ):
-                return self._scan_state_from_row(row), self.get_stream_revision_sync(
-                    connection, "scan"
+                return (
+                    self._scan_state_from_row(row),
+                    self.get_stream_revision_sync(connection, "scan"),
+                    False,
                 )
             if int(row["row_revision"]) != expected_revision:
                 raise StaleRevisionError(
@@ -8599,9 +8671,16 @@ class NativeLibraryStore(PersistenceBase):
                     (run_id, run_id, run_id),
                 )
             stream_revision = self._bump_stream(connection, "scan")
-            return self._scan_state_from_row(updated), stream_revision
+            return (
+                self._scan_state_from_row(updated),
+                stream_revision,
+                control == "resume",
+            )
 
-        return await self._write(operation)
+        run, stream_revision, resumed = await self._write(operation)
+        if resumed:
+            self.work_wakeups.notify("scan")
+        return run, stream_revision
 
     @staticmethod
     def get_stream_revision_sync(connection: sqlite3.Connection, stream: str) -> int:
@@ -8736,6 +8815,7 @@ class NativeLibraryStore(PersistenceBase):
             )
 
         await super()._background_write(operation)
+        self.work_wakeups.notify_after("scan", next_attempt_at - attempted_at)
 
     async def mark_scan_inventory_batch(
         self,
@@ -13781,7 +13861,10 @@ class NativeLibraryStore(PersistenceBase):
             self._bump_stream(connection, "operation")
             return result
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result.get("reidentification_job_created") is True:
+            self.work_wakeups.notify("identification")
+        return result
 
     async def defer_catalog_identity_hygiene_work(
         self,
@@ -17994,6 +18077,8 @@ class NativeLibraryStore(PersistenceBase):
     async def ensure_management_baseline(
         self, baseline: LibraryManagementBaseline
     ) -> tuple[LibraryManagementBaseline, bool]:
+        baseline = msgspec.structs.replace(baseline, image_snapshot_json="[]")
+
         def operation(
             connection: sqlite3.Connection,
         ) -> tuple[LibraryManagementBaseline, bool]:
@@ -18630,7 +18715,14 @@ class NativeLibraryStore(PersistenceBase):
                 created,
             )
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result[1]:
+            self.work_wakeups.notify("operation")
+            if delivery.not_before > delivery.created_at:
+                self.work_wakeups.notify_after(
+                    "operation", delivery.not_before - delivery.created_at
+                )
+        return result
 
     async def list_library_management_external_refreshes(
         self, operation_job_id: str
@@ -18808,7 +18900,10 @@ class NativeLibraryStore(PersistenceBase):
                 strict=False,
             )
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result.state == "retry_wait":
+            self.work_wakeups.notify_after("operation", result.not_before - now)
+        return result
 
     @staticmethod
     def _activation_preview_signature(row: sqlite3.Row) -> tuple[object, ...]:
@@ -19144,7 +19239,10 @@ class NativeLibraryStore(PersistenceBase):
             self._bump_stream(connection, "operation")
             return job.id, True
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result[1]:
+            self.work_wakeups.notify("operation")
+        return result
 
     async def get_library_management_job_snapshot(
         self, job_id: str
@@ -19451,7 +19549,10 @@ class NativeLibraryStore(PersistenceBase):
             self._bump_stream(connection, "operation")
             return dict(updated_job)
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result["state"] == "queued":
+            self.work_wakeups.notify("operation")
+        return result
 
     def _library_management_selection_predicate(
         self, selection: NormalizedLibraryManagementSelection
@@ -20402,6 +20503,8 @@ class NativeLibraryStore(PersistenceBase):
     async def create_management_operation_snapshot(
         self, snapshot: LibraryManagementOperationSnapshot
     ) -> None:
+        snapshot = msgspec.structs.replace(snapshot, image_snapshot_json="[]")
+
         def operation(connection: sqlite3.Connection) -> None:
             connection.execute(
                 "INSERT INTO library_management_operation_snapshots "
@@ -20631,6 +20734,8 @@ class NativeLibraryStore(PersistenceBase):
     ) -> LibraryManagementOperationSnapshot:
         """Create an immutable before-state snapshot or verify an exact retry."""
 
+        snapshot = msgspec.structs.replace(snapshot, image_snapshot_json="[]")
+
         def operation(
             connection: sqlite3.Connection,
         ) -> LibraryManagementOperationSnapshot:
@@ -20686,7 +20791,8 @@ class NativeLibraryStore(PersistenceBase):
             saved = msgspec.convert(
                 dict(existing), type=LibraryManagementOperationSnapshot, strict=False
             )
-            if msgspec.to_builtins(saved) != msgspec.to_builtins(snapshot):
+            comparable_saved = msgspec.structs.replace(saved, image_snapshot_json="[]")
+            if msgspec.to_builtins(comparable_saved) != msgspec.to_builtins(snapshot):
                 raise ConflictError(
                     "The operation snapshot retry does not match its durable snapshot."
                 )
@@ -20931,6 +21037,8 @@ class NativeLibraryStore(PersistenceBase):
     async def ensure_library_management_import_journal(
         self, journal: LibraryManagementImportJournal
     ) -> LibraryManagementImportJournal:
+        journal = msgspec.structs.replace(journal, baseline_image_snapshot_json="[]")
+
         def operation(connection: sqlite3.Connection) -> LibraryManagementImportJournal:
             connection.execute(
                 "INSERT OR IGNORE INTO library_management_import_journal "
@@ -20996,7 +21104,6 @@ class NativeLibraryStore(PersistenceBase):
                 "baseline_adapter_version",
                 "baseline_stat_revision",
                 "baseline_tag_revision",
-                "baseline_image_snapshot_json",
                 "baseline_ancillary_snapshot_json",
                 "baseline_file_mtime_ns",
                 "baseline_file_mode",
@@ -21048,6 +21155,7 @@ class NativeLibraryStore(PersistenceBase):
         baseline_file_mode: int | None,
         updated_at: float,
     ) -> LibraryManagementImportJournal:
+        baseline_image_snapshot_json = "[]"
         values = (
             baseline_blob_sha256,
             baseline_format,
@@ -21076,7 +21184,7 @@ class NativeLibraryStore(PersistenceBase):
                 row["baseline_adapter_version"],
                 row["baseline_stat_revision"],
                 row["baseline_tag_revision"],
-                row["baseline_image_snapshot_json"],
+                "[]",
                 row["baseline_ancillary_snapshot_json"],
                 row["baseline_file_mtime_ns"],
                 row["baseline_file_mode"],
@@ -21793,7 +21901,7 @@ class NativeLibraryStore(PersistenceBase):
                         journal["baseline_format"],
                         journal["baseline_adapter_version"],
                         journal["baseline_blob_sha256"],
-                        journal["baseline_image_snapshot_json"],
+                        "[]",
                         journal["baseline_ancillary_snapshot_json"],
                         journal["baseline_file_mtime_ns"],
                         journal["baseline_file_mode"],
@@ -21839,7 +21947,7 @@ class NativeLibraryStore(PersistenceBase):
                 format=str(journal["baseline_format"]),
                 adapter_version=str(journal["baseline_adapter_version"]),
                 semantic_snapshot_blob_sha256=str(journal["baseline_blob_sha256"]),
-                image_snapshot_json=str(journal["baseline_image_snapshot_json"]),
+                image_snapshot_json="[]",
                 ancillary_snapshot_json=str(
                     journal["baseline_ancillary_snapshot_json"]
                 ),
@@ -22407,7 +22515,7 @@ class NativeLibraryStore(PersistenceBase):
                     semantic_snapshot_blob_sha256=str(journal["baseline_blob_sha256"]),
                     stat_revision=str(journal["baseline_stat_revision"]),
                     tag_revision=str(journal["baseline_tag_revision"]),
-                    image_snapshot_json=str(journal["baseline_image_snapshot_json"]),
+                    image_snapshot_json="[]",
                     ancillary_snapshot_json=str(
                         journal["baseline_ancillary_snapshot_json"]
                     ),
@@ -22460,7 +22568,7 @@ class NativeLibraryStore(PersistenceBase):
                 format=str(journal["baseline_format"]),
                 adapter_version=str(journal["baseline_adapter_version"]),
                 semantic_snapshot_blob_sha256=str(journal["baseline_blob_sha256"]),
-                image_snapshot_json=str(journal["baseline_image_snapshot_json"]),
+                image_snapshot_json="[]",
                 ancillary_snapshot_json=str(
                     journal["baseline_ancillary_snapshot_json"]
                 ),
@@ -24714,6 +24822,7 @@ class NativeLibraryStore(PersistenceBase):
             )
 
         await self._write(operation)
+        self.work_wakeups.notify("operation")
 
     async def materialize_bulk_review_operation(
         self,
@@ -24820,7 +24929,9 @@ class NativeLibraryStore(PersistenceBase):
             ).fetchone()
             return dict(created)
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify("operation")
+        return result
 
     async def stage_bulk_review_operation_batch(
         self,
@@ -25028,7 +25139,9 @@ class NativeLibraryStore(PersistenceBase):
                 ).fetchone()
             )
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify("operation")
+        return result
 
     async def finish_reidentification_evaluation(
         self,
@@ -26058,7 +26171,10 @@ class NativeLibraryStore(PersistenceBase):
             self._bump_stream(connection, "operation")
             return dict(updated)
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if control == "resume" and result["state"] == "queued":
+            self.work_wakeups.notify("operation")
+        return result
 
     async def checkpoint_operation_control(
         self, job_id: str, worker_id: str, *, now: float
@@ -27131,7 +27247,9 @@ class NativeLibraryStore(PersistenceBase):
                 ).fetchone()
             )
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify("operation")
+        return result
 
     async def estimate_management_identity_preparation(
         self, root_ids: list[str]
@@ -27462,7 +27580,7 @@ class NativeLibraryStore(PersistenceBase):
     async def start_repair_apply(
         self, job_id: str, *, expected_row_revision: int, now: float
     ) -> dict[str, Any]:
-        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> tuple[dict[str, Any], bool]:
             job = connection.execute(
                 "SELECT * FROM library_operation_jobs WHERE id = ?", (job_id,)
             ).fetchone()
@@ -27473,7 +27591,7 @@ class NativeLibraryStore(PersistenceBase):
                 (job_id,),
             ).fetchone()
             if snapshot is not None and snapshot["phase"] == "apply":
-                return dict(job)
+                return dict(job), False
             if (
                 job["state"] != "ready"
                 or int(job["row_revision"]) != expected_row_revision
@@ -27517,9 +27635,12 @@ class NativeLibraryStore(PersistenceBase):
                 (job_id,),
             )
             self._bump_stream(connection, "operation")
-            return dict(updated)
+            return dict(updated), True
 
-        return await self._write(operation)
+        job, queued = await self._write(operation)
+        if queued:
+            self.work_wakeups.notify("operation")
+        return job
 
     async def discard_management_identity_preparation(
         self,
@@ -28704,35 +28825,124 @@ class NativeLibraryStore(PersistenceBase):
         return await self._read(operation)
 
     @staticmethod
+    def _foreign_key_schema_sha256(connection: sqlite3.Connection) -> str:
+        tables = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        payload = {
+            "sqlite_version": sqlite3.sqlite_version,
+            "validator_revision": _FOREIGN_KEY_VALIDATION_REVISION,
+            "tables": [(str(row["name"]), str(row["sql"])) for row in tables],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+
+    @staticmethod
     def _catalog_integrity_counts(
         connection: sqlite3.Connection,
     ) -> dict[str, int]:
-        return {
-            "foreign_key_violations": sum(
+        mmap_row = connection.execute(
+            f"PRAGMA mmap_size={_CATALOG_VALIDATION_MMAP_BYTES}"
+        ).fetchone()
+        mmap_bytes = int(mmap_row[0]) if mmap_row is not None else 0
+        connection.execute("BEGIN IMMEDIATE")
+        database_pages = int(connection.execute("PRAGMA page_count").fetchone()[0])
+        schema_sha256 = NativeLibraryStore._foreign_key_schema_sha256(connection)
+        validation_state = connection.execute(
+            "SELECT schema_sha256, validator_revision, clean "
+            "FROM library_foreign_key_validation_state WHERE singleton = 1"
+        ).fetchone()
+        foreign_key_cache_hit = bool(
+            validation_state is not None
+            and int(validation_state["clean"]) == 1
+            and int(validation_state["validator_revision"])
+            == _FOREIGN_KEY_VALIDATION_REVISION
+            and str(validation_state["schema_sha256"]) == schema_sha256
+        )
+
+        def measured_count(
+            clause: str,
+            operation: Callable[[], tuple[int, int]],
+            *,
+            validation_mode: str = "full",
+        ) -> int:
+            started = time.perf_counter()
+            result, subject_rows = operation()
+            logger.info(
+                "target_startup.catalog_integrity_clause clause=%s elapsed_ms=%.3f "
+                "result_count=%d subject_rows=%d database_pages=%d mmap_bytes=%d "
+                "validation_mode=%s",
+                clause,
+                (time.perf_counter() - started) * 1000,
+                result,
+                subject_rows,
+                database_pages,
+                mmap_bytes,
+                validation_mode,
+            )
+            return result
+
+        def count_pair(statement: str) -> tuple[int, int]:
+            row = connection.execute(statement).fetchone()
+            return int(row[0]), int(row[1])
+
+        def foreign_key_violations() -> tuple[int, int]:
+            if foreign_key_cache_hit:
+                return 0, -1
+            violations = sum(
                 1 for _row in connection.execute("PRAGMA foreign_key_check")
+            )
+            connection.execute(
+                "UPDATE library_foreign_key_validation_state "
+                "SET schema_sha256 = ?, validator_revision = ?, clean = ?, "
+                "validated_at = CASE WHEN ? = 0 THEN ? ELSE NULL END "
+                "WHERE singleton = 1",
+                (
+                    schema_sha256,
+                    _FOREIGN_KEY_VALIDATION_REVISION,
+                    int(violations == 0),
+                    violations,
+                    time.time(),
+                ),
+            )
+            return violations, -1
+
+        return {
+            "foreign_key_violations": measured_count(
+                "foreign_key_violations",
+                foreign_key_violations,
+                validation_mode="cached" if foreign_key_cache_hit else "full",
             ),
-            "orphan_tracks": int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM local_tracks t LEFT JOIN local_albums a "
-                    "ON a.id = t.local_album_id WHERE a.id IS NULL"
-                ).fetchone()[0]
+            "orphan_tracks": measured_count(
+                "orphan_tracks",
+                lambda: count_pair(
+                    "SELECT COALESCE(SUM(a.id IS NULL), 0), COUNT(*) "
+                    "FROM local_tracks t LEFT JOIN local_albums a "
+                    "ON a.id = t.local_album_id"
+                ),
             ),
-            "duplicate_paths": int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM (SELECT root_id, relative_path FROM local_tracks "
-                    "GROUP BY root_id, relative_path HAVING COUNT(*) > 1)"
-                ).fetchone()[0]
+            "duplicate_paths": measured_count(
+                "duplicate_paths",
+                lambda: count_pair(
+                    "SELECT COALESCE(SUM(group_size > 1), 0), "
+                    "COALESCE(SUM(group_size), 0) FROM ("
+                    "SELECT COUNT(*) AS group_size FROM local_tracks "
+                    "GROUP BY root_id, relative_path)"
+                ),
             ),
-            "unresolved_provenance": int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM library_migration_provenance "
-                    "WHERE target_id IS NULL OR target_id = ''"
-                ).fetchone()[0]
+            "unresolved_provenance": measured_count(
+                "unresolved_provenance",
+                lambda: count_pair(
+                    "SELECT COALESCE(SUM(target_id IS NULL OR target_id = ''), 0), "
+                    "COUNT(*) FROM library_migration_provenance"
+                ),
             ),
         }
 
     async def validate_catalog_integrity(self) -> dict[str, int]:
-        return await self._read(self._catalog_integrity_counts)
+        return await self._write(self._catalog_integrity_counts)
 
     async def validate_migration_references(self) -> int:
         def operation(connection: sqlite3.Connection) -> int:
@@ -30262,7 +30472,10 @@ class NativeLibraryStore(PersistenceBase):
             )
             return contribution_id, job_id
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result[1] is not None:
+            self.work_wakeups.notify("contribution")
+        return result
 
     async def record_library_contribution_manual_result(
         self,
@@ -30364,7 +30577,10 @@ class NativeLibraryStore(PersistenceBase):
             result["verification_job_id"] = job_id
             return result
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        if result.get("verification_job_id") is not None:
+            self.work_wakeups.notify("contribution")
+        return result
 
     async def requeue_library_contribution_verification(
         self,
@@ -30430,7 +30646,9 @@ class NativeLibraryStore(PersistenceBase):
             result["verification_job_id"] = job_id
             return result
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify("contribution")
+        return result
 
     async def enqueue_library_contribution_verification(
         self,
@@ -30469,7 +30687,11 @@ class NativeLibraryStore(PersistenceBase):
             )
             return job_id
 
-        return await self._write(operation)
+        result = await self._write(operation)
+        self.work_wakeups.notify("contribution")
+        if not_before > now:
+            self.work_wakeups.notify_after("contribution", not_before - now)
+        return result
 
     async def claim_library_contribution_verification(
         self,
@@ -30573,7 +30795,9 @@ class NativeLibraryStore(PersistenceBase):
                 )
             return int(row["row_revision"])
 
-        return await self._background_write(operation)
+        result = await self._background_write(operation)
+        self.work_wakeups.notify_after("contribution", not_before - now)
+        return result
 
     async def complete_library_contribution_verification_job(
         self,

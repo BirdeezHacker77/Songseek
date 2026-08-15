@@ -10,15 +10,18 @@
 	interface Props {
 		artist: Artist;
 		enrichmentSource?: EnrichmentSource;
+		onenrichmentrequest?: (() => void) | undefined;
 	}
 
-	let { artist, enrichmentSource = 'none' }: Props = $props();
+	let { artist, enrichmentSource = 'none', onenrichmentrequest = undefined }: Props = $props();
 
 	let listenTitle = $derived(getListenTitle(enrichmentSource, 'artist'));
 </script>
 
 <a
 	href={artistHref(artist.musicbrainz_id)}
+	onpointerenter={onenrichmentrequest}
+	onfocus={onenrichmentrequest}
 	class="card bg-base-100 w-full shadow-sm shrink-0 cursor-pointer transition-all hover:scale-105 hover:glow-primary group relative"
 >
 	<ArtistCardDownloadButton artistName={artist.title} artistMbid={artist.musicbrainz_id} />

@@ -64,11 +64,12 @@ class LibraryOperationSupervisor:
     ) -> OperationResponse | None:
         timestamp = time.time() if now is None else now
         job = None
-        kinds = ["bulk_review_apply", "repair"]
+        kinds = ["bulk_review_apply"]
         if self._workload_gate is None or not self._workload_gate.scan_active:
             kinds.insert(0, "explicit_reidentification")
             if self._management is not None:
                 kinds.insert(0, "library_management")
+            kinds.append("repair")
         for kind in kinds:
             job = await self._store.claim_operation_job(
                 worker_id,

@@ -295,6 +295,8 @@ class LibraryScanCoordinator:
             self._pending_control_run_ids.discard(run.id)
             if self._workload_gate is not None:
                 self._workload_gate.set_scan_active(False)
+                self._store.work_wakeups.notify("identification")
+                self._store.work_wakeups.notify("operation")
 
     async def _continue_run(self, run: ScanRun, root_paths: dict[str, Path]) -> ScanRun:
         run, scopes, _ = await self._store.get_scan_run(run.id)

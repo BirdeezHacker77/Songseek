@@ -17,13 +17,15 @@
 		enrichmentSource?: EnrichmentSource;
 		onadded?: (() => void) | undefined;
 		onremoved?: (() => void) | undefined;
+		onenrichmentrequest?: (() => void) | undefined;
 	}
 
 	let {
 		album = $bindable(),
 		enrichmentSource = 'none',
 		onadded = undefined,
-		onremoved = undefined
+		onremoved = undefined,
+		onenrichmentrequest = undefined
 	}: Props = $props();
 
 	let listenTitle = $derived(getListenTitle(enrichmentSource, 'album'));
@@ -78,6 +80,8 @@
 >
 	<a
 		href={albumHref(album.musicbrainz_id)}
+		onpointerenter={onenrichmentrequest}
+		onfocus={onenrichmentrequest}
 		class="block h-full relative z-0 transition-transform active:scale-95"
 		aria-label="Open {album.title}"
 	>

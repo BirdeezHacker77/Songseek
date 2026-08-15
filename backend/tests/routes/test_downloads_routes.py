@@ -15,7 +15,7 @@ from core.exceptions import (
     ValidationError,
 )
 from middleware import _get_current_admin, _get_current_user
-from models.download import DownloadTask
+from models.download import DownloadActivitySummary, DownloadTask
 from repositories.protocols.download_client import DownloadSearchResult
 from tests.helpers import build_test_client, mock_user
 
@@ -86,6 +86,29 @@ def test_list_downloads_returns_items_for_user():
     assert body["items"][0]["release_mbid"] is None
     assert body["items"][0]["release_track_mbid"] is None
     assert body["page"] == 1
+
+
+def test_activity_summary_is_compact_and_user_scoped():
+    service = AsyncMock()
+    service.get_activity_summary.return_value = DownloadActivitySummary(
+        revision=7,
+        active_count=2,
+        held_count=1,
+        failed_count=3,
+        landed_release_group_mbids=["rg-1"],
+    )
+
+    response = build_test_client(_app(service)).get("/downloads/activity-summary")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "revision": 7,
+        "active_count": 2,
+        "held_count": 1,
+        "failed_count": 3,
+        "landed_release_group_mbids": ["rg-1"],
+    }
+    service.get_activity_summary.assert_awaited_once_with("u1", "user")
 
 
 def test_list_downloads_marks_tasks_with_secured_files_for_review():

@@ -4,19 +4,46 @@ import type { Getter } from 'runed';
 import { api } from '$lib/api/client';
 import { API } from '$lib/constants';
 import { authStore } from '$lib/stores/authStore.svelte';
-import type { DownloadListResponse } from '$lib/types';
+import type { DownloadActivitySummary, DownloadListResponse } from '$lib/types';
 
 import { DownloadQueryKeyFactory } from './DownloadQueryKeyFactory';
 import { hasActiveTask } from './downloadStatus';
 
-// one query fetches the whole queue; tabs + counts are derived client-side (backend list has no `counts`). polls every 5s; items also subscribe to SSE for live progress
+const IDLE_ACTIVITY_RECOVERY_MS = 120_000;
+const ACTIVE_ACTIVITY_RECOVERY_MS = 750;
+
+// The global summary is the only recurring downloads HTTP owner. Progress is carried
+// by per-task SSE; its structural revision refreshes the detailed page after status,
+// ownership, held-review, insert, or delete changes.
+export const getDownloadActivitySummaryQueryOptions = () =>
+	queryOptions({
+		staleTime: 0,
+		enabled: !!authStore.user?.id,
+		queryKey: DownloadQueryKeyFactory.activity(authStore.user?.id),
+		queryFn: ({ signal }) =>
+			api.global.get<DownloadActivitySummary>(API.downloads.activitySummary(), { signal }),
+		refetchInterval: (query: { state: { data?: DownloadActivitySummary } }) =>
+			(query.state.data?.active_count ?? 0) > 0
+				? ACTIVE_ACTIVITY_RECOVERY_MS
+				: IDLE_ACTIVITY_RECOVERY_MS,
+		refetchIntervalInBackground: false,
+		refetchOnReconnect: 'always' as const,
+		refetchOnWindowFocus: 'always' as const
+	});
+
+export const getDownloadActivitySummaryQuery = () =>
+	createQuery(() => getDownloadActivitySummaryQueryOptions());
+
+// The downloads page owns the bounded detailed projection. It loads on entry and is
+// refreshed by the global summary revision rather than running a second timer.
 export const getDownloadsQueryOptions = () =>
 	queryOptions({
 		staleTime: 0,
-		refetchInterval: 5000,
 		queryKey: DownloadQueryKeyFactory.tasks(authStore.user?.id),
 		queryFn: ({ signal }) =>
-			api.global.get<DownloadListResponse>(API.downloads.list(undefined, 1, 100), { signal })
+			api.global.get<DownloadListResponse>(API.downloads.list(undefined, 1, 100), { signal }),
+		refetchOnReconnect: 'always' as const,
+		refetchOnWindowFocus: 'always' as const
 	});
 
 export const getDownloadsQuery = () => createQuery(() => getDownloadsQueryOptions());

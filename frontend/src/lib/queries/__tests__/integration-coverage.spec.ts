@@ -680,6 +680,11 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/requests/personal-mix-approvals'
 	],
 	[
+		'pending approval count',
+		API.requests.pendingApprovalCount(),
+		'/api/v1/requests/pending-approvals/count'
+	],
+	[
 		'personal mix approve',
 		API.requests.approvePersonalMix('U1'),
 		'/api/v1/requests/personal-mix-approvals/U1/approve'
@@ -772,6 +777,11 @@ const COVERAGE: Array<[string, string, string]> = [
 // Routes whose builder takes query params - assert the path prefix only.
 const PREFIX_COVERAGE: Array<[string, string, string]> = [
 	['downloads list', API.downloads.list(), '/api/v1/downloads'],
+	[
+		'downloads activity summary',
+		API.downloads.activitySummary(),
+		'/api/v1/downloads/activity-summary'
+	],
 	['search stream', API.downloads.searchStream('J1'), '/api/v1/downloads/search/stream'],
 	['library albums', API.library.albums(), '/api/v1/library/albums'],
 	['library artists', API.library.artists(), '/api/v1/library/artists'],

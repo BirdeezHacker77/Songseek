@@ -2019,6 +2019,7 @@ def _build_artist_discovery_service(
         preferences_service=preferences_service,
         client_factory=get_per_user_client_factory(),
         auth_store=get_auth_store(),
+        workload_gate=get_background_workload_gate(),
     )
 
 
@@ -2097,11 +2098,10 @@ def get_target_album_discovery_service() -> "AlbumDiscoveryService":
 def get_search_enrichment_service() -> "SearchEnrichmentService":
     from services.search_enrichment_service import SearchEnrichmentService
 
-    mb_repo = get_musicbrainz_repository()
     lb_repo = get_listenbrainz_repository()
     preferences_service = get_preferences_service()
     lastfm_repo = get_lastfm_repository()
-    return SearchEnrichmentService(mb_repo, lb_repo, preferences_service, lastfm_repo)
+    return SearchEnrichmentService(lb_repo, preferences_service, lastfm_repo)
 
 
 @singleton

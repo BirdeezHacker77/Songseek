@@ -323,6 +323,7 @@ async def test_baseline_restore_returns_a_to_original_after_a_then_b(tmp_path) -
     assert second_path.exists() is False
     assert _semantic_value(audio.snapshot(original_path)) == _semantic_value(original)
     assert baseline is not None and baseline.restore_status == "restored"
+    assert baseline.image_snapshot_json == "[]"
     assert state is not None
     assert state.baseline_id == baseline.id
     assert state.applied_profile_id is None

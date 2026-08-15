@@ -970,11 +970,7 @@ class LibraryManagementPublisher:
                     baseline_tag_revision=hashlib.sha256(
                         msgspec.json.encode(before_snapshot)
                     ).hexdigest(),
-                    baseline_image_snapshot_json=json.dumps(
-                        msgspec.to_builtins(before_snapshot.artwork),
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
+                    baseline_image_snapshot_json="[]",
                     baseline_ancillary_snapshot_json=ancillary_snapshot_json,
                     baseline_file_mtime_ns=before_snapshot.file_attributes.mtime_ns,
                     baseline_file_mode=before_snapshot.file_attributes.permission_bits,
@@ -2079,11 +2075,7 @@ class LibraryManagementPublisher:
                     semantic_snapshot_blob_sha256=snapshot_blob.sha256,
                     stat_revision=item.expected_stat_revision,
                     tag_revision=item.expected_tag_revision,
-                    image_snapshot_json=json.dumps(
-                        msgspec.to_builtins(write_plan.snapshot.artwork),
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
+                    image_snapshot_json="[]",
                     ancillary_snapshot_json=ancillary_snapshot_json,
                     file_mtime_ns=write_plan.snapshot.file_attributes.mtime_ns,
                     file_mode=write_plan.snapshot.file_attributes.permission_bits,
@@ -2106,7 +2098,7 @@ class LibraryManagementPublisher:
                     format=write_plan.audio_format,
                     adapter_version=write_plan.snapshot.adapter_version,
                     semantic_snapshot_blob_sha256=snapshot_blob.sha256,
-                    image_snapshot_json=baseline.image_snapshot_json,
+                    image_snapshot_json="[]",
                     ancillary_snapshot_json=ancillary_snapshot_json,
                     before_management_state_json=(
                         json.dumps(

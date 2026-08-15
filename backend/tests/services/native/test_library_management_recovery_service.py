@@ -272,10 +272,17 @@ async def test_committed_delete_cleanup_resumes_from_monotonic_substates(
 async def test_recovery_resumes_validated_bundle_and_second_run_is_noop(
     tmp_path: Path,
 ) -> None:
-    root, source, store, _audio, publisher, job_id = await _ready_apply_operation(
+    root, source, store, audio, publisher, job_id = await _ready_apply_operation(
         tmp_path
     )
+    original_artwork = audio.snapshot(source).artwork
     await _prepare_bundle(publisher, store, job_id)
+    baseline = await store.get_management_baseline("track-1")
+    before_snapshot = await store.get_management_operation_snapshot(
+        job_id, 0, "track-1"
+    )
+    assert baseline is not None and baseline.image_snapshot_json == "[]"
+    assert before_snapshot is not None and before_snapshot.image_snapshot_json == "[]"
     service = _recovery(publisher, store)
 
     first = await service.recover_startup()
@@ -287,6 +294,7 @@ async def test_recovery_resumes_validated_bundle_and_second_run_is_noop(
     assert second.examined_bundles == 0
     assert source.exists() is False
     assert row is not None and (root / str(row["relative_path"])).is_file()
+    assert audio.snapshot(root / str(row["relative_path"])).artwork == original_artwork
     assert [journal.state for journal in journals] == ["completed"]
 
 

@@ -99,6 +99,21 @@ class SearchJob(AppStruct):
     updated_at: float = 0.0
 
 
+class DownloadActivitySummary(AppStruct):
+    """Small user-scoped projection for global activity indicators.
+
+    ``revision`` changes only when a task or held-review row is inserted, removed,
+    changes owner, or changes durable state. Progress-only writes deliberately do
+    not advance it because task SSE carries progress without a full-list refetch.
+    """
+
+    revision: int
+    active_count: int
+    held_count: int
+    failed_count: int
+    landed_release_group_mbids: list[str] = []
+
+
 class DownloadTask(AppStruct):
     """A download task row (``download_tasks``)."""
 

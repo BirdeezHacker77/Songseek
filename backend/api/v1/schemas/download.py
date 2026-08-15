@@ -232,6 +232,14 @@ class DownloadListResponse(AppStruct):
     page_size: int
 
 
+class DownloadActivitySummaryResponse(AppStruct):
+    revision: int
+    active_count: int
+    held_count: int
+    failed_count: int
+    landed_release_group_mbids: list[str] = []
+
+
 class DownloadFileItem(AppStruct):
     filename: str
     size: int

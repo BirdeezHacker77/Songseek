@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter, HTTPException
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from core.dependencies import (
     get_cache,
@@ -58,6 +57,7 @@ from core.exception_handlers import (
     stale_revision_error_handler,
 )
 from infrastructure.resilience.retry import CircuitOpenError
+from infrastructure.http.compression import CompressibleGZipMiddleware
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
 from middleware import (
     DegradationMiddleware,
@@ -788,7 +788,7 @@ app.add_exception_handler(Exception, general_exception_handler)
 app.add_middleware(HSTSMiddleware)
 app.add_middleware(DegradationMiddleware)
 app.add_middleware(PerformanceMiddleware)
-app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+app.add_middleware(CompressibleGZipMiddleware, minimum_size=1000, compresslevel=6)
 app.add_middleware(AuthMiddleware)
 app.add_middleware(
     RateLimitMiddleware,

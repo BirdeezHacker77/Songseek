@@ -344,6 +344,7 @@ def test_offline_replacement_entrypoint_is_complete_and_single_worker() -> None:
     }.issubset(route_modules)
     assert {
         "AuthMiddleware",
+        "CompressibleGZipMiddleware",
         "DegradationMiddleware",
         "PerformanceMiddleware",
         "RateLimitMiddleware",
@@ -503,7 +504,12 @@ def test_production_target_lifespan_selects_validation_phase_and_runs_runtime(
     monkeypatch.setattr(target_module, "start_target_operational_runtime", operational)
     monkeypatch.setattr(target_module, "_server_timezone_name", timezone_name)
     monkeypatch.setattr(target_module, "get_preferences_service", lambda: preferences)
-    monkeypatch.setattr(target_module, "get_native_library_store", lambda: object())
+    work_wakeups = object()
+    monkeypatch.setattr(
+        target_module,
+        "get_native_library_store",
+        lambda: SimpleNamespace(work_wakeups=work_wakeups),
+    )
     monkeypatch.setattr(target_module, "get_cache", lambda: cache)
     monkeypatch.setattr(target_module, "get_disk_cache", lambda: object())
     monkeypatch.setattr(

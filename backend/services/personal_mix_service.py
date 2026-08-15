@@ -538,6 +538,9 @@ class PersonalMixService:
     async def list_pending_approvals(self) -> list[PersonalMixApproval]:
         return await self._prefs.list_pending_approvals()
 
+    async def count_pending_approvals(self) -> int:
+        return await self._prefs.count_pending_approvals()
+
     async def approve_auto_request(
         self, user_id: str, reviewer: tuple[str, str | None]
     ) -> bool:

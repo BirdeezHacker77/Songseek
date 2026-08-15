@@ -26,6 +26,7 @@ from api.v1.schemas.download import (
     ClearDownloadsResponse,
     CutoffUnmetItem,
     CutoffUnmetResponse,
+    DownloadActivitySummaryResponse,
     DownloadFileItem,
     DownloadFilesResponse,
     DownloadListResponse,
@@ -116,6 +117,21 @@ def _to_response(  # noqa: ANN001 - DownloadTask
         attempt_total=task.attempt_total,
         has_next_source=task.has_next_source,
         held_for_review=held_for_review,
+    )
+
+
+@router.get("/activity-summary", response_model=DownloadActivitySummaryResponse)
+async def get_download_activity_summary(
+    current_user: CurrentUserDep,
+    service=Depends(get_download_service),
+):
+    summary = await service.get_activity_summary(current_user.id, current_user.role)
+    return DownloadActivitySummaryResponse(
+        revision=summary.revision,
+        active_count=summary.active_count,
+        held_count=summary.held_count,
+        failed_count=summary.failed_count,
+        landed_release_group_mbids=summary.landed_release_group_mbids,
     )
 
 

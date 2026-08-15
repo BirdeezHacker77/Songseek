@@ -565,6 +565,7 @@ export const API = {
 	search: {
 		artists: (query: string) => `/api/v1/search/artists?q=${encodeURIComponent(query)}`,
 		albums: (query: string) => `/api/v1/search/albums?q=${encodeURIComponent(query)}`,
+		enrichment: () => '/api/v1/search/enrich/batch',
 		suggest: (query: string, limit = 5) =>
 			`/api/v1/search/suggest?q=${encodeURIComponent(query.trim())}&limit=${limit}`
 	},
@@ -768,6 +769,7 @@ export const API = {
 		adminAppPassword: (id: string) => `/api/v1/connect-apps/admin/app-passwords/${id}`
 	},
 	downloads: {
+		activitySummary: () => '/api/v1/downloads/activity-summary',
 		searchAlbum: () => '/api/v1/downloads/search/album',
 		searchJob: (jobId: string) => `/api/v1/downloads/search/${jobId}`,
 		pick: (jobId: string) => `/api/v1/downloads/search/${jobId}/pick`,
@@ -811,6 +813,7 @@ export const API = {
 	},
 	requests: {
 		new: () => '/api/v1/requests/new',
+		pendingApprovalCount: () => '/api/v1/requests/pending-approvals/count',
 		autoDownloadApprovals: () => '/api/v1/requests/auto-download-approvals',
 		approveAutoDownload: (userId: string, mbid: string) =>
 			`/api/v1/requests/auto-download-approvals/${userId}/${mbid}/approve`,

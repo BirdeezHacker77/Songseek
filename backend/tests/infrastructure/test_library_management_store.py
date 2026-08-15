@@ -993,6 +993,7 @@ async def test_first_management_baseline_is_single_and_keeps_blob_referenced(
         format="flac",
         adapter_version="1",
         semantic_snapshot_blob_sha256=blob.sha256,
+        image_snapshot_json='[{"content":"redundant"}]',
         stat_revision="stat-1",
         tag_revision="tag-1",
         created_at=3,
@@ -1019,6 +1020,7 @@ async def test_first_management_baseline_is_single_and_keeps_blob_referenced(
     assert was_created is True
     assert second_created is False
     assert created.id == "baseline-1"
+    assert created.image_snapshot_json == "[]"
     assert existing.id == "baseline-1"
     assert existing.original_relative_path == "track.flac"
 
@@ -1672,11 +1674,15 @@ async def _seed_published_management_bundle(
         format="flac",
         adapter_version="1",
         semantic_snapshot_blob_sha256=blob_hash,
+        image_snapshot_json='[{"content":"redundant"}]',
         source_fingerprint="source-hash",
         created_at=20,
         expires_at=30,
     )
-    await store.ensure_management_operation_snapshot(operation_snapshot)
+    saved_operation_snapshot = await store.ensure_management_operation_snapshot(
+        operation_snapshot
+    )
+    assert saved_operation_snapshot.image_snapshot_json == "[]"
     await store.ensure_file_mutation_journal(
         LibraryFileMutationJournal(
             id=f"{job_id}-journal",

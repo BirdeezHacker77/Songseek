@@ -267,10 +267,12 @@ async def test_provider_contradiction_repairs_split_without_touching_files(
             (source_id, WRONG_RELEASE_GROUP),
         )
 
+    wake_revision = store.work_wakeups.revision("identification")
     result, _service, changed = await _run_backfill(store)
 
     assert result["state"] == "succeeded"
     assert changed.await_count == 1
+    assert store.work_wakeups.revision("identification") == wake_revision + 1
     with sqlite3.connect(db_path) as connection:
         retired_into = connection.execute(
             "SELECT retired_into_album_id FROM local_albums WHERE id = ?", (source_id,)

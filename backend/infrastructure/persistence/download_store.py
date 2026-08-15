@@ -26,7 +26,12 @@ from infrastructure.persistence._database import (
     _encode_json,
 )
 from infrastructure.serialization import to_jsonable
-from models.download import DownloadTask, ScoredCandidate, SearchJob
+from models.download import (
+    DownloadActivitySummary,
+    DownloadTask,
+    ScoredCandidate,
+    SearchJob,
+)
 from models.download_attempt import DownloadAttempt, DownloadCleanupReconciliation
 from models.held_import import HeldImport
 from repositories.protocols.download_client import TaskHandle
@@ -158,6 +163,139 @@ CREATE TABLE IF NOT EXISTS download_cleanup_reconciliation (
     completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
     updated_at REAL NOT NULL
 );
+"""
+
+# Global badges need structural queue changes, not progress writes. SQLite triggers
+# keep this revision correct across every producer, including future direct status
+# updates and cascaded deletes. User and global counters preserve list-route ownership:
+# admins see all tasks while other roles see only their own.
+_DOWNLOAD_ACTIVITY_DDL = """
+CREATE TABLE IF NOT EXISTS download_activity_global_revision (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO download_activity_global_revision (singleton, revision)
+VALUES (1, 0);
+
+CREATE TABLE IF NOT EXISTS download_activity_user_revisions (
+    user_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TRIGGER IF NOT EXISTS download_activity_task_insert
+AFTER INSERT ON download_tasks
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_task_status
+AFTER UPDATE OF status ON download_tasks
+WHEN OLD.status IS NOT NEW.status
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_task_search_link
+AFTER UPDATE OF search_job_id, candidate_index ON download_tasks
+WHEN OLD.search_job_id IS NOT NEW.search_job_id
+    OR OLD.candidate_index IS NOT NEW.candidate_index
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_task_owner
+AFTER UPDATE OF user_id ON download_tasks
+WHEN OLD.user_id IS NOT NEW.user_id
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (OLD.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_task_delete
+AFTER DELETE ON download_tasks
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (OLD.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_held_insert
+AFTER INSERT ON held_imports
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_held_status
+AFTER UPDATE OF status ON held_imports
+WHEN OLD.status IS NOT NEW.status
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_held_owner
+AFTER UPDATE OF user_id ON held_imports
+WHEN OLD.user_id IS NOT NEW.user_id
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (OLD.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (NEW.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_held_delete
+AFTER DELETE ON held_imports
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision) VALUES (OLD.user_id, 1)
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+"""
+
+_DOWNLOAD_ATTEMPT_ACTIVITY_DDL = """
+CREATE TRIGGER IF NOT EXISTS download_activity_attempt_insert
+AFTER INSERT ON download_attempts
+WHEN EXISTS (SELECT 1 FROM download_tasks WHERE id = NEW.task_id)
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision)
+    SELECT user_id, 1 FROM download_tasks WHERE id = NEW.task_id
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_attempt_state
+AFTER UPDATE OF state ON download_attempts
+WHEN OLD.state IS NOT NEW.state
+    AND EXISTS (SELECT 1 FROM download_tasks WHERE id = NEW.task_id)
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision)
+    SELECT user_id, 1 FROM download_tasks WHERE id = NEW.task_id
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS download_activity_attempt_delete
+AFTER DELETE ON download_attempts
+WHEN EXISTS (SELECT 1 FROM download_tasks WHERE id = OLD.task_id)
+BEGIN
+    UPDATE download_activity_global_revision SET revision = revision + 1 WHERE singleton = 1;
+    INSERT INTO download_activity_user_revisions (user_id, revision)
+    SELECT user_id, 1 FROM download_tasks WHERE id = OLD.task_id
+    ON CONFLICT(user_id) DO UPDATE SET revision = revision + 1;
+END;
 """
 
 # ASCII unit separator joining the two halves of a soulseek identity; mirrors
@@ -434,7 +572,9 @@ class DownloadStore(PersistenceBase):
                 pass  # duplicate column - already present
             self._migrate_quarantine(conn)
             conn.executescript(_HELD_IMPORTS_DDL)
+            conn.executescript(_DOWNLOAD_ACTIVITY_DDL)
             conn.executescript(_DOWNLOAD_ATTEMPTS_DDL)
+            conn.executescript(_DOWNLOAD_ATTEMPT_ACTIVITY_DDL)
             _safe_alter(
                 conn,
                 "ALTER TABLE download_attempts ADD COLUMN legacy_reconciled "
@@ -771,6 +911,75 @@ class DownloadStore(PersistenceBase):
                 tuple(statuses),
             ).fetchall()
             return [t for t in (_row_to_task(r) for r in rows) if t is not None]
+
+        return await self._read(operation)
+
+    async def get_activity_summary(
+        self, user_id: str, user_role: str
+    ) -> DownloadActivitySummary:
+        """Return one compact ownership-scoped activity projection.
+
+        The four SQL statements share one read connection. The response stays
+        bounded regardless of queue history: only counts, a structural revision,
+        and the 20 most recently landed release groups cross the HTTP boundary.
+        """
+
+        is_admin = user_role == "admin"
+
+        def operation(conn: sqlite3.Connection) -> DownloadActivitySummary:
+            if is_admin:
+                revision_row = conn.execute(
+                    "SELECT revision FROM download_activity_global_revision "
+                    "WHERE singleton = 1"
+                ).fetchone()
+                task_where = ""
+                task_params: tuple[str, ...] = ()
+                held_where = "status = 'held'"
+                held_params: tuple[str, ...] = ()
+            else:
+                revision_row = conn.execute(
+                    "SELECT revision FROM download_activity_user_revisions "
+                    "WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                task_where = "WHERE user_id = ?"
+                task_params = (user_id,)
+                held_where = "status = 'held' AND user_id = ?"
+                held_params = (user_id,)
+
+            counts = conn.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN status IN ('queued','downloading','processing') "
+                "THEN 1 ELSE 0 END), 0) AS active_count, "
+                "COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) "
+                f"AS failed_count FROM download_tasks {task_where}",
+                task_params,
+            ).fetchone()
+            held = conn.execute(
+                f"SELECT COUNT(*) AS count FROM held_imports WHERE {held_where}",
+                held_params,
+            ).fetchone()
+
+            landed_scope = "" if is_admin else "AND user_id = ?"
+            landed = conn.execute(
+                "SELECT release_group_mbid FROM download_tasks "
+                "WHERE status IN ('completed','partial') "
+                "AND release_group_mbid != '' "
+                f"{landed_scope} "
+                "GROUP BY release_group_mbid "
+                "ORDER BY MAX(COALESCE(completed_at, updated_at)) DESC LIMIT 20",
+                task_params,
+            ).fetchall()
+
+            return DownloadActivitySummary(
+                revision=int(revision_row["revision"] if revision_row else 0),
+                active_count=int(counts["active_count"] if counts else 0),
+                held_count=int(held["count"] if held else 0),
+                failed_count=int(counts["failed_count"] if counts else 0),
+                landed_release_group_mbids=[
+                    str(row["release_group_mbid"]) for row in landed
+                ],
+            )
 
         return await self._read(operation)
 

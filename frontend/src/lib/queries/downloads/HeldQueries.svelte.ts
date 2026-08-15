@@ -10,8 +10,8 @@ import { DownloadQueryKeyFactory } from './DownloadQueryKeyFactory';
 
 // Tracks held for an "import anyway" review. Two callers: the Downloads dashboard (no
 // filter, cross-album triage) and the album page (scoped to one release group). Keyed under
-// tasks() so a download mutation's invalidateTasks() refreshes it too. A slow poll keeps the
-// dashboard fresh without the 5s task cadence (held items change only on a verify-fail).
+// tasks() so a download mutation's invalidateTasks() refreshes it too. The global activity
+// revision invalidates this prefix after held rows change, so it needs no parallel timer.
 export const getHeldImportsQuery = (
 	getMbid: Getter<string | undefined> = () => undefined,
 	getEnabled: Getter<boolean> = () => true
@@ -19,7 +19,7 @@ export const getHeldImportsQuery = (
 	createQuery(() => ({
 		enabled: getEnabled(),
 		queryKey: DownloadQueryKeyFactory.held(authStore.user?.id, getMbid()),
-		refetchInterval: 10000,
 		queryFn: ({ signal }) =>
-			api.global.get<HeldListResponse>(API.downloads.held(getMbid()), { signal })
+			api.global.get<HeldListResponse>(API.downloads.held(getMbid()), { signal }),
+		refetchOnWindowFocus: 'always' as const
 	}));

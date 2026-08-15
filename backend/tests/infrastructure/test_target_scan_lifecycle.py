@@ -408,8 +408,17 @@ async def test_transition_matrix_controls_and_restart_recovery(
     )
     recovered = await coordinator.recover()
     assert [item.id for item in recovered] == [requested.run_id]
+    wake_revision = target_store.work_wakeups.revision("scan")
+    waiting = asyncio.create_task(
+        target_store.work_wakeups.wait(
+            "scan", after_revision=wake_revision, timeout_seconds=1.0
+        )
+    )
+    await asyncio.sleep(0)
     resumed = await coordinator.control(paused.id, "resume", paused.row_revision)
     assert resumed.state == "discovering"
+    assert await waiting is True
+    assert target_store.work_wakeups.revision("scan") == wake_revision + 1
     stopping = await coordinator.control(resumed.run_id, "stop", resumed.row_revision)
     assert stopping.state == "stopping"
     recovered = await coordinator.recover()

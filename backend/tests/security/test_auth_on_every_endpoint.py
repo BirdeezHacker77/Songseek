@@ -758,6 +758,7 @@ _USER_ENDPOINTS = [
     ("GET", "/api/v1/library/scan/status", None),
     ("GET", "/api/v1/download-client/status", None),
     ("GET", "/api/v1/downloads", None),
+    ("GET", "/api/v1/downloads/activity-summary", None),
     ("GET", "/api/v1/downloads/task-1/files", None),
     ("POST", "/api/v1/downloads/task-1/cancel", None),
     (

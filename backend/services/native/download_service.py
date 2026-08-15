@@ -1164,6 +1164,9 @@ class DownloadService:
             page_size=page_size,
         )
 
+    async def get_activity_summary(self, user_id: str, user_role: str):
+        return await self._store.get_activity_summary(user_id, user_role)
+
     async def cleanup_states(self, task_ids: list[str]) -> dict[str, str]:
         return await self._store.cleanup_states_for_tasks(task_ids)
 

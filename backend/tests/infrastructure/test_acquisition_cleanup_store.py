@@ -48,6 +48,66 @@ async def test_attempt_schema_is_idempotent_and_survives_task_deletion(tmp_path:
     assert (await store.get_download_attempt(attempt.id)).task_id == task.id
 
 
+def test_attempt_activity_triggers_are_added_to_existing_schema(tmp_path: Path):
+    store = _store(tmp_path)
+    trigger_names = (
+        "download_activity_attempt_insert",
+        "download_activity_attempt_state",
+        "download_activity_attempt_delete",
+    )
+    with sqlite3.connect(store.db_path) as connection:
+        for name in trigger_names:
+            connection.execute(f"DROP TRIGGER {name}")
+        connection.commit()
+
+    DownloadStore(store.db_path, threading.Lock())
+
+    with sqlite3.connect(store.db_path) as connection:
+        installed = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                "AND name LIKE 'download_activity_attempt_%'"
+            ).fetchall()
+        }
+    assert installed == set(trigger_names)
+
+
+@pytest.mark.asyncio
+async def test_attempt_state_changes_advance_download_activity_revision(tmp_path: Path):
+    store = _store(tmp_path)
+    task = await store.create_task(
+        user_id="user-a", release_group_mbid="rg", artist_name="A", album_title="B"
+    )
+    initial = await store.get_activity_summary("user-a", "user")
+
+    attempt = await store.create_download_attempt(
+        task_id=task.id,
+        source="usenet",
+        candidate_index=0,
+        job_name=f"droppedneedle-{task.id}-0",
+        handle=TaskHandle(source="usenet", job_name=f"droppedneedle-{task.id}-0"),
+        now=1.0,
+    )
+    inserted = await store.get_activity_summary("user-a", "user")
+    assert inserted.revision == initial.revision + 1
+
+    complete = await store.transition_download_attempt(
+        attempt.id,
+        expected_row_revision=attempt.row_revision,
+        new_state="complete",
+        completed_at=2.0,
+        now=2.0,
+    )
+    assert complete is not None
+    transitioned = await store.get_activity_summary("user-a", "user")
+    assert transitioned.revision == inserted.revision + 1
+
+    assert await store.prune_completed_download_attempts(older_than=3.0) == 1
+    deleted = await store.get_activity_summary("user-a", "user")
+    assert deleted.revision == transitioned.revision + 1
+
+
 @pytest.mark.asyncio
 async def test_attempt_cas_leases_and_retry_ladder_are_deterministic(tmp_path: Path):
     store = _store(tmp_path)
@@ -199,18 +259,13 @@ async def test_reimport_cannot_acquire_an_active_cleanup_lease(tmp_path: Path):
     await store.schedule_download_attempt_cleanup(
         attempt.id, disposition="discard", now=2.0
     )
-    claimed = await store.claim_download_cleanup_attempt(
-        attempt.id, "cleanup", now=2.0
-    )
+    claimed = await store.claim_download_cleanup_attempt(attempt.id, "cleanup", now=2.0)
     assert claimed is not None
 
     assert (
-        await store.acquire_download_attempt_for_reimport(attempt.id, now=3.0)
-        is None
+        await store.acquire_download_attempt_for_reimport(attempt.id, now=3.0) is None
     )
-    acquired = await store.acquire_download_attempt_for_reimport(
-        attempt.id, now=303.0
-    )
+    acquired = await store.acquire_download_attempt_for_reimport(attempt.id, now=303.0)
     assert acquired is not None
     assert acquired.state == "in_use"
     assert acquired.disposition == "undecided"

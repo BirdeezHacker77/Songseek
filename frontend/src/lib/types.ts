@@ -2353,6 +2353,15 @@ export interface DownloadListResponse {
 	page_size: number;
 }
 
+// mirrors backend DownloadActivitySummaryResponse (api/v1/schemas/download.py)
+export interface DownloadActivitySummary {
+	revision: number;
+	active_count: number;
+	held_count: number;
+	failed_count: number;
+	landed_release_group_mbids: string[];
+}
+
 // A downloaded track that matched by duration but failed the AcoustID recording-identity
 // check (usually wrong MusicBrainz metadata). Held for a human "import anyway" / "discard"
 // decision instead of being dropped. `evidence_*` is what AcoustID heard.

@@ -174,6 +174,11 @@ async def test_undo_restores_real_audio_path_tags_and_management_state(
     source_job_id = second.job_id
     source_job = await store.get_operation_job(source_job_id)
     assert source_job is not None
+    source_before_snapshot = await store.get_management_operation_snapshot(
+        source_job_id, 0, "track-1"
+    )
+    assert source_before_snapshot is not None
+    assert source_before_snapshot.image_snapshot_json == "[]"
 
     filesystem = LibraryFilesystemCoordinator()
     blobs = LibraryManagementBlobStore(tmp_path / "blobs", store)

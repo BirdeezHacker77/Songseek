@@ -131,6 +131,18 @@ async def test_disabled_client_blocks_every_download_entry_point():
 
 
 @pytest.mark.asyncio
+async def test_activity_summary_delegates_user_scope_to_store():
+    service, store, *_rest = _make_service()
+    expected = object()
+    store.get_activity_summary.return_value = expected
+
+    result = await service.get_activity_summary("u1", "user")
+
+    assert result is expected
+    store.get_activity_summary.assert_awaited_once_with("u1", "user")
+
+
+@pytest.mark.asyncio
 async def test_search_album_already_in_library():
     service, store, *_ = _make_service(in_library=True)
     result = await service.search_album("u1", "A", "B", release_group_mbid="rg")

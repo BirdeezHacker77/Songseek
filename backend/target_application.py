@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -195,6 +194,7 @@ from core.tasks import (
     start_disk_cache_cleanup_task,
     start_memory_maintenance_task,
 )
+from infrastructure.http.compression import CompressibleGZipMiddleware
 from infrastructure.msgspec_fastapi import MsgSpecJSONResponse
 from middleware import (
     AuthMiddleware,
@@ -602,9 +602,11 @@ async def production_target_lifespan(app: FastAPI):
                 "timezone_name": timezone_name,
             }
 
+        work_wakeups = get_native_library_store().work_wakeups
         start_target_scan_supervisor(
             get_target_library_scan_coordinator,
             root_paths,
+            work_wakeups,
             scheduler_getter=get_target_library_scan_scheduler,
             resolver_getter=get_library_policy_resolver,
             schedule_settings_getter=schedule_settings,
@@ -612,14 +614,17 @@ async def production_target_lifespan(app: FastAPI):
         start_target_identification_worker(
             get_target_identification_queue,
             get_target_album_identification_service,
-            get_background_workload_gate(),
+            work_wakeups,
+            workload_gate=get_background_workload_gate(),
         )
         start_target_operation_worker(
             get_target_library_operation_supervisor,
-            get_library_management_recovery_service,
+            work_wakeups,
+            recovery_getter=get_library_management_recovery_service,
         )
         start_library_contribution_verification_worker(
-            get_library_contribution_verification_worker
+            get_library_contribution_verification_worker,
+            work_wakeups,
         )
         await start_target_operational_runtime(
             settings=settings,
@@ -676,7 +681,7 @@ def create_production_target_application() -> FastAPI:
     app.add_middleware(HSTSMiddleware)
     app.add_middleware(DegradationMiddleware)
     app.add_middleware(PerformanceMiddleware)
-    app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+    app.add_middleware(CompressibleGZipMiddleware, minimum_size=1000, compresslevel=6)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(
         RateLimitMiddleware,

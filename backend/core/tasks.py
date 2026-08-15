@@ -471,12 +471,19 @@ async def warm_artist_discovery_cache_periodically(
 
                 artist_cursor = page[-1]
                 mbids = [mbid for mbid in page if is_valid_mbid(mbid)]
-                for offset in range(0, len(mbids), 5):
+                for mbid in mbids:
                     if workload_gate is not None:
-                        await workload_gate.wait_until_available()
-                    await artist_discovery_service_getter().precache_artist_discovery(
-                        mbids[offset : offset + 5], delay=delay
-                    )
+                        await workload_gate.run_warmer_unit(
+                            lambda mbid=mbid: artist_discovery_service_getter().precache_artist_discovery(
+                                [mbid], delay=delay
+                            )
+                        )
+                    else:
+                        await (
+                            artist_discovery_service_getter().precache_artist_discovery(
+                                [mbid], delay=delay
+                            )
+                        )
 
                 if len(page) < 500:
                     break
@@ -677,15 +684,28 @@ async def warm_discover_home_periodically(
                     eligible, last_warmed, attempts, now, get_discover_service()
                 )
                 if uid is not None:
-                    await _warm_one_user(
-                        uid,
-                        get_discover_service(),
-                        get_home_service(),
-                        last_warmed,
-                        attempts,
-                        get_queue_manager() if get_queue_manager else None,
-                        workload_gate,
-                    )
+                    if workload_gate is not None:
+                        await workload_gate.run_warmer_unit(
+                            lambda: _warm_one_user(
+                                uid,
+                                get_discover_service(),
+                                get_home_service(),
+                                last_warmed,
+                                attempts,
+                                get_queue_manager() if get_queue_manager else None,
+                                workload_gate,
+                            )
+                        )
+                    else:
+                        await _warm_one_user(
+                            uid,
+                            get_discover_service(),
+                            get_home_service(),
+                            last_warmed,
+                            attempts,
+                            get_queue_manager() if get_queue_manager else None,
+                            workload_gate,
+                        )
         except asyncio.CancelledError:
             break
         except Exception as e:

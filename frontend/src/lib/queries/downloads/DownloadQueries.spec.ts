@@ -33,7 +33,10 @@ vi.mock('$lib/stores/toast', () => ({
 	toastStore: { show: (...args: unknown[]) => mockToast(...args) }
 }));
 
-import { getDownloadsQueryOptions } from './DownloadQueries.svelte';
+import {
+	getDownloadActivitySummaryQueryOptions,
+	getDownloadsQueryOptions
+} from './DownloadQueries.svelte';
 import {
 	cancelDownload,
 	requestAlbum,
@@ -48,6 +51,37 @@ describe('download queue queries', () => {
 		const opts = getDownloadsQueryOptions() as { queryFn: (a: unknown) => unknown };
 		await opts.queryFn({ signal: undefined });
 		expect(String(mockGet.mock.calls.at(-1)?.[0])).toContain('/api/v1/downloads');
+	});
+
+	it('uses one visibility-aware compact summary owner with active and idle cadences', async () => {
+		const opts = getDownloadActivitySummaryQueryOptions() as unknown as {
+			queryFn: (a: { signal?: AbortSignal }) => unknown;
+			queryKey: readonly unknown[];
+			refetchInterval: (query: { state: { data?: { active_count: number } } }) => number;
+			refetchIntervalInBackground: boolean;
+			refetchOnReconnect: string;
+			refetchOnWindowFocus: string;
+		};
+
+		await opts.queryFn({ signal: undefined });
+
+		expect(mockGet.mock.calls.at(-1)?.[0]).toBe('/api/v1/downloads/activity-summary');
+		expect(opts.queryKey).toEqual(['downloads', 'tasks', 'user-1', 'activity']);
+		expect(opts.refetchInterval({ state: { data: { active_count: 1 } } })).toBe(750);
+		expect(opts.refetchInterval({ state: { data: { active_count: 0 } } })).toBe(120_000);
+		expect(opts.refetchIntervalInBackground).toBe(false);
+		expect(opts.refetchOnReconnect).toBe('always');
+		expect(opts.refetchOnWindowFocus).toBe('always');
+	});
+
+	it('does not give the detailed downloads list a competing interval', () => {
+		const opts = getDownloadsQueryOptions() as {
+			refetchInterval?: number;
+			refetchOnWindowFocus: string;
+		};
+
+		expect(opts.refetchInterval).toBeUndefined();
+		expect(opts.refetchOnWindowFocus).toBe('always');
 	});
 
 	it('requestAlbum posts to /requests/new with the mapped body', async () => {
@@ -145,6 +179,12 @@ describe('download queue queries', () => {
 		expect(DownloadQueryKeyFactory.tasks('user-2')).not.toEqual(
 			DownloadQueryKeyFactory.tasks('user-1')
 		);
+		expect(DownloadQueryKeyFactory.activity('user-1')).toEqual([
+			'downloads',
+			'tasks',
+			'user-1',
+			'activity'
+		]);
 		expect(DownloadQueryKeyFactory.held('user-1')).toEqual([
 			'downloads',
 			'tasks',
