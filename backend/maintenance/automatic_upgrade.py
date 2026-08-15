@@ -505,18 +505,21 @@ async def _perform_target_migration() -> dict[str, Any]:
         blocker_reason_counts = {
             key: value for key, value in outcome.blocker_reason_counts.items() if value
         }
+        failure_evidence: dict[str, Any] = {
+            "reason": "unresolved_references",
+            "blocker_count": outcome.blocker_count,
+            "unresolved_reference_counts": {
+                count.kind: count.unresolved
+                for count in report.reference_counts
+                if count.user_id is None and count.unresolved
+            },
+            "blocker_reason_counts": blocker_reason_counts,
+        }
+        if outcome.blocker_details:
+            failure_evidence["details"] = outcome.blocker_details
         _write_state(
             get_settings().cache_dir / _FAILURE_EVIDENCE_FILE,
-            {
-                "reason": "unresolved_references",
-                "blocker_count": outcome.blocker_count,
-                "unresolved_reference_counts": {
-                    count.kind: count.unresolved
-                    for count in report.reference_counts
-                    if count.user_id is None and count.unresolved
-                },
-                "blocker_reason_counts": blocker_reason_counts,
-            },
+            failure_evidence,
         )
         reference_summary = ", ".join(
             f"{count.kind}={count.unresolved:,}"
@@ -604,10 +607,28 @@ def run_automatic_copy_upgrade(
         config=config,
         image_version=image_version,
     ):
-        raise AutomaticUpgradeError(
-            "This image already tried the library upgrade and left your previous data "
-            "in place. Install a newer image before trying again."
+        failure_evidence = (
+            state.get("failure_evidence") if isinstance(state, dict) else None
         )
+        reason = (
+            str(failure_evidence.get("reason"))
+            if isinstance(failure_evidence, dict)
+            and failure_evidence.get("reason") is not None
+            else None
+        )
+        parts = [
+            "A previous attempt by this image to upgrade the library failed. "
+            "Your database and settings are unchanged."
+        ]
+        if reason is not None:
+            parts.append(f"Failure reason: {reason}.")
+        parts.append(f"More detail: {state_path}.")
+        parts.append(
+            "Switch back to your previous image to keep running, or install a "
+            "corrected image, which retries the upgrade on startup. Fixing the "
+            "failing data yourself and restarting also retries it."
+        )
+        raise AutomaticUpgradeError(" ".join(parts))
 
     print(
         "[upgrade] Preparing the library for this DroppedNeedle version. "

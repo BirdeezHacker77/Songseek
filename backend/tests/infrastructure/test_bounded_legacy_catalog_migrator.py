@@ -14,8 +14,10 @@ from services.native.legacy_catalog_importer import _valid_mbid
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from tests.infrastructure.test_legacy_catalog_importer import (
     ARTIST_1,
+    RECORDING_1,
     RG,
     TRACK_1,
+    TRACK_2,
     _create_source,
 )
 
@@ -814,7 +816,7 @@ async def test_bounded_migration_retains_provider_era_and_removed_jellyfin_refer
 
 
 @pytest.mark.asyncio
-async def test_bounded_migration_blocks_ambiguous_history_without_completion_marker(
+async def test_bounded_migration_retains_ambiguous_history_unlinked(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "Music"
@@ -844,12 +846,125 @@ async def test_bounded_migration_blocks_ambiguous_history_without_completion_mar
         )
     store, migrator = _migrator(database, root, [])
 
-    outcome = await migrator.migrate("bounded-blocked", now=100)
+    outcome = await migrator.migrate("bounded-retained", now=100)
 
-    assert outcome.report.state == "blocked"
-    assert outcome.blocker_count == 1
-    assert any("ambiguous-history" in blocker for blocker in outcome.report.blockers)
-    assert await store.row_count("library_migration_markers") == 0
+    assert outcome.report.state == "applied"
+    assert outcome.blocker_count == 0
+    counts = {
+        count.kind: count
+        for count in outcome.report.reference_counts
+        if count.user_id is None
+    }
+    assert counts["history"].unresolved == 0
+    assert counts["history"].retained == 1
+    with sqlite3.connect(database) as connection:
+        retained = connection.execute(
+            "SELECT local_track_id, local_album_id, local_artist_id, track_name, "
+            "artist_name, album_name FROM library_play_history WHERE id = ?",
+            ("ambiguous-history",),
+        ).fetchone()
+    assert retained == (
+        None,
+        None,
+        None,
+        "First",
+        "Artist One",
+        "Compilation",
+    )
+    assert await store.row_count("library_migration_markers") == 1
+    assert await store.validate_migration_references() == 0
+
+
+@pytest.mark.asyncio
+async def test_bounded_migration_disambiguates_shared_recording_by_release_group(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Music"
+    root.mkdir()
+    database = tmp_path / "library.db"
+    _create_source(database, root)
+    other_release_group = "99999999-9999-4999-8999-999999999999"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE library_files SET recording_mbid = ?, "
+            "release_group_mbid = ?, track_title = 'First', artist_name = 'Artist One' "
+            "WHERE id = ?",
+            (RECORDING_1, other_release_group, TRACK_2),
+        )
+        connection.execute(
+            "INSERT INTO play_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "shared-recording-history",
+                "alice",
+                "First",
+                "Artist One",
+                "Compilation",
+                RECORDING_1,
+                RG,
+                180000,
+                None,
+                "2025-01-01T00:00:00Z",
+            ),
+        )
+    store, migrator = _migrator(database, root, [])
+
+    outcome = await migrator.migrate("bounded-shared-recording", now=100)
+
+    assert outcome.blocker_count == 0
+    counts = {
+        count.kind: count
+        for count in outcome.report.reference_counts
+        if count.user_id is None
+    }
+    assert counts["history"].mapped == 2
+    assert counts["history"].retained == 0
+    with sqlite3.connect(database) as connection:
+        resolved = connection.execute(
+            "SELECT local_track_id FROM library_play_history WHERE id = ?",
+            ("shared-recording-history",),
+        ).fetchone()
+    assert resolved == (TRACK_1,)
+
+
+@pytest.mark.asyncio
+async def test_bounded_migration_disambiguates_shared_recording_by_text(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Music"
+    root.mkdir()
+    database = tmp_path / "library.db"
+    _create_source(database, root)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE library_files SET recording_mbid = ? WHERE id = ?",
+            (RECORDING_1, TRACK_2),
+        )
+        connection.execute(
+            "INSERT INTO play_history VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "shared-recording-text-history",
+                "alice",
+                "First",
+                "Artist One",
+                "Compilation",
+                RECORDING_1,
+                None,
+                180000,
+                None,
+                "2025-01-01T00:00:00Z",
+            ),
+        )
+    store, migrator = _migrator(database, root, [])
+
+    outcome = await migrator.migrate("bounded-shared-recording-text", now=100)
+
+    assert outcome.blocker_count == 0
+    with sqlite3.connect(database) as connection:
+        resolved = connection.execute(
+            "SELECT local_track_id FROM library_play_history WHERE id = ?",
+            ("shared-recording-text-history",),
+        ).fetchone()
+    assert resolved == (TRACK_1,)
 
 
 @pytest.mark.asyncio

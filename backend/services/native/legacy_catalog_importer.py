@@ -1596,7 +1596,7 @@ class LegacyCatalogImporter:
             count.source += 1
             if mapped:
                 count.mapped += 1
-            else:
+            elif not retained:
                 count.unresolved += 1
             if retained:
                 count.retained += 1

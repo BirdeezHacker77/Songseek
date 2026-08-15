@@ -404,6 +404,39 @@ def _normalize_exact(value: str | None) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).strip().casefold().split())
 
 
+def _disambiguate_history_tracks(
+    connection: sqlite3.Connection,
+    candidate_ids: list[str],
+    *,
+    album_id: str | None,
+    track_name: str,
+    artist_name: str,
+) -> str | None:
+    if not candidate_ids:
+        return None
+    remaining = list(candidate_ids)
+    if album_id:
+        placeholders = ",".join("?" for _ in remaining)
+        filtered = connection.execute(
+            f"SELECT DISTINCT id FROM local_tracks "
+            f"WHERE id IN ({placeholders}) AND local_album_id = ?",
+            (*remaining, album_id),
+        ).fetchall()
+        if filtered:
+            remaining = [str(row["id"]) for row in filtered]
+    if not remaining:
+        return None
+    placeholders = ",".join("?" for _ in remaining)
+    text_rows = connection.execute(
+        f"SELECT id FROM local_tracks WHERE id IN ({placeholders}) "
+        "AND title_folded = ? AND artist_name_folded = ? ORDER BY id",
+        (*remaining, _fold(track_name), _fold(artist_name)),
+    ).fetchall()
+    if len(text_rows) != 1:
+        return None
+    return str(text_rows[0]["id"])
+
+
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -3907,11 +3940,28 @@ class NativeLibraryStore(PersistenceBase):
                 rows = connection.execute(
                     "SELECT local_track_id FROM local_track_external_identities "
                     "WHERE provider = 'musicbrainz' AND recording_mbid = ? "
-                    "ORDER BY local_track_id LIMIT 2",
+                    "ORDER BY local_track_id LIMIT 51",
                     (recording_mbid.casefold(),),
                 ).fetchall()
                 if len(rows) == 1:
                     return str(rows[0]["local_track_id"])
+                if rows:
+                    album_id = (
+                        self._resolve_target_id(
+                            connection, kind="album", identifier=album_identifier
+                        )
+                        if album_identifier
+                        else None
+                    )
+                    disambiguated = _disambiguate_history_tracks(
+                        connection,
+                        [str(row["local_track_id"]) for row in rows],
+                        album_id=album_id,
+                        track_name=track_name,
+                        artist_name=artist_name,
+                    )
+                    if disambiguated is not None:
+                        return disambiguated
             album_id = (
                 self._resolve_target_id(
                     connection, kind="album", identifier=album_identifier
@@ -5186,24 +5236,56 @@ class NativeLibraryStore(PersistenceBase):
                 if kind == "history":
                     target: tuple[str, str] | None = None
                     recording = str(source.get("recording_mbid") or "").casefold()
+                    track_name = str(source.get("track_name") or "")
+                    artist_name = str(source.get("artist_name") or "")
                     if recording:
                         matches = connection.execute(
                             "SELECT local_track_id FROM local_track_external_identities "
-                            "WHERE recording_mbid = ? ORDER BY local_track_id LIMIT 2",
+                            "WHERE recording_mbid = ? ORDER BY local_track_id LIMIT 51",
                             (recording,),
                         ).fetchall()
                         if len(matches) == 1:
                             target = "local_track", str(matches[0]["local_track_id"])
+                        elif matches:
+                            album_id = (
+                                map_kind("album", source.get("release_group_mbid"))
+                                if source.get("release_group_mbid")
+                                else None
+                            )
+                            disambiguated = _disambiguate_history_tracks(
+                                connection,
+                                [str(match["local_track_id"]) for match in matches],
+                                album_id=album_id[1] if album_id is not None else None,
+                                track_name=track_name,
+                                artist_name=artist_name,
+                            )
+                            if disambiguated is not None:
+                                target = "local_track", disambiguated
                     if target is None and source.get("release_group_mbid"):
-                        target = map_kind("album", source["release_group_mbid"])
+                        album_target = map_kind("album", source["release_group_mbid"])
+                        if album_target is not None:
+                            constrained = connection.execute(
+                                "SELECT id FROM local_tracks WHERE title_folded = ? "
+                                "AND artist_name_folded = ? AND local_album_id = ? "
+                                "ORDER BY id LIMIT 2",
+                                (
+                                    _fold(track_name),
+                                    _fold(artist_name),
+                                    album_target[1],
+                                ),
+                            ).fetchall()
+                            if len(constrained) == 1:
+                                target = "local_track", str(constrained[0]["id"])
+                            else:
+                                target = album_target
                     if target is None:
                         matches = connection.execute(
                             "SELECT id FROM local_tracks WHERE title_folded = ? "
                             "AND artist_name_folded = ? AND album_title_folded = ? "
                             "ORDER BY id LIMIT 2",
                             (
-                                _fold(str(source.get("track_name") or "")),
-                                _fold(str(source.get("artist_name") or "")),
+                                _fold(track_name),
+                                _fold(artist_name),
                                 _fold(str(source.get("album_name") or "")),
                             ),
                         ).fetchall()
@@ -28703,6 +28785,64 @@ class NativeLibraryStore(PersistenceBase):
             return inserted
 
         return await self._write(operation)
+
+    async def materialize_unlinked_history_batch(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        migration_run_id: str,
+        source_revision: str,
+    ) -> None:
+        """Retain legacy play history rows that cannot resolve to a track.
+
+        NULL linkage matches the runtime write path for plays outside the
+        local catalog. No provenance is recorded; these are retained data,
+        not migrated references.
+        """
+        if not rows:
+            return
+
+        def operation(connection: sqlite3.Connection) -> None:
+            run = connection.execute(
+                "SELECT source_revision FROM library_migration_runs WHERE id = ?",
+                (migration_run_id,),
+            ).fetchone()
+            if run is None or run["source_revision"] != source_revision:
+                raise StaleRevisionError(
+                    "The migration report no longer matches the copied source."
+                )
+
+            def row_value(row: sqlite3.Row, key: str) -> Any:
+                return row[key] if key in row.keys() else None
+
+            for row in rows:
+                source = connection.execute(
+                    "SELECT * FROM play_history WHERE id = ?",
+                    (str(row.get("id")),),
+                ).fetchone()
+                if source is None:
+                    continue
+                connection.execute(
+                    "INSERT OR IGNORE INTO library_play_history "
+                    "(id, user_id, local_track_id, local_album_id, local_artist_id, "
+                    "track_name, artist_name, album_name, recording_mbid, "
+                    "release_group_mbid, duration_ms, source, played_at) "
+                    "VALUES (?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?)",
+                    (
+                        source["id"],
+                        source["user_id"],
+                        source["track_name"],
+                        source["artist_name"],
+                        row_value(source, "album_name"),
+                        row_value(source, "recording_mbid"),
+                        row_value(source, "release_group_mbid"),
+                        row_value(source, "duration_ms"),
+                        row_value(source, "source"),
+                        source["played_at"],
+                    ),
+                )
+
+        await self._write(operation)
 
     async def finish_migration(
         self,
