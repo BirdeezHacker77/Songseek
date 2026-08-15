@@ -11,6 +11,9 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('$app/navigation', () => ({ goto: h.goto }));
+vi.mock('$lib/components/AlbumImage.svelte', async () => ({
+	default: (await import('./LibraryManagementRunnerImageTestStub.svelte')).default
+}));
 vi.mock('$lib/queries/library/LibraryQueries.svelte', () => ({
 	getLibrarySearchQuery: (getSearch: () => string) => ({
 		get data() {
