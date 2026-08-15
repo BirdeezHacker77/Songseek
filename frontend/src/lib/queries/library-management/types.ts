@@ -481,6 +481,55 @@ export interface LibraryManagementProfileDeleteRequest {
 	expected_settings_revision: string;
 }
 
+export interface LibraryManagementProfileExportRequest {
+	expected_settings_revision: string;
+}
+
+export interface LibraryManagementProfileExportResponse {
+	filename: string;
+	mime_type: string;
+	document: string;
+	share_code: string;
+	bundle_hash: string;
+	settings_revision: string;
+}
+
+export interface LibraryManagementProfileImportPreviewRequest {
+	content: string;
+	expected_settings_revision: string;
+}
+
+export interface LibraryManagementProfileImportRequest {
+	content: string;
+	reviewed_bundle_hash: string;
+	name: string;
+	expected_settings_revision: string;
+}
+
+export interface LibraryManagementProfileImportWarning {
+	code: string;
+	severity: 'warning' | 'danger';
+	title: string;
+	message: string;
+}
+
+export interface LibraryManagementProfileImportPreviewResponse {
+	profile: LibraryManagementProfile;
+	bundle_hash: string;
+	settings_revision: string;
+	naming_scripts: ManagementScriptSettings[];
+	tagging_scripts: ManagementScriptSettings[];
+	aspects: string[];
+	warnings: LibraryManagementProfileImportWarning[];
+}
+
+export interface LibraryManagementProfileImportResponse {
+	profile: LibraryManagementProfile;
+	settings_revision: string;
+	naming_scripts: ManagementScriptSettings[];
+	tagging_scripts: ManagementScriptSettings[];
+}
+
 export interface LibraryManagementPreviewCreateRequest {
 	selection: LibraryManagementSelection;
 	profile_id: string;

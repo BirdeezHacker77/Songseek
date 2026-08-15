@@ -17,6 +17,9 @@ const h = vi.hoisted(() => ({
 	update: vi.fn(),
 	copy: vi.fn(),
 	deleteProfile: vi.fn(),
+	exportProfile: vi.fn(),
+	previewProfileImport: vi.fn(),
+	importProfile: vi.fn(),
 	createActivation: vi.fn(),
 	confirmActivation: vi.fn(),
 	stopActivation: vi.fn(),
@@ -59,6 +62,18 @@ vi.mock('$lib/queries/library-management/LibraryManagementMutations.svelte', () 
 	copyLibraryManagementProfileMutation: () => ({ mutateAsync: h.copy, isPending: false }),
 	deleteLibraryManagementProfileMutation: () => ({
 		mutateAsync: h.deleteProfile,
+		isPending: false
+	}),
+	exportLibraryManagementProfileMutation: () => ({
+		mutateAsync: h.exportProfile,
+		isPending: false
+	}),
+	previewLibraryManagementProfileImportMutation: () => ({
+		mutateAsync: h.previewProfileImport,
+		isPending: false
+	}),
+	importLibraryManagementProfileMutation: () => ({
+		mutateAsync: h.importProfile,
 		isPending: false
 	}),
 	createLibraryManagementActivationPreviewMutation: () => ({
@@ -508,6 +523,12 @@ describe('SettingsLibraryManagement', () => {
 				page.getByRole('radio', { name: 'Make Complete Library Organizer the library default' })
 			)
 			.not.toBeChecked();
+		await expect
+			.element(page.getByRole('button', { name: 'Delete Picard-style Organizer' }))
+			.not.toBeInTheDocument();
+		await expect
+			.element(page.getByRole('button', { name: 'Delete Complete Library Organizer' }))
+			.not.toBeInTheDocument();
 		await expect.element(page.getByText('Off everywhere')).toBeVisible();
 		await expect
 			.element(page.getByRole('button', { name: 'Choose Management profile for Archive' }))
@@ -908,10 +929,183 @@ describe('SettingsLibraryManagement', () => {
 		await expect
 			.element(profileDialog.getByRole('heading', { name: 'Archive profile' }))
 			.toHaveFocus();
-		await expect.element(page.getByText('Custom').last()).toBeVisible();
+		await expect.element(profileDialog.getByText('Custom', { exact: true })).toBeVisible();
 	});
 
-	it('keeps refetched copies unique and removes a successfully deleted profile', async () => {
+	it('exports a saved profile as a file-first bundle with a copyable code', async () => {
+		h.exportProfile.mockResolvedValue({
+			filename: 'picard-style-organizer.dnprofile',
+			mime_type: 'application/vnd.droppedneedle.profile+json',
+			document: '{"format":"droppedneedle-library-profile"}',
+			share_code: 'DNLP1:portable-code',
+			bundle_hash: 'a'.repeat(64),
+			settings_revision: 'settings-1'
+		});
+		const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:profile');
+		const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+		const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('button', { name: 'Share Picard-style Organizer' }).click();
+
+		const dialog = page.getByRole('dialog', { name: 'Share Picard-style Organizer' });
+		await expect
+			.element(dialog.getByRole('heading', { name: 'Share Picard-style Organizer' }))
+			.toHaveFocus();
+		await expect.element(dialog.getByText('Profile file', { exact: true })).toBeVisible();
+		await expect.element(dialog.getByText(/wherever you share the profile/)).toBeVisible();
+		await expect.element(dialog.getByText(/Discord/)).not.toBeInTheDocument();
+		expect(h.exportProfile).toHaveBeenCalledWith({
+			profileId,
+			request: { expected_settings_revision: 'settings-1' }
+		});
+		await expect.element(dialog.getByRole('button', { name: 'Download .dnprofile' })).toBeVisible();
+		await dialog.getByRole('button', { name: 'Download .dnprofile' }).click();
+		expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
+		expect(revokeObjectUrl).toHaveBeenCalledWith('blob:profile');
+		await dialog.getByText('Show text code').click();
+		await expect
+			.element(dialog.getByRole('textbox', { name: 'Profile share code' }))
+			.toHaveValue('DNLP1:portable-code');
+		await dialog.getByRole('button', { name: 'Copy code' }).click();
+		expect(writeText).toHaveBeenCalledWith('DNLP1:portable-code');
+		await expect.element(dialog.getByRole('button', { name: 'Code copied' })).toBeVisible();
+		await expect.element(dialog.getByTestId('profile-code-copied-icon')).toBeVisible();
+		await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+		await page.getByRole('button', { name: 'Share Picard-style Organizer' }).click();
+		await expect
+			.element(
+				page
+					.getByRole('dialog', { name: 'Share Picard-style Organizer' })
+					.getByRole('button', { name: 'Copy code' })
+			)
+			.toBeVisible();
+		writeText.mockRejectedValueOnce(new Error('Clipboard unavailable'));
+		await page
+			.getByRole('dialog', { name: 'Share Picard-style Organizer' })
+			.getByRole('button', { name: 'Copy code' })
+			.click();
+		await expect
+			.element(
+				page
+					.getByRole('dialog', { name: 'Share Picard-style Organizer' })
+					.getByRole('button', { name: 'Copy code' })
+			)
+			.toBeVisible();
+		createObjectUrl.mockRestore();
+		revokeObjectUrl.mockRestore();
+		writeText.mockRestore();
+	});
+
+	it('reviews warnings and scripts before importing an inert custom profile', async () => {
+		const settings = baseSettings();
+		const previewProfile = {
+			...structuredClone(settings.profiles[0]),
+			id: 'a84ef040-aa7b-5982-837e-dc8c5ff68e9a',
+			name: 'Picard-style Organizer (imported)',
+			preset_origin: null,
+			preset_version: null,
+			revision: 'preview-profile'
+		};
+		const previewScript = {
+			...structuredClone(settings.naming_scripts[0]),
+			id: '17c66766-80bb-5af0-b6fd-40f63113b565',
+			name: 'Picard-style: single disc (imported)',
+			source: '{albumartist}/{album}/{track:02d} - {title}.{ext}',
+			preset_origin: null,
+			preset_version: null,
+			revision: 'preview-script'
+		};
+		h.previewProfileImport.mockResolvedValue({
+			profile: previewProfile,
+			naming_scripts: [previewScript],
+			tagging_scripts: [],
+			aspects: ['Metadata tags', 'Artwork', 'Move files'],
+			warnings: [
+				{
+					code: 'remove_sources',
+					severity: 'danger',
+					title: 'Removes verified move sources',
+					message: 'Source files are removed after their managed moves are confirmed.'
+				}
+			],
+			bundle_hash: 'b'.repeat(64),
+			settings_revision: 'reviewed-settings-1'
+		});
+		const importedProfile = {
+			...previewProfile,
+			id: '98156edf-bf24-47e4-af67-1545f0d830d9',
+			name: 'Shared organizer',
+			revision: 'imported-profile'
+		};
+		const importedScript = {
+			...previewScript,
+			id: '8a664f88-3570-4ac8-9508-30ce8dc930e1',
+			revision: 'imported-script'
+		};
+		h.importProfile.mockResolvedValue({
+			profile: importedProfile,
+			naming_scripts: [importedScript],
+			tagging_scripts: [],
+			settings_revision: 'settings-2'
+		});
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('button', { name: 'Import profile' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Import profile' });
+		await expect.element(dialog.getByRole('heading', { name: 'Import profile' })).toHaveFocus();
+		await expect.element(dialog.getByText('Choose or drop a .dnprofile file')).toBeVisible();
+		await dialog
+			.getByLabelText('Profile file')
+			.upload(new File(['{"format":"droppedneedle-library-profile"}'], 'shared.dnprofile'));
+		await expect.element(dialog.getByText('shared.dnprofile')).toBeVisible();
+		await dialog
+			.getByLabelText('Profile file')
+			.upload(new File(['x'.repeat(1_048_577)], 'oversized.dnprofile'));
+		await expect.element(dialog.getByText('Profile files must be 1 MiB or smaller.')).toBeVisible();
+		await expect.element(dialog.getByRole('button', { name: 'Review profile' })).toBeDisabled();
+		await dialog.getByRole('textbox', { name: 'Or paste a text code' }).fill('DNLP1:shared');
+		await expect.element(dialog.getByText('shared.dnprofile')).not.toBeInTheDocument();
+		await dialog.getByRole('button', { name: 'Review profile' }).click();
+
+		expect(h.previewProfileImport).toHaveBeenCalledWith({
+			content: 'DNLP1:shared',
+			expected_settings_revision: 'settings-1'
+		});
+		await expect.element(dialog.getByText('Custom and inactive')).toBeVisible();
+		await expect.element(dialog.getByText('Removes verified move sources')).toBeVisible();
+		await dialog.getByText('Picard-style: single disc (imported)').click();
+		await expect.element(dialog.getByText(previewScript.source)).toBeVisible();
+		await dialog.getByRole('textbox', { name: 'Imported profile name' }).fill('Shared organizer');
+		await dialog.getByRole('button', { name: 'Import custom profile' }).click();
+
+		expect(h.importProfile).toHaveBeenCalledWith({
+			content: 'DNLP1:shared',
+			reviewed_bundle_hash: 'b'.repeat(64),
+			name: 'Shared organizer',
+			expected_settings_revision: 'reviewed-settings-1'
+		});
+		const profileDialog = page.getByRole('dialog', { name: 'Shared organizer' });
+		await expect
+			.element(profileDialog.getByRole('heading', { name: 'Shared organizer' }))
+			.toHaveFocus();
+	});
+
+	it('blocks profile import while Library Management has unsaved changes', async () => {
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+		await page.getByRole('checkbox', { name: /Configure Library Management/ }).click();
+
+		await expect.element(page.getByRole('button', { name: 'Import profile' })).toBeDisabled();
+		await expect
+			.element(
+				page.getByText(
+					'Save or discard current Library Management changes before importing a profile.'
+				)
+			)
+			.toBeVisible();
+	});
+
+	it('deletes the final custom profile in the scrollable card list', async () => {
 		const settings = baseSettings();
 		const profileIds = [
 			'1c56cd00-4f7d-42ee-97df-2710110a31d2',
@@ -950,7 +1144,11 @@ describe('SettingsLibraryManagement', () => {
 		const profileDialog = page.getByRole('dialog', { name: 'Profile 4', exact: true });
 		await profileDialog.getByRole('button', { name: 'Cancel' }).click();
 		await profileRegion.getByRole('button', { name: 'Delete Profile 4' }).click();
-		await page.getByRole('button', { name: 'Delete profile', exact: true }).click();
+		const deleteDialog = page.getByRole('dialog', { name: 'Delete Profile 4?' });
+		await expect
+			.element(deleteDialog.getByRole('heading', { name: 'Delete Profile 4?' }))
+			.toHaveFocus();
+		await deleteDialog.getByRole('button', { name: 'Delete profile', exact: true }).click();
 
 		expect(h.deleteProfile).toHaveBeenCalledWith({
 			profileId: copies[3].id,
@@ -959,6 +1157,71 @@ describe('SettingsLibraryManagement', () => {
 		await expect
 			.element(profileRegion.getByRole('button', { name: 'Delete Profile 4' }))
 			.not.toBeInTheDocument();
+	});
+
+	it.each([
+		{
+			name: 'Only custom profile',
+			reason: 'Only remaining profile',
+			prepare(settings: LibraryManagementSettingsResponse) {
+				settings.profiles[0].name = 'Only custom profile';
+				settings.profiles[0].preset_origin = null;
+				settings.profiles[0].preset_version = null;
+			}
+		},
+		{
+			name: 'Default custom profile',
+			reason: 'Library default',
+			prepare(settings: LibraryManagementSettingsResponse) {
+				const profile = structuredClone(settings.profiles[0]);
+				profile.id = '1c56cd00-4f7d-42ee-97df-2710110a31d2';
+				profile.name = 'Default custom profile';
+				profile.preset_origin = null;
+				profile.preset_version = null;
+				settings.profiles.push(profile);
+				settings.default_profile_id = profile.id;
+			}
+		},
+		{
+			name: 'Assigned custom profile',
+			reason: 'Assigned to root',
+			prepare(settings: LibraryManagementSettingsResponse) {
+				const profile = structuredClone(settings.profiles[0]);
+				profile.id = '94bf55a3-b553-4cf5-b18c-671194f67783';
+				profile.name = 'Assigned custom profile';
+				profile.preset_origin = null;
+				profile.preset_version = null;
+				settings.profiles.push(profile);
+				settings.root_assignments = [
+					{
+						root_id: 'root-1',
+						profile_id: profile.id,
+						overrides: null,
+						enabled: false,
+						automatic_acquisitions: false,
+						automatic_drop_imports: false,
+						automatic_scan_discovered: false,
+						activation_profile_revision: null,
+						activation_naming_policy_revision: null,
+						activation_policy_revision: null,
+						activation_settings_revision: null,
+						activation_preview_token: null,
+						activation_preview_hash: null,
+						activation_confirmed_at: null
+					}
+				];
+			}
+		}
+	])('explains why $name cannot be deleted', async ({ name, reason, prepare }) => {
+		const settings = baseSettings();
+		prepare(settings);
+		h.settings = { data: settings, isLoading: false, isError: false, refetch: vi.fn() };
+
+		render(SettingsLibraryManagement, { roots, policyRevision: 'policy-1' });
+
+		const control = page.getByRole('button', { name: `Cannot delete ${name}: ${reason}` });
+		await expect.element(control).toBeDisabled();
+		await expect.element(control).toHaveTextContent(reason);
 	});
 
 	it('resets one preset section in the draft and confirms before discarding changes', async () => {

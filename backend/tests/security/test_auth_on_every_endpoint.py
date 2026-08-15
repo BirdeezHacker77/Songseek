@@ -318,6 +318,26 @@ _ADMIN_ENDPOINTS = [
     ),
     (
         "POST",
+        "/api/v1/settings/library-management/profiles/profile-1/export",
+        {"expected_settings_revision": "settings"},
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/profile-imports/preview",
+        {"content": "DNLP1:code", "expected_settings_revision": "settings"},
+    ),
+    (
+        "POST",
+        "/api/v1/settings/library-management/profile-imports",
+        {
+            "content": "DNLP1:code",
+            "reviewed_bundle_hash": "hash",
+            "name": "Imported profile",
+            "expected_settings_revision": "settings",
+        },
+    ),
+    (
+        "POST",
         "/api/v1/settings/library-management/activation-previews",
         {
             "root_id": "root-1",

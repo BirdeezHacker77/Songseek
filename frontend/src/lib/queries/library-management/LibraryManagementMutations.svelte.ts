@@ -23,6 +23,12 @@ import type {
 	LibraryManagementProfileCopyRequest,
 	LibraryManagementProfileCreateRequest,
 	LibraryManagementProfileDeleteRequest,
+	LibraryManagementProfileExportRequest,
+	LibraryManagementProfileExportResponse,
+	LibraryManagementProfileImportPreviewRequest,
+	LibraryManagementProfileImportPreviewResponse,
+	LibraryManagementProfileImportRequest,
+	LibraryManagementProfileImportResponse,
 	LibraryManagementProfileMutationResponse,
 	LibraryManagementProfileUpdateRequest,
 	LibraryManagementSettingsImpactRequest,
@@ -96,6 +102,34 @@ export const deleteLibraryManagementProfileMutation = () =>
 			api.global.delete<LibraryManagementSettingsResponse>(
 				API.libraryManagement.profile(input.profileId),
 				{ body: input.request }
+			),
+		onSuccess: invalidateLibraryManagementSurfaces
+	}));
+
+export const exportLibraryManagementProfileMutation = () =>
+	createMutation(() => ({
+		mutationFn: (input: { profileId: string; request: LibraryManagementProfileExportRequest }) =>
+			api.global.post<LibraryManagementProfileExportResponse>(
+				API.libraryManagement.exportProfile(input.profileId),
+				input.request
+			)
+	}));
+
+export const previewLibraryManagementProfileImportMutation = () =>
+	createMutation(() => ({
+		mutationFn: (request: LibraryManagementProfileImportPreviewRequest) =>
+			api.global.post<LibraryManagementProfileImportPreviewResponse>(
+				API.libraryManagement.profileImportPreview(),
+				request
+			)
+	}));
+
+export const importLibraryManagementProfileMutation = () =>
+	createMutation(() => ({
+		mutationFn: (request: LibraryManagementProfileImportRequest) =>
+			api.global.post<LibraryManagementProfileImportResponse>(
+				API.libraryManagement.profileImports(),
+				request
 			),
 		onSuccess: invalidateLibraryManagementSurfaces
 	}));

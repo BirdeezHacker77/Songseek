@@ -239,6 +239,21 @@ const COVERAGE: Array<[string, string, string]> = [
 		'/api/v1/settings/library-management/profiles/P1/copy'
 	],
 	[
+		'export library management profile',
+		API.libraryManagement.exportProfile('P1'),
+		'/api/v1/settings/library-management/profiles/P1/export'
+	],
+	[
+		'preview library management profile import',
+		API.libraryManagement.profileImportPreview(),
+		'/api/v1/settings/library-management/profile-imports/preview'
+	],
+	[
+		'import library management profile',
+		API.libraryManagement.profileImports(),
+		'/api/v1/settings/library-management/profile-imports'
+	],
+	[
 		'library management profile preset diff',
 		API.libraryManagement.profilePresetDiff('P1'),
 		'/api/v1/settings/library-management/profiles/P1/preset-diff'

@@ -7,11 +7,13 @@
 		Clock3,
 		CircleOff,
 		Copy,
+		FileUp,
 		FolderCog,
 		History,
 		Link2,
 		Pencil,
 		RefreshCw,
+		Share2,
 		ShieldAlert,
 		Square,
 		Sparkles,
@@ -21,6 +23,7 @@
 
 	import LibraryManagementProfilePicker from './LibraryManagementProfilePicker.svelte';
 	import LibraryManagementProfileEditor from './LibraryManagementProfileEditor.svelte';
+	import LibraryManagementProfileSharing from './LibraryManagementProfileSharing.svelte';
 	import { authStore } from '$lib/stores/authStore.svelte';
 	import {
 		forgetLibraryManagementActivationSession,
@@ -51,6 +54,7 @@
 	import type {
 		LibraryManagementActivationProof,
 		LibraryManagementProfile,
+		LibraryManagementProfileImportResponse,
 		LibraryManagementRootAssignment,
 		LibraryManagementRootOverrides,
 		LibraryManagementSettings,
@@ -87,6 +91,8 @@
 	let persistedSettings = $state<LibraryManagementSettings | null>(null);
 	let sourceRevision = $state('');
 	let selectedProfileId = $state<string | null>(null);
+	let shareTarget = $state<LibraryManagementProfile | null>(null);
+	let importProfileOpen = $state(false);
 	let copySourceProfileId = $state('');
 	let newProfileName = $state('Picard-style Organizer copy');
 	let saveError = $state('');
@@ -397,6 +403,14 @@
 		});
 	}
 
+	function profileDeleteReason(profile: LibraryManagementProfile): string | null {
+		if (!draft || profile.preset_origin) return null;
+		if (profiles.length === 1) return 'Only remaining profile';
+		if (profile.id === draft.default_profile_id) return 'Library default';
+		if (assignedRootCount(profile.id) > 0) return 'Assigned to root';
+		return null;
+	}
+
 	function profileAspects(profile: LibraryManagementProfile): string[] {
 		const aspects: string[] = [];
 		if (profile.metadata.enabled) aspects.push('tags');
@@ -418,6 +432,35 @@
 		return current.some((value) => value.id === saved.id)
 			? current.map((value) => (value.id === saved.id ? saved : value))
 			: [...current, saved];
+	}
+
+	function upsertScripts(
+		current: ManagementScriptSettings[],
+		created: ManagementScriptSettings[]
+	): ManagementScriptSettings[] {
+		const createdIds = new Set(created.map((script) => script.id));
+		return [...current.filter((script) => !createdIds.has(script.id)), ...structuredClone(created)];
+	}
+
+	function acceptImportedProfile(result: LibraryManagementProfileImportResponse): void {
+		if (!draft) return;
+		draft = {
+			...draft,
+			profiles: upsertProfile(draft.profiles, result.profile),
+			naming_scripts: upsertScripts(draft.naming_scripts, result.naming_scripts),
+			tagging_scripts: upsertScripts(draft.tagging_scripts, result.tagging_scripts)
+		};
+		if (persistedSettings) {
+			persistedSettings = {
+				...persistedSettings,
+				profiles: upsertProfile(persistedSettings.profiles, result.profile),
+				naming_scripts: upsertScripts(persistedSettings.naming_scripts, result.naming_scripts),
+				tagging_scripts: upsertScripts(persistedSettings.tagging_scripts, result.tagging_scripts)
+			};
+		}
+		sourceRevision = result.settings_revision;
+		copySourceProfileId = result.profile.id;
+		selectedProfileId = result.profile.id;
 	}
 
 	function activationProfileFor(rootId: string): LibraryManagementProfile | null {
@@ -826,9 +869,7 @@
 										>{aspect}</span
 									>{/each}
 							</div>
-							<div
-								class="mt-4 flex items-center justify-between border-t border-base-content/10 pt-3"
-							>
+							<div class="management-profile-card__footer">
 								<div class="management-profile-card__state">
 									<label
 										class="management-profile-default-control"
@@ -862,21 +903,33 @@
 											to a root{/if}</span
 									>
 								</div>
-								<div class="flex gap-1">
+								<div class="management-profile-card__actions">
+									<button
+										class="btn btn-ghost btn-xs"
+										aria-label={`Share ${profile.name}`}
+										onclick={() => (shareTarget = profile)}
+										><Share2 class="h-3.5 w-3.5" /> Share</button
+									>
 									<button
 										class="btn btn-ghost btn-xs"
 										onclick={() => (selectedProfileId = profile.id)}
 										><Pencil class="h-3.5 w-3.5" /> Edit</button
 									>
-									<button
-										class="btn btn-ghost btn-xs btn-square text-error"
-										aria-label={`Delete ${profile.name}`}
-										disabled={assignedRootCount(profile.id) > 0 ||
-											profile.id === draft.default_profile_id ||
-											profiles.length === 1}
-										onclick={(event) => requestDelete(profile, event.currentTarget)}
-										><Trash2 class="h-3.5 w-3.5" /></button
-									>
+									{#if !profile.preset_origin}
+										{@const deleteReason = profileDeleteReason(profile)}
+										<button
+											class="btn btn-ghost btn-xs {deleteReason
+												? 'text-base-content/45'
+												: 'btn-square text-error'}"
+											aria-label={deleteReason
+												? `Cannot delete ${profile.name}: ${deleteReason}`
+												: `Delete ${profile.name}`}
+											disabled={Boolean(deleteReason)}
+											onclick={(event) => requestDelete(profile, event.currentTarget)}
+											><Trash2 class="h-3.5 w-3.5" />{#if deleteReason}<span>{deleteReason}</span
+												>{/if}</button
+										>
+									{/if}
 								</div>
 							</div>
 						</article>
@@ -909,7 +962,19 @@
 						disabled={copyProfile.isPending || !copySourceProfileId || !newProfileName.trim()}
 						onclick={() => void createProfileCopy()}><Copy class="h-4 w-4" /> Create copy</button
 					>
+					<button
+						class="btn btn-outline btn-sm"
+						disabled={hasUnsavedSettings}
+						title={hasUnsavedSettings
+							? 'Save or discard current Library Management changes before importing.'
+							: undefined}
+						onclick={() => (importProfileOpen = true)}
+						><FileUp class="h-4 w-4" /> Import profile</button
+					>
 				</div>
+				{#if hasUnsavedSettings}<p class="text-xs text-warning">
+						Save or discard current Library Management changes before importing a profile.
+					</p>{/if}
 			</section>
 
 			<section class="space-y-3" aria-labelledby="management-roots-title">
@@ -1366,6 +1431,15 @@
 		onsave={saveProfile}
 	/>
 {/if}
+
+<LibraryManagementProfileSharing
+	shareProfile={shareTarget}
+	importOpen={importProfileOpen}
+	settingsRevision={sourceRevision}
+	onshareclose={() => (shareTarget = null)}
+	onimportclose={() => (importProfileOpen = false)}
+	onimported={acceptImportedProfile}
+/>
 
 <dialog
 	bind:this={activationDialog}

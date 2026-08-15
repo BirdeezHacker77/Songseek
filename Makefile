@@ -72,6 +72,7 @@ NPM    ?= pnpm
 	backend-test-navidrome \
 	backend-test-multidisc \
 	test-library-management-multidisc-naming \
+	test-library-management-profile-sharing \
 	backend-test-performance \
 	backend-test-preferences \
 	backend-test-plex \
@@ -463,6 +464,7 @@ test-library-management-multidisc-naming: $(BACKEND_VENV_STAMP) ## Run dynamic L
 		tests/services/native/test_artwork_projection_service.py \
 		tests/services/native/test_management_script_engines.py \
 		tests/services/native/test_library_management_naming_policy.py \
+		tests/services/native/test_library_management_profile_sharing.py \
 		tests/services/native/test_library_management_profile_service.py \
 		tests/services/native/test_library_management_preview_service.py \
 		tests/services/native/test_library_management_planner.py \
@@ -475,6 +477,16 @@ test-library-management-multidisc-naming: $(BACKEND_VENV_STAMP) ## Run dynamic L
 		tests/services/native/test_library_management_recovery_service.py \
 		tests/services/native/test_library_management_undo_service.py \
 		tests/routes/test_library_management_routes.py
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsLibraryManagement.svelte.spec.ts
+
+test-library-management-profile-sharing: $(BACKEND_VENV_STAMP) ## Run portable Library Management profile sharing tests
+	$(PYTEST) \
+		tests/services/native/test_library_management_profile_sharing.py \
+		tests/routes/test_library_management_routes.py \
+		tests/security/test_auth_on_every_endpoint.py
+	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project server \
+		src/lib/queries/library-management/LibraryManagementMutations.spec.ts \
+		src/lib/queries/__tests__/integration-coverage.spec.ts
 	cd "$(FRONTEND_DIR)" && $(NPM) exec vitest run --project client src/lib/components/settings/SettingsLibraryManagement.svelte.spec.ts
 
 backend-test-navidrome: $(BACKEND_VENV_STAMP) ## Run all Navidrome integration backend tests

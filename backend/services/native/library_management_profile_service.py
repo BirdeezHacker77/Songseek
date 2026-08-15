@@ -24,6 +24,11 @@ from api.v1.schemas.library_management import (
     profile_revision,
     settings_revision,
 )
+from api.v1.schemas.library_management_sharing import (
+    LibraryManagementProfileExportResponse,
+    LibraryManagementProfileImportPreviewResponse,
+    LibraryManagementProfileImportResponse,
+)
 from core.exceptions import (
     ConfigurationError,
     ScriptValidationError,
@@ -36,6 +41,18 @@ from models.library_management_planning import (
 )
 from services.native.library_management_naming_policy import (
     activation_naming_policy_matches,
+)
+from services.native.library_management_profile_sharing import (
+    PROFILE_BUNDLE_MIME_TYPE,
+    MaterializedProfileBundle,
+    export_profile_bundle,
+    materialize_profile_bundle,
+    parse_profile_bundle,
+    preview_materialized_profile,
+    profile_aspects,
+    profile_bundle_filename,
+    profile_import_warnings,
+    unique_import_name,
 )
 from services.native.library_policy_resolver import LibraryPolicyResolver
 from services.preferences_service import PreferencesService
@@ -338,7 +355,11 @@ class LibraryManagementProfileService:
         expected_settings_revision: str,
     ) -> LibraryManagementSettingsResponse:
         settings = self._preferences.get_library_management_settings_raw()
-        self._find_profile(settings, profile_id)
+        deleted = self._find_profile(settings, profile_id)
+        if deleted.preset_origin is not None:
+            raise ConfigurationError(
+                "Built-in Library Management presets cannot be deleted."
+            )
         if settings.default_profile_id == profile_id:
             raise ConfigurationError("The default profile cannot be deleted.")
         if any(
@@ -351,8 +372,185 @@ class LibraryManagementProfileService:
         settings.profiles = [
             profile for profile in settings.profiles if profile.id != profile_id
         ]
+        candidate_naming_ids = {
+            deleted.organization.naming_script_id,
+            deleted.organization.multi_disc_naming_script_id,
+            deleted.artwork.external_naming_script_id,
+        } - {None}
+        used_naming_ids = {
+            script_id
+            for profile in settings.profiles
+            for script_id in (
+                profile.organization.naming_script_id,
+                profile.organization.multi_disc_naming_script_id,
+                profile.artwork.external_naming_script_id,
+            )
+            if script_id is not None
+        }
+        used_naming_ids.update(
+            script_id
+            for assignment in settings.root_assignments
+            if assignment.overrides is not None
+            for script_id in (
+                assignment.overrides.naming_script_id,
+                assignment.overrides.multi_disc_naming_script_id,
+            )
+            if script_id is not None
+        )
+        candidate_tagging_ids = set(deleted.metadata.tagging_script_ids)
+        used_tagging_ids = {
+            script_id
+            for profile in settings.profiles
+            for script_id in profile.metadata.tagging_script_ids
+        }
+        settings.naming_scripts = [
+            script
+            for script in settings.naming_scripts
+            if script.id not in candidate_naming_ids
+            or script.id in used_naming_ids
+            or script.preset_origin is not None
+        ]
+        settings.tagging_scripts = [
+            script
+            for script in settings.tagging_scripts
+            if script.id not in candidate_tagging_ids
+            or script.id in used_tagging_ids
+            or script.preset_origin is not None
+        ]
         return self.save_settings(
             settings, expected_settings_revision=expected_settings_revision
+        )
+
+    def export_profile(
+        self,
+        profile_id: str,
+        *,
+        expected_settings_revision: str,
+    ) -> LibraryManagementProfileExportResponse:
+        settings = self._preferences.get_library_management_settings_raw()
+        current_revision = settings_revision(settings)
+        if current_revision != expected_settings_revision:
+            raise StaleRevisionError(
+                "Library Management settings changed. Refresh this page and try again."
+            )
+        profile = self._find_profile(settings, profile_id)
+        bundle = export_profile_bundle(
+            profile,
+            settings.naming_scripts,
+            settings.tagging_scripts,
+        )
+        return LibraryManagementProfileExportResponse(
+            filename=profile_bundle_filename(profile.name),
+            mime_type=PROFILE_BUNDLE_MIME_TYPE,
+            document=bundle.document,
+            share_code=bundle.share_code,
+            bundle_hash=bundle.bundle_hash,
+            settings_revision=current_revision,
+        )
+
+    def preview_profile_import(
+        self,
+        content: str,
+        *,
+        expected_settings_revision: str,
+    ) -> LibraryManagementProfileImportPreviewResponse:
+        settings = self._preferences.get_library_management_settings_raw()
+        current_revision = settings_revision(settings)
+        if current_revision != expected_settings_revision:
+            raise StaleRevisionError(
+                "Library Management settings changed. Refresh this page and try again."
+            )
+        parsed = parse_profile_bundle(content)
+        materialized = self._resolve_import_names(
+            preview_materialized_profile(parsed), settings
+        )
+        return LibraryManagementProfileImportPreviewResponse(
+            profile=materialized.profile,
+            naming_scripts=materialized.naming_scripts,
+            tagging_scripts=materialized.tagging_scripts,
+            aspects=profile_aspects(materialized.profile),
+            warnings=profile_import_warnings(materialized.profile),
+            bundle_hash=parsed.bundle_hash,
+            settings_revision=current_revision,
+        )
+
+    def import_profile(
+        self,
+        content: str,
+        *,
+        reviewed_bundle_hash: str,
+        name: str,
+        expected_settings_revision: str,
+    ) -> LibraryManagementProfileImportResponse:
+        settings = self._preferences.get_library_management_settings_raw()
+        current_revision = settings_revision(settings)
+        if current_revision != expected_settings_revision:
+            raise StaleRevisionError(
+                "Library Management settings changed. Refresh this page and try again."
+            )
+        parsed = parse_profile_bundle(content)
+        if parsed.bundle_hash != reviewed_bundle_hash:
+            raise StaleRevisionError(
+                "The shared profile changed after it was reviewed. Review it again."
+            )
+        materialized = materialize_profile_bundle(
+            parsed,
+            profile_id=str(uuid.uuid4()),
+            naming_id_factory=lambda _script: str(uuid.uuid4()),
+            tagging_id_factory=lambda _script: str(uuid.uuid4()),
+        )
+        materialized = self._resolve_import_names(materialized, settings)
+        materialized.profile.name = name
+        profile_id = materialized.profile.id
+        naming_ids = {script.id for script in materialized.naming_scripts}
+        tagging_ids = {script.id for script in materialized.tagging_scripts}
+        settings.profiles.append(materialized.profile)
+        settings.naming_scripts.extend(materialized.naming_scripts)
+        settings.tagging_scripts.extend(materialized.tagging_scripts)
+        saved = self.save_settings(
+            settings,
+            expected_settings_revision=expected_settings_revision,
+        )
+        return LibraryManagementProfileImportResponse(
+            profile=self._find_profile(saved, profile_id),
+            naming_scripts=[
+                script for script in saved.naming_scripts if script.id in naming_ids
+            ],
+            tagging_scripts=[
+                script for script in saved.tagging_scripts if script.id in tagging_ids
+            ],
+            settings_revision=saved.settings_revision,
+        )
+
+    @classmethod
+    def _resolve_import_names(
+        cls,
+        materialized: MaterializedProfileBundle,
+        settings: LibraryManagementSettings,
+    ) -> MaterializedProfileBundle:
+        materialized.profile.name = unique_import_name(
+            materialized.profile.name,
+            {profile.name.casefold() for profile in settings.profiles},
+        )
+        naming_names = {script.name.casefold() for script in settings.naming_scripts}
+        for script in materialized.naming_scripts:
+            script.name = unique_import_name(script.name, naming_names)
+            naming_names.add(script.name.casefold())
+        tagging_names = {script.name.casefold() for script in settings.tagging_scripts}
+        for script in materialized.tagging_scripts:
+            script.name = unique_import_name(script.name, tagging_names)
+            tagging_names.add(script.name.casefold())
+        detached = LibraryManagementSettings(
+            profiles=[materialized.profile],
+            default_profile_id=materialized.profile.id,
+            naming_scripts=materialized.naming_scripts,
+            tagging_scripts=materialized.tagging_scripts,
+        )
+        normalized = cls._detached_normalized(detached)
+        return MaterializedProfileBundle(
+            profile=normalized.profiles[0],
+            naming_scripts=normalized.naming_scripts,
+            tagging_scripts=normalized.tagging_scripts,
         )
 
     def preset_diff(self, profile_id: str) -> LibraryManagementPresetDiff:
@@ -408,6 +606,7 @@ class LibraryManagementProfileService:
         current = self._preferences.get_library_management_settings_raw()
         current_revision = settings_revision(current)
         normalized = self._detached_normalized(proposed)
+        self._validate_preset_provenance(current, normalized)
         self._validate_root_assignments(normalized)
         impact = self._classify(current, normalized)
         impact.stale = (
@@ -430,6 +629,7 @@ class LibraryManagementProfileService:
                 "Library Management settings changed. Refresh this page and try again."
             )
         normalized = self._detached_normalized(proposed)
+        self._validate_preset_provenance(current, normalized)
         policy = self._validate_root_assignments(normalized)
         impact = self._classify(current, normalized)
         if impact.preview_required:
@@ -694,6 +894,34 @@ class LibraryManagementProfileService:
             return normalize_library_management_settings(detached)
         except (ScriptValidationError, ValueError) as exc:
             raise ConfigurationError(str(exc)) from exc
+
+    @staticmethod
+    def _validate_preset_provenance(
+        current: LibraryManagementSettings,
+        proposed: LibraryManagementSettings,
+    ) -> None:
+        current_by_id = {profile.id: profile for profile in current.profiles}
+        proposed_by_id = {profile.id: profile for profile in proposed.profiles}
+        for profile in current.profiles:
+            candidate = proposed_by_id.get(profile.id)
+            if profile.preset_origin is not None and candidate is None:
+                raise ConfigurationError(
+                    "Built-in Library Management presets cannot be deleted."
+                )
+            if (
+                candidate is not None
+                and candidate.preset_origin != profile.preset_origin
+            ):
+                raise ConfigurationError(
+                    "Library Management preset identity cannot be changed."
+                )
+        if any(
+            profile.id not in current_by_id and profile.preset_origin is not None
+            for profile in proposed.profiles
+        ):
+            raise ConfigurationError(
+                "Library Management preset identity cannot be assigned to a custom profile."
+            )
 
     @staticmethod
     def _find_profile(

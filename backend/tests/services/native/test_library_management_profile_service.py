@@ -138,11 +138,17 @@ def test_assigned_profile_cannot_be_deleted(tmp_path: Path) -> None:
     prefs = _preferences(tmp_path)
     service = _service(prefs)
     current = service.get_settings()
+    copied = service.copy_profile(
+        PICARD_ORGANIZER_PROFILE_ID,
+        name="Assigned custom profile",
+        expected_settings_revision=current.settings_revision,
+    )
+    current = service.get_settings()
     proposed = prefs.get_library_management_settings_raw()
     proposed.root_assignments = [
         LibraryManagementRootAssignment(
             root_id=prefs.get_typed_library_settings_raw().library_roots[0].id,
-            profile_id=LEGACY_NAMING_PROFILE_ID,
+            profile_id=copied.id,
         )
     ]
     saved = service.save_settings(
@@ -152,9 +158,42 @@ def test_assigned_profile_cannot_be_deleted(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="assigned"):
         service.delete_profile(
-            LEGACY_NAMING_PROFILE_ID,
+            copied.id,
             expected_settings_revision=saved.settings_revision,
         )
+
+
+def test_full_settings_save_cannot_remove_or_relabel_a_present_preset(
+    tmp_path: Path,
+) -> None:
+    prefs = _preferences(tmp_path)
+    service = _service(prefs)
+    before = service.get_settings()
+    without_preset = prefs.get_library_management_settings_raw()
+    without_preset.profiles = [
+        profile
+        for profile in without_preset.profiles
+        if profile.id != COMPLETE_LIBRARY_ORGANIZER_PROFILE_ID
+    ]
+
+    with pytest.raises(ConfigurationError, match="presets cannot be deleted"):
+        service.save_settings(
+            without_preset,
+            expected_settings_revision=before.settings_revision,
+        )
+
+    relabeled = prefs.get_library_management_settings_raw()
+    profile = next(
+        value for value in relabeled.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    profile.preset_origin = None
+    with pytest.raises(ConfigurationError, match="preset identity cannot be changed"):
+        service.update_profile(
+            profile,
+            expected_settings_revision=before.settings_revision,
+        )
+
+    assert service.get_settings() == before
 
 
 def test_impact_distinguishes_harmless_restrictive_and_destructive(

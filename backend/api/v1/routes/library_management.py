@@ -40,6 +40,14 @@ from api.v1.schemas.library_management_preview import (
     LibraryManagementTagEditorContextResponse,
     LibraryManagementUndoPreviewRequest,
 )
+from api.v1.schemas.library_management_sharing import (
+    LibraryManagementProfileExportRequest,
+    LibraryManagementProfileExportResponse,
+    LibraryManagementProfileImportPreviewRequest,
+    LibraryManagementProfileImportPreviewResponse,
+    LibraryManagementProfileImportRequest,
+    LibraryManagementProfileImportResponse,
+)
 from api.v1.schemas.library_operations import OperationResponse
 from core.dependencies import (
     LibraryManagementBaselineServiceDep,
@@ -226,6 +234,57 @@ async def get_library_management_profile_preset_diff(
     service: LibraryManagementProfileServiceDep,
 ) -> LibraryManagementPresetDiff:
     return service.preset_diff(profile_id)
+
+
+@router.post(
+    "/settings/library-management/profiles/{profile_id}/export",
+    response_model=LibraryManagementProfileExportResponse,
+)
+async def export_library_management_profile(
+    profile_id: str,
+    service: LibraryManagementProfileServiceDep,
+    request: LibraryManagementProfileExportRequest = MsgSpecBody(
+        LibraryManagementProfileExportRequest
+    ),
+) -> LibraryManagementProfileExportResponse:
+    return service.export_profile(
+        profile_id,
+        expected_settings_revision=request.expected_settings_revision,
+    )
+
+
+@router.post(
+    "/settings/library-management/profile-imports/preview",
+    response_model=LibraryManagementProfileImportPreviewResponse,
+)
+async def preview_library_management_profile_import(
+    service: LibraryManagementProfileServiceDep,
+    request: LibraryManagementProfileImportPreviewRequest = MsgSpecBody(
+        LibraryManagementProfileImportPreviewRequest
+    ),
+) -> LibraryManagementProfileImportPreviewResponse:
+    return service.preview_profile_import(
+        request.content,
+        expected_settings_revision=request.expected_settings_revision,
+    )
+
+
+@router.post(
+    "/settings/library-management/profile-imports",
+    response_model=LibraryManagementProfileImportResponse,
+)
+async def import_library_management_profile(
+    service: LibraryManagementProfileServiceDep,
+    request: LibraryManagementProfileImportRequest = MsgSpecBody(
+        LibraryManagementProfileImportRequest
+    ),
+) -> LibraryManagementProfileImportResponse:
+    return service.import_profile(
+        request.content,
+        reviewed_bundle_hash=request.reviewed_bundle_hash,
+        name=request.name,
+        expected_settings_revision=request.expected_settings_revision,
+    )
 
 
 @router.post(

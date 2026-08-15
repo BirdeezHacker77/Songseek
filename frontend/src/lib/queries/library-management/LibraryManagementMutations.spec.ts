@@ -34,6 +34,9 @@ import {
 	createLibraryManagementTagEditPreviewMutation,
 	deleteLibraryManagementProfileMutation,
 	discardLibraryManagementPreviewMutation,
+	exportLibraryManagementProfileMutation,
+	importLibraryManagementProfileMutation,
+	previewLibraryManagementProfileImportMutation,
 	updateLibraryManagementSettingsMutation
 } from './LibraryManagementMutations.svelte';
 
@@ -81,6 +84,47 @@ describe('Library Management mutations', () => {
 			'/api/v1/settings/library-management/profiles/profile%2F1',
 			{ body: input.request }
 		);
+	});
+
+	it('posts profile export and import operations to their revision-guarded endpoints', async () => {
+		exportLibraryManagementProfileMutation();
+		const exportMutation = currentMutation<{
+			profileId: string;
+			request: { expected_settings_revision: string };
+		}>();
+		await exportMutation.mutationFn({
+			profileId: 'profile/1',
+			request: { expected_settings_revision: 'rev-1' }
+		});
+		expect(api.global.post).toHaveBeenLastCalledWith(
+			'/api/v1/settings/library-management/profiles/profile%2F1/export',
+			{ expected_settings_revision: 'rev-1' }
+		);
+
+		previewLibraryManagementProfileImportMutation();
+		const previewMutation = currentMutation<Record<string, unknown>>();
+		const previewRequest = { content: 'DNLP1:code', expected_settings_revision: 'rev-1' };
+		await previewMutation.mutationFn(previewRequest);
+		expect(api.global.post).toHaveBeenLastCalledWith(
+			'/api/v1/settings/library-management/profile-imports/preview',
+			previewRequest
+		);
+
+		importLibraryManagementProfileMutation();
+		const importMutation = currentMutation<Record<string, unknown>>();
+		const importRequest = {
+			content: 'DNLP1:code',
+			reviewed_bundle_hash: 'hash',
+			name: 'Shared profile',
+			expected_settings_revision: 'rev-1'
+		};
+		await importMutation.mutationFn(importRequest);
+		await importMutation.onSuccess?.({}, importRequest);
+		expect(api.global.post).toHaveBeenLastCalledWith(
+			'/api/v1/settings/library-management/profile-imports',
+			importRequest
+		);
+		expect(invalidate).toHaveBeenCalledOnce();
 	});
 
 	it('posts the complete explicit duplicate choice without adding a default', async () => {

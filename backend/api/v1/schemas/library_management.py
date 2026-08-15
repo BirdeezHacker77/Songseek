@@ -67,6 +67,7 @@ MAX_SIDE_CAR_PATTERNS = 100
 MAX_ARTWORK_PATTERNS = 100
 MAX_GENRE_RULES = 500
 MAX_PRESERVE_FIELDS = 100
+MAX_MANAGEMENT_NAME_LENGTH = 120
 
 FieldMode = Literal["disabled", "replace", "fill_missing", "merge", "preserve"]
 GenreMode = Literal["replace", "merge", "fill_missing"]
@@ -628,7 +629,7 @@ def _validate_name(value: str, label: str) -> str:
     normalized = " ".join(value.split())
     if not normalized:
         raise ValueError(f"{label} needs a name.")
-    if len(normalized) > 120:
+    if len(normalized) > MAX_MANAGEMENT_NAME_LENGTH:
         raise ValueError(f"{label} name is too long.")
     return normalized
 

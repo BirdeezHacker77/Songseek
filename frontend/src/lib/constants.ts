@@ -437,6 +437,10 @@ export const API = {
 			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}`,
 		copyProfile: (profileId: string) =>
 			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}/copy`,
+		exportProfile: (profileId: string) =>
+			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}/export`,
+		profileImportPreview: () => '/api/v1/settings/library-management/profile-imports/preview',
+		profileImports: () => '/api/v1/settings/library-management/profile-imports',
 		profilePresetDiff: (profileId: string) =>
 			`/api/v1/settings/library-management/profiles/${encodeURIComponent(profileId)}/preset-diff`,
 		activationPreviews: () => '/api/v1/settings/library-management/activation-previews',

@@ -1009,7 +1009,8 @@
 	max-height: min(28rem, 65vh);
 	overflow-y: auto;
 	overscroll-behavior: contain;
-	padding: 0.15rem 0.35rem 0.15rem 0.15rem;
+	padding: 0.15rem 0.35rem 0.75rem 0.15rem;
+	scroll-padding-block-end: 0.75rem;
 	scrollbar-gutter: stable;
 }
 
@@ -1029,11 +1030,31 @@
 }
 
 .management-profile-card {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
 	padding: 1rem;
 	transition:
 		border-color 160ms ease,
 		box-shadow 160ms ease,
 		background-color 160ms ease;
+}
+
+.management-profile-card__footer {
+	display: flex;
+	align-items: stretch;
+	flex-direction: column;
+	gap: 0.75rem;
+	margin-top: auto;
+	padding-top: 0.75rem;
+	border-top: 1px solid color-mix(in oklab, var(--color-base-content) 10%, transparent);
+}
+
+.management-profile-card__actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 0.25rem;
 }
 
 .management-profile-card[data-default='true'] {
@@ -1064,6 +1085,7 @@
 	color: color-mix(in oklab, var(--color-base-content) 58%, transparent);
 	font-size: 0.7rem;
 	font-weight: 700;
+	white-space: nowrap;
 	cursor: pointer;
 }
 
@@ -3617,6 +3639,10 @@ details[open] > summary .management-editor-chevron {
 
 	.management-settings-header .management-status-badge {
 		align-self: flex-start;
+	}
+
+	.management-profile-card__actions {
+		justify-content: flex-start;
 	}
 
 	.management-script-toolbar {

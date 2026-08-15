@@ -280,6 +280,69 @@ def test_profile_path_mismatch_uses_error_envelope(
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_builtin_profile_cannot_be_deleted(
+    app: FastAPI,
+    route_services: tuple[LibraryManagementProfileService, AsyncMock],
+) -> None:
+    profile_service, _ = route_services
+    override_admin_auth(app)
+    client = build_test_client(app)
+    before = profile_service.get_settings()
+
+    response = client.request(
+        "DELETE",
+        f"/settings/library-management/profiles/{PICARD_ORGANIZER_PROFILE_ID}",
+        json={"expected_settings_revision": before.settings_revision},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == (
+        "Built-in Library Management presets cannot be deleted."
+    )
+    assert profile_service.get_settings() == before
+
+
+def test_profile_export_preview_and_import_routes(
+    app: FastAPI,
+    route_services: tuple[LibraryManagementProfileService, AsyncMock],
+) -> None:
+    profile_service, _ = route_services
+    override_admin_auth(app)
+    client = build_test_client(app)
+    settings = profile_service.get_settings()
+
+    exported = client.post(
+        f"/settings/library-management/profiles/{PICARD_ORGANIZER_PROFILE_ID}/export",
+        json={"expected_settings_revision": settings.settings_revision},
+    )
+    assert exported.status_code == 200
+    assert exported.json()["filename"] == "picard-style-organizer.dnprofile"
+    assert exported.json()["share_code"].startswith("DNLP1:")
+
+    preview = client.post(
+        "/settings/library-management/profile-imports/preview",
+        json={
+            "content": exported.json()["document"],
+            "expected_settings_revision": settings.settings_revision,
+        },
+    )
+    assert preview.status_code == 200
+    assert preview.json()["profile"]["name"] == "Picard-style Organizer (imported)"
+
+    imported = client.post(
+        "/settings/library-management/profile-imports",
+        json={
+            "content": exported.json()["document"],
+            "reviewed_bundle_hash": preview.json()["bundle_hash"],
+            "name": preview.json()["profile"]["name"],
+            "expected_settings_revision": settings.settings_revision,
+        },
+    )
+    assert imported.status_code == 200
+    assert imported.json()["profile"]["preset_origin"] is None
+    assert imported.json()["settings_revision"] != settings.settings_revision
+
+
 def test_preview_routes_forward_actor_filters_and_hide_source_identity(
     app: FastAPI,
     route_services: tuple[LibraryManagementProfileService, AsyncMock],
@@ -629,6 +692,15 @@ def test_management_route_inventory_is_complete() -> None:
             "GET",
             "/settings/library-management/profiles/{profile_id}/preset-diff",
         ),
+        (
+            "POST",
+            "/settings/library-management/profiles/{profile_id}/export",
+        ),
+        (
+            "POST",
+            "/settings/library-management/profile-imports/preview",
+        ),
+        ("POST", "/settings/library-management/profile-imports"),
         ("POST", "/settings/library-management/activation-previews"),
         ("GET", "/settings/library-management/activation-previews/{job_id}"),
         ("POST", "/settings/library-management/activation-confirmations"),
