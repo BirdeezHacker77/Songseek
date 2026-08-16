@@ -1,8 +1,10 @@
+import asyncio
 import json
 import sqlite3
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -61,6 +63,9 @@ from services.native.local_album_grouping_service import LocalAlbumGroupingServi
 from services.native.reidentification_service import (
     IdentificationWorkArbiter,
     ReidentificationService,
+)
+from services.native.target_application_runtime import (
+    run_target_identification_worker,
 )
 
 EMBEDDED_GROUP = "11111111-1111-4111-8111-111111111111"
@@ -1160,40 +1165,97 @@ async def test_deferral_cap_terminates_job_in_attention_state(
 
 
 @pytest.mark.asyncio
-async def test_attention_failed_job_resurrects_on_same_key_enqueue(
+async def test_attention_failed_job_resurrects_only_for_provider_causes(
     store: NativeLibraryStore, db_path: Path
 ) -> None:
     await _seed_album(store)
     await _seed_album(store, "2")
+    await _seed_album(store, "3")
+    await _seed_album(store, "4")
     queue = IdentificationQueueService(store)
+
+    # Deterministic cap (cause != PROVIDER_TEMPORARILY_UNAVAILABLE) stays
+    # terminal on a same-key enqueue: no resurrection.
     job_id = await queue.enqueue_album("album-1", input_revision="revision", now=1)
     claimed = await queue.claim("worker", now=2)
     assert claimed is not None
     await queue.fail(claimed, "worker", "MAX_DEFERRALS_EXCEEDED", now=3)
-
-    resurrected_id, created = await queue.enqueue_album_with_disposition(
+    deduped_id, created = await queue.enqueue_album_with_disposition(
         "album-1", input_revision="revision", now=4
+    )
+    assert deduped_id == job_id
+    assert created is False
+    with sqlite3.connect(db_path) as connection:
+        state = connection.execute(
+            "SELECT state FROM library_identification_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()[0]
+    assert state == "failed"
+
+    # Provider cap with the gate open: resurrects and clears the cause.
+    job_id = await queue.enqueue_album("album-2", input_revision="revision", now=5)
+    now = 6.0
+    for _attempt in range(1, MAX_DEFERRAL_ATTEMPTS + 1):
+        claimed = await queue.claim("worker", now=now)
+        assert claimed is not None
+        await queue.defer(
+            claimed, "worker", "PROVIDER_TEMPORARILY_UNAVAILABLE", now=now
+        )
+        now += MAX_BACKOFF_SECONDS + 60
+    with sqlite3.connect(db_path) as connection:
+        cause = connection.execute(
+            "SELECT attention_cause FROM library_identification_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()[0]
+    assert cause == "PROVIDER_TEMPORARILY_UNAVAILABLE"
+
+    open_queue = IdentificationQueueService(store, provider_available=lambda: True)
+    resurrected_id, created = await open_queue.enqueue_album_with_disposition(
+        "album-2", input_revision="revision", now=now + 1
     )
     assert resurrected_id == job_id
     assert created is True
     with sqlite3.connect(db_path) as connection:
         row = connection.execute(
-            "SELECT state, attempt_count, not_before, last_failure_code, terminal_at "
-            "FROM library_identification_jobs WHERE id = ?",
+            "SELECT state, attempt_count, not_before, last_failure_code, "
+            "attention_cause, terminal_at FROM library_identification_jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
-    assert row == ("queued", 0, 0, None, None)
-    reclaimed = await queue.claim("worker", now=4)
+    assert row == ("queued", 0, 0, None, None, None)
+    reclaimed = await queue.claim("worker", now=now + 2)
     assert reclaimed is not None
     assert reclaimed["id"] == job_id
 
+    # Provider cap with the gate closed: stays terminal (dedupes, no resurrection).
+    job_id = await queue.enqueue_album("album-3", input_revision="revision", now=20)
+    now = 21.0
+    for _attempt in range(1, MAX_DEFERRAL_ATTEMPTS + 1):
+        claimed = await queue.claim("worker", now=now)
+        assert claimed is not None
+        await queue.defer(
+            claimed, "worker", "PROVIDER_TEMPORARILY_UNAVAILABLE", now=now
+        )
+        now += MAX_BACKOFF_SECONDS + 60
+    closed_queue = IdentificationQueueService(store, provider_available=lambda: False)
+    deduped_id, created = await closed_queue.enqueue_album_with_disposition(
+        "album-3", input_revision="revision", now=now + 1
+    )
+    assert deduped_id == job_id
+    assert created is False
+    with sqlite3.connect(db_path) as connection:
+        state = connection.execute(
+            "SELECT state FROM library_identification_jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()[0]
+    assert state == "failed"
+
     # A terminal failure without an attention code still dedupes (no resurrection).
-    await queue.enqueue_album("album-2", input_revision="revision", now=1)
-    other = await queue.claim("worker", now=5)
+    await queue.enqueue_album("album-4", input_revision="revision", now=1)
+    other = await queue.claim("worker", now=now + 2)
     assert other is not None
-    await queue.fail(other, "worker", "UNRELATED_TERMINAL_CODE", now=6)
+    await queue.fail(other, "worker", "UNRELATED_TERMINAL_CODE", now=now + 3)
     deduped_id, created = await queue.enqueue_album_with_disposition(
-        "album-2", input_revision="revision", now=7
+        "album-4", input_revision="revision", now=now + 4
     )
     assert deduped_id == str(other["id"])
     assert created is False
@@ -1203,6 +1265,56 @@ async def test_attention_failed_job_resurrects_on_same_key_enqueue(
             (other["id"],),
         ).fetchone()[0]
     assert state == "failed"
+
+
+@pytest.mark.asyncio
+async def test_identification_worker_crash_loop_hits_the_deferral_cap(
+    store: NativeLibraryStore,
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.native.identification_queue_service as queue_module
+
+    await _seed_album(store)
+    queue = IdentificationQueueService(store)
+    await queue.enqueue_album("album-1", input_revision="revision", now=1)
+
+    clock = {"now": 2.0}
+
+    def advancing_time() -> float:
+        clock["now"] += MAX_BACKOFF_SECONDS + 60
+        return clock["now"]
+
+    monkeypatch.setattr(queue_module.time, "time", advancing_time)
+    service = AsyncMock()
+    service.run_claimed_job.side_effect = RuntimeError("boom")
+    wakeups = SimpleNamespace(
+        revision=lambda _kind: 0,
+        wait=AsyncMock(
+            side_effect=[None] * MAX_DEFERRAL_ATTEMPTS + [asyncio.CancelledError()]
+        ),
+    )
+    await run_target_identification_worker(
+        lambda: queue,
+        lambda: service,
+        worker_id="test-worker",
+        work_wakeups=wakeups,
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT state, last_failure_code, attention_cause, attempt_count "
+            "FROM library_identification_jobs WHERE local_album_id = 'album-1'"
+        ).fetchone()
+        review = connection.execute(
+            "SELECT state, reason_code, attempt_id "
+            "FROM library_identification_reviews"
+        ).fetchone()
+    # The crashed job deferred through the cap instead of looping forever, and
+    # the terminal failure surfaced a review row.
+    assert row == ("failed", "MAX_DEFERRALS_EXCEEDED", "UNEXPECTED_ERROR", 10)
+    assert review == ("needs_review", "MAX_DEFERRALS_EXCEEDED", None)
+    assert await queue.claim("worker", now=clock["now"] + 100) is None
 
 
 @pytest.mark.asyncio

@@ -490,6 +490,11 @@ _ADMIN_ENDPOINTS = [
     ),
     (
         "POST",
+        "/api/v1/library/reviews/review-1/dismiss",
+        {"expected_review_revision": 1, "expected_catalog_revision": 1},
+    ),
+    (
+        "POST",
         "/api/v1/library/reviews/review-1/candidate",
         {
             "expected_review_revision": 1,

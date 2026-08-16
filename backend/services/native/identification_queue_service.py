@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.library_work import IdentificationJob
@@ -19,8 +20,19 @@ SUBJECT_NOT_AVAILABLE_GRACE_SECONDS = 24 * 60 * 60
 
 
 class IdentificationQueueService:
-    def __init__(self, store: NativeLibraryStore) -> None:
+    def __init__(
+        self,
+        store: NativeLibraryStore,
+        *,
+        provider_available: Callable[[], bool] | None = None,
+    ) -> None:
         self._store = store
+        self._provider_available = provider_available
+
+    def _resurrect_attention(self) -> bool:
+        if self._provider_available is None:
+            return True
+        return self._provider_available()
 
     async def enqueue_album(
         self,
@@ -42,7 +54,9 @@ class IdentificationQueueService:
             now=now,
         )
         return await self._store.enqueue_identification_job(
-            job, expected_policy_revision=expected_policy_revision
+            job,
+            expected_policy_revision=expected_policy_revision,
+            resurrect_attention=self._resurrect_attention(),
         )
 
     async def enqueue_album_with_disposition(
@@ -63,7 +77,9 @@ class IdentificationQueueService:
             requested_by_user_id=requested_by_user_id,
             now=now,
         )
-        return await self._store.enqueue_identification_job_result(job)
+        return await self._store.enqueue_identification_job_result(
+            job, resurrect_attention=self._resurrect_attention()
+        )
 
     async def enqueue_albums_with_disposition(
         self,
@@ -92,6 +108,7 @@ class IdentificationQueueService:
             grouping_context=grouping_context,
             queue_cursor=queue_cursor,
             background=background,
+            resurrect_attention=self._resurrect_attention(),
         )
 
     @staticmethod
@@ -148,6 +165,7 @@ class IdentificationQueueService:
                 worker_id=worker_id,
                 expected_job_revision=int(job["row_revision"]),
                 failure_code="MAX_DEFERRALS_EXCEEDED",
+                attention_cause=failure_code,
                 now=timestamp,
             )
         backoff = min(MAX_BACKOFF_SECONDS, 30 * (2 ** min(attempts - 1, 10)))
@@ -174,6 +192,7 @@ class IdentificationQueueService:
             worker_id=worker_id,
             expected_job_revision=int(job["row_revision"]),
             failure_code=failure_code,
+            attention_cause=failure_code,
             now=time.time() if now is None else now,
         )
 
@@ -233,7 +252,9 @@ class IdentificationQueueService:
         return recovered
 
     async def activity_snapshot(self) -> dict:
-        return await self._store.get_identification_activity_snapshot()
+        return await self._store.get_identification_activity_snapshot(
+            now=time.time()
+        )
 
     async def stream_revisions(self) -> dict[str, int]:
         revisions = {

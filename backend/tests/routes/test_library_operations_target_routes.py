@@ -11,6 +11,7 @@ from api.v1.schemas.library_operations import (
     OperationResponse,
     RepairFindingListResponse,
     RepairEstimateResponse,
+    ReviewActionResponse,
     ReviewDetailResponse,
     ReviewListItem,
     ReviewListResponse,
@@ -45,6 +46,14 @@ def services() -> dict[str, AsyncMock]:
             id="review-1", state="needs_review", reason_code="NO_SAFE_MATCH"
         ),
         tracks=[],
+    )
+    review.act.return_value = ReviewActionResponse(
+        review_id="review-1",
+        state="resolved",
+        row_revision=2,
+        catalog_revision=1,
+        action_id="action-dismiss",
+        remaining_exclusion_source=None,
     )
     operation = AsyncMock()
     operation.get.return_value = OperationResponse(
@@ -150,6 +159,41 @@ def test_review_and_diagnostic_contracts(
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "no-store"
     assert response.content == b"{}"
+
+
+def test_review_dismiss_forwards_action_and_returns_resolved(
+    app: FastAPI, services: dict[str, AsyncMock]
+) -> None:
+    override_admin_auth(app)
+    client = build_test_client(app)
+    response = client.post(
+        "/library/reviews/review-1/dismiss",
+        json={
+            "expected_review_revision": 1,
+            "expected_catalog_revision": 1,
+            "idempotency_key": "dismiss-1",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "review_id": "review-1",
+        "state": "resolved",
+        "row_revision": 2,
+        "catalog_revision": 1,
+        "action_id": "action-dismiss",
+        "operation_job_id": None,
+        "remaining_exclusion_source": None,
+    }
+    call = services["review"].act.await_args
+    assert call is not None
+    assert call.args[0] == "review-1"
+    assert call.args[1] == "dismiss"
+    assert call.args[2].expected_review_revision == 1
+    assert call.args[2].expected_catalog_revision == 1
+    assert call.args[2].expected_identity_revision is None
+    assert call.args[2].idempotency_key == "dismiss-1"
+    assert call.args[2].confirmation is False
+    assert call.args[3] == "test-admin-id"
 
 
 def test_target_operation_routes_are_admin_only(app: FastAPI) -> None:
@@ -388,6 +432,7 @@ def test_target_operation_route_inventory_is_complete() -> None:
         ("POST", "/library/reviews/{review_id}/detach-and-keep-tagged"),
         ("POST", "/library/reviews/{review_id}/exclude"),
         ("POST", "/library/reviews/{review_id}/restore"),
+        ("POST", "/library/reviews/{review_id}/dismiss"),
         ("POST", "/library/reviews/{review_id}/candidate"),
         ("POST", "/library/reviews/bulk-preview"),
         ("POST", "/library/reviews/bulk-apply"),

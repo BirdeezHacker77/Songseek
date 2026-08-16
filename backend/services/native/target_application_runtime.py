@@ -73,14 +73,14 @@ async def run_target_identification_worker(
         revision = wakeups.revision("identification")
         processed = False
         wait_seconds = IDENTIFICATION_RECOVERY_INTERVAL_SECONDS
+        queue = queue_getter()
+        job: dict | None = None
         try:
             if (enabled_getter is None or enabled_getter()) and (
                 workload_gate is None or not workload_gate.scan_active
             ):
-                queue = queue_getter()
                 await queue.recover()
                 if not await queue.is_paused():
-                    job = None
                     if workload_gate is None or not workload_gate.scan_active:
                         job = await queue.claim(owner)
                     if job is not None:
@@ -90,6 +90,11 @@ async def run_target_identification_worker(
             break
         except Exception:  # noqa: BLE001 - a durable worker must survive one failed item
             logger.exception("Target identification worker iteration failed")
+            if job is not None:
+                try:
+                    await queue.defer(job, owner, "UNEXPECTED_ERROR")
+                except Exception:  # noqa: BLE001 - a crashed job must not kill the worker
+                    logger.exception("Failed to defer crashed identification job")
             wait_seconds = ERROR_RETRY_INTERVAL_SECONDS
         if processed:
             continue

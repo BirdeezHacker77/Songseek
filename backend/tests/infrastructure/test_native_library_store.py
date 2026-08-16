@@ -1532,7 +1532,7 @@ async def test_identification_snapshot_counts_attention_and_deferral_reasons(
             "last_failure_code = 'UNRELATED_CODE' WHERE id = 'job-failed-other'"
         )
 
-    snapshot = await store.get_identification_activity_snapshot()
+    snapshot = await store.get_identification_activity_snapshot(now=10)
     assert snapshot["attention_count"] == 2
     assert snapshot["deferred_reason_counts"] == {
         "PROVIDER_TEMPORARILY_UNAVAILABLE": 2,
@@ -1570,7 +1570,7 @@ async def test_identification_activity_snapshot_and_revisioned_controls(
             "WHERE id = 'job-failed'"
         )
 
-    snapshot = await store.get_identification_activity_snapshot()
+    snapshot = await store.get_identification_activity_snapshot(now=12)
     assert snapshot["counts"] == {"failed": 1, "queued": 1}
     assert snapshot["started_at"] == 10
     assert snapshot["failure_event_id"] == "job-failed"
@@ -1592,7 +1592,7 @@ async def test_identification_activity_snapshot_and_revisioned_controls(
             )
         ],
     )
-    assert (await store.get_identification_activity_snapshot())[
+    assert (await store.get_identification_activity_snapshot(now=13))[
         "foreground_operation_count"
     ] == 1
 
@@ -1601,7 +1601,7 @@ async def test_identification_activity_snapshot_and_revisioned_controls(
             "UPDATE library_operation_jobs SET state = 'ready' "
             "WHERE id = 'foreground-operation'"
         )
-    assert (await store.get_identification_activity_snapshot())[
+    assert (await store.get_identification_activity_snapshot(now=13))[
         "foreground_operation_count"
     ] == 0
 
@@ -1616,6 +1616,194 @@ async def test_identification_activity_snapshot_and_revisioned_controls(
     assert (
         await store.resume_identification_queue(resumed_at=14, expected_revision=2) == 3
     )
+
+
+def test_identification_jobs_attention_cause_ratchet_is_idempotent(
+    db_path: Path,
+) -> None:
+    lock = threading.Lock()
+    NativeLibraryStore(db_path, lock)
+    NativeLibraryStore(db_path, lock)
+    NativeLibraryStore(db_path, lock)
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(library_identification_jobs)"
+            )
+        }
+    assert "attention_cause" in columns
+
+
+@pytest.mark.asyncio
+async def test_terminal_fail_identification_job_surfaces_one_review_row(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await store.create_catalog_membership(_membership())
+
+    async def fail_album_job(
+        job_id: str, kind: str, failure_code: str, now: float
+    ) -> None:
+        await store.enqueue_identification_job(
+            IdentificationJob(
+                id=job_id,
+                local_album_id="album-1",
+                kind=kind,
+                dedupe_key=f"{kind}:album-1:one",
+                input_revision="one",
+                priority=20,
+                created_at=now - 1,
+            )
+        )
+        claimed = await store.claim_identification_job(
+            "worker", now=now, lease_seconds=60
+        )
+        assert claimed is not None
+        await store.terminal_fail_identification_job(
+            str(claimed["id"]),
+            worker_id="worker",
+            expected_job_revision=int(claimed["row_revision"]),
+            failure_code=failure_code,
+            attention_cause=failure_code,
+            now=now,
+        )
+
+    await fail_album_job("job-auto", "automatic", "MAX_DEFERRALS_EXCEEDED", 3)
+    with sqlite3.connect(db_path) as connection:
+        reviews = connection.execute(
+            "SELECT state, reason_code, attempt_id, input_revision, local_track_id "
+            "FROM library_identification_reviews"
+        ).fetchall()
+    assert reviews == [("needs_review", "MAX_DEFERRALS_EXCEEDED", None, "one", None)]
+
+    # A second terminal failure for the same album + input revision dedupes.
+    await fail_album_job("job-retry", "review_retry", "SUBJECT_NOT_AVAILABLE", 6)
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM library_identification_reviews"
+        ).fetchone()[0]
+    assert count == 1
+
+    # Track-scoped terminal failures never create review rows.
+    await store.enqueue_identification_job(
+        IdentificationJob(
+            id="job-track",
+            local_track_id="track-1",
+            kind="automatic",
+            dedupe_key="automatic:track-1:one",
+            input_revision="one",
+            priority=20,
+            created_at=7,
+        )
+    )
+    claimed = await store.claim_identification_job("worker", now=8, lease_seconds=60)
+    assert claimed is not None
+    await store.terminal_fail_identification_job(
+        str(claimed["id"]),
+        worker_id="worker",
+        expected_job_revision=int(claimed["row_revision"]),
+        failure_code="MAX_DEFERRALS_EXCEEDED",
+        attention_cause="MAX_DEFERRALS_EXCEEDED",
+        now=9,
+    )
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM library_identification_reviews"
+        ).fetchone()[0]
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_dismiss_review_resolves_without_touching_tracks_and_cancels_jobs(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await store.create_catalog_membership(_membership())
+    # A capped automatic job surfaces its own review row with attention markers.
+    await store.enqueue_identification_job(
+        IdentificationJob(
+            id="job-capped",
+            local_album_id="album-1",
+            kind="automatic",
+            dedupe_key="automatic:album-1:one",
+            input_revision="one",
+            priority=20,
+            created_at=1,
+        )
+    )
+    claimed = await store.claim_identification_job("worker", now=2, lease_seconds=60)
+    assert claimed is not None
+    await store.terminal_fail_identification_job(
+        str(claimed["id"]),
+        worker_id="worker",
+        expected_job_revision=int(claimed["row_revision"]),
+        failure_code="MAX_DEFERRALS_EXCEEDED",
+        attention_cause="UNEXPECTED_ERROR",
+        now=3,
+    )
+    # An unrelated queued job for the same album is cancelled by the decision.
+    await store.enqueue_identification_job(
+        IdentificationJob(
+            id="job-auto",
+            local_album_id="album-1",
+            kind="automatic",
+            dedupe_key="automatic:album-1:two",
+            input_revision="two",
+            priority=20,
+            created_at=4,
+        )
+    )
+    with sqlite3.connect(db_path) as connection:
+        review_row = connection.execute(
+            "SELECT id FROM library_identification_reviews WHERE local_album_id = 'album-1'"
+        ).fetchone()
+    assert review_row is not None
+    review_id = str(review_row[0])
+    catalog_revision = await store.get_catalog_revision()
+    assert (await store.get_identification_activity_snapshot(now=4))["attention_count"] == 1
+
+    result = await store.apply_review_decision(
+        review_id,
+        action="dismiss",
+        actor_user_id="admin",
+        expected_review_revision=1,
+        expected_catalog_revision=catalog_revision,
+        expected_identity_revision=None,
+        action_id="action-dismiss",
+        idempotency_key=None,
+        now=5,
+    )
+
+    assert result["review"]["state"] == "resolved"
+    assert result["review"]["reason_code"] == "DISMISS"
+    with sqlite3.connect(db_path) as connection:
+        review = connection.execute(
+            "SELECT state, reason_code, decided_by_user_id, decided_at "
+            "FROM library_identification_reviews WHERE id = ?",
+            (review_id,),
+        ).fetchone()
+        track = connection.execute(
+            "SELECT availability, manual_excluded FROM local_tracks WHERE id = 'track-1'"
+        ).fetchone()
+        queued = connection.execute(
+            "SELECT state, last_failure_code FROM library_identification_jobs "
+            "WHERE id = 'job-auto'"
+        ).fetchone()
+        capped = connection.execute(
+            "SELECT state, last_failure_code, attention_cause "
+            "FROM library_identification_jobs WHERE id = 'job-capped'"
+        ).fetchone()
+        audit = connection.execute(
+            "SELECT action_kind, reason_code FROM library_catalog_actions "
+            "WHERE id = 'action-dismiss'"
+        ).fetchone()
+    assert review == ("resolved", "DISMISS", "admin", 5)
+    assert track == ("indexed", 0)
+    assert queued == ("cancelled", "ADMIN_DECISION")
+    # The capped job stays failed for audit but stops counting as attention.
+    assert capped == ("failed", None, None)
+    assert (await store.get_identification_activity_snapshot(now=5))["attention_count"] == 0
+    assert audit == ("dismiss", "DISMISS")
 
 
 @pytest.mark.asyncio

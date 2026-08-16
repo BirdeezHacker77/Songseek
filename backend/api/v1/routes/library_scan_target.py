@@ -275,7 +275,7 @@ async def library_activity(
             state = "pausing"
         elif control_state == "paused":
             state = "paused"
-        elif waiting:
+        elif counts.get("running", 0) or identification_snapshot["claimable_count"]:
             state = "running"
         elif identification_snapshot["failure_event_id"] is not None:
             state = "failed"

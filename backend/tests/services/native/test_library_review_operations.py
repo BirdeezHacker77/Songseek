@@ -774,6 +774,23 @@ async def test_review_cursor_filters_and_detail_are_bounded(
 
 
 @pytest.mark.asyncio
+async def test_review_actions_include_dismiss_and_policy_excluded_only_dismiss(
+    store: NativeLibraryStore,
+) -> None:
+    await _seed_album(store, "1")
+    await _seed_album(store, "2", policy="excluded")
+    service = LibraryReviewService(store)
+
+    open_detail = await service.detail("review-1")
+    assert "dismiss" in open_detail.available_actions
+    assert "exclude" in open_detail.available_actions
+    assert "retry" in open_detail.available_actions
+
+    policy_excluded = await service.detail("review-2")
+    assert policy_excluded.available_actions == ["dismiss"]
+
+
+@pytest.mark.asyncio
 async def test_review_supports_every_signed_filter_sort_and_typed_invalid_values(
     store: NativeLibraryStore, db_path: Path
 ) -> None:
@@ -3773,6 +3790,79 @@ async def test_leave_unmanaged_retains_truthful_group_and_can_be_reenabled(
 
     assert reenabled is True
     assert await store.get_management_exclusion("album-1") is None
+
+
+@pytest.mark.asyncio
+async def test_leave_unmanaged_works_for_zero_candidate_albums(
+    store: NativeLibraryStore,
+) -> None:
+    await _seed_album(store, "1")
+
+    class _NoCandidateProvider:
+        async def search_album_candidate_ids(
+            self, artist, title, limit, priority
+        ) -> list[str]:
+            return []
+
+        async def search_recording_candidate_ids(
+            self, artist, title, limit, priority
+        ) -> list[str]:
+            return []
+
+        async def get_album_candidate(
+            self, release_group_mbid, target_track_count, priority
+        ) -> None:
+            return None
+
+    worker = ExplicitReidentificationWorker(
+        store,
+        AlbumCandidateService(_NoCandidateProvider()),
+        AlbumEvidenceEngine(),
+    )
+
+    async def ready_job(idempotency_key: str, now: float) -> tuple[str, dict]:
+        created = await ReidentificationService(store).create_or_coalesce(
+            "album-1",
+            "admin",
+            idempotency_key=idempotency_key,
+            now=now,
+        )
+        claimed = await store.claim_operation_job(
+            "worker", now=now + 1, lease_seconds=60, kind="explicit_reidentification"
+        )
+        assert claimed is not None
+        ready = await worker.run_claimed(claimed, "worker", now=now + 2)
+        assert ready["state"] in ("ready", "succeeded")
+        return str(created["id"]), ready
+
+    # Zero-candidate snapshot: leave_unmanaged needs no evidence and succeeds.
+    job_id, ready = await ready_job("zero-candidate", 10)
+    selected = await worker.select_candidate(
+        job_id,
+        expected_job_revision=int(ready["row_revision"]),
+        candidate_key="",
+        confirmation=True,
+        actor_user_id="admin",
+        decision_mode="leave_unmanaged",
+        now=13,
+    )
+    assert selected["terminal_code"] == "LEFT_UNMANAGED"
+    exclusion = await store.get_management_exclusion("album-1")
+    assert exclusion is not None
+    assert exclusion.reason == "administrator_choice"
+
+    # Exact release still requires an actual candidate: no evidence, no exit.
+    job_id, ready = await ready_job("exact-empty", 15)
+    with pytest.raises(StaleRevisionError):
+        await worker.select_candidate(
+            job_id,
+            expected_job_revision=int(ready["row_revision"]),
+            candidate_key="",
+            confirmation=True,
+            actor_user_id="admin",
+            decision_mode="exact_release",
+            now=18,
+        )
 
 
 @pytest.mark.asyncio

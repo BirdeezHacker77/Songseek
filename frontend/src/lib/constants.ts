@@ -342,6 +342,7 @@ export const API = {
 			`/api/v1/library/reviews/${reviewId}/detach-and-keep-tagged`,
 		reviewExclude: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/exclude`,
 		reviewRestore: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/restore`,
+		reviewDismiss: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/dismiss`,
 		reviewCandidate: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/candidate`,
 		reviewRetry: (reviewId: string) => `/api/v1/library/reviews/${reviewId}/retry`,
 		bulkReviewPreview: () => '/api/v1/library/reviews/bulk-preview',

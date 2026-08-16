@@ -444,6 +444,7 @@ def get_target_library_scan_coordinator() -> "LibraryScanCoordinator":
     from services.native.library_reconciler import LibraryReconciler
     from services.native.library_scan_coordinator import LibraryScanCoordinator
     from services.native.library_scan_events import LibraryScanEventPublisher
+    from services.native.local_album_grouping_service import LocalAlbumGroupingService
 
     from .cache_providers import get_native_library_store
 
@@ -452,7 +453,12 @@ def get_target_library_scan_coordinator() -> "LibraryScanCoordinator":
     return LibraryScanCoordinator(
         store,
         LibraryInventoryScanner(store, filesystem_coordinator=filesystem),
-        LibraryIndexer(store, get_audio_tagger(), filesystem_coordinator=filesystem),
+        LibraryIndexer(
+            store,
+            get_audio_tagger(),
+            grouping=LocalAlbumGroupingService(store, get_target_identification_queue()),
+            filesystem_coordinator=filesystem,
+        ),
         LibraryReconciler(store, filesystem),
         get_library_policy_resolver,
         LibraryScanEventPublisher(store, get_sse_publisher()),
@@ -475,7 +481,10 @@ def get_target_identification_queue() -> "IdentificationQueueService":
 
     from .cache_providers import get_native_library_store
 
-    return IdentificationQueueService(get_native_library_store())
+    return IdentificationQueueService(
+        get_native_library_store(),
+        provider_available=get_mb_provider_availability(),
+    )
 
 
 @singleton

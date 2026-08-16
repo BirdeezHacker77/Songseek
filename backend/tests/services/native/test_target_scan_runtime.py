@@ -216,6 +216,31 @@ async def test_target_identification_worker_recovers_claims_and_survives_iterati
     service.run_claimed_job.assert_awaited_once_with({"id": "job-1"}, "test-worker")
 
 
+@pytest.mark.asyncio
+async def test_identification_worker_defers_crashed_job_with_unexpected_error() -> None:
+    queue = AsyncMock()
+    queue.is_paused.return_value = False
+    queue.claim.side_effect = [{"id": "job-1", "row_revision": 1}, None]
+    service = AsyncMock()
+    service.run_claimed_job.side_effect = RuntimeError("boom")
+    wakeups = SimpleNamespace(
+        revision=lambda _kind: 0,
+        wait=AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    await run_target_identification_worker(
+        lambda: queue,
+        lambda: service,
+        worker_id="test-worker",
+        work_wakeups=wakeups,
+    )
+
+    # The crashed job is deferred as UNEXPECTED_ERROR (feeding the deferral
+    # cap) instead of being re-claimed into an infinite crash loop.
+    queue.defer.assert_awaited_once_with(
+        {"id": "job-1", "row_revision": 1}, "test-worker", "UNEXPECTED_ERROR"
+    )
+
+
 def _idle_identification_harness():
     queue = AsyncMock()
     queue.is_paused.return_value = False

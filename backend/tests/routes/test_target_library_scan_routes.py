@@ -93,6 +93,7 @@ def identification_queue() -> AsyncMock:
         "started_at": None,
         "updated_at": None,
         "deferred_count": 0,
+        "claimable_count": 0,
         "deferred_reason_counts": {},
         "attention_count": 0,
         "failure_event_id": None,
@@ -370,6 +371,7 @@ def test_activity_marks_provider_unavailable_from_live_breaker_read(
         "started_at": 2.0,
         "updated_at": 11.0,
         "deferred_count": 2,
+        "claimable_count": 2,
         "deferred_reason_counts": {"PROVIDER_TEMPORARILY_UNAVAILABLE": 2},
         "attention_count": 0,
         "kept_local_count": 0,
@@ -387,6 +389,37 @@ def test_activity_marks_provider_unavailable_from_live_breaker_read(
     assert item["deferred_count"] == 2
     assert item["deferred_reason_counts"] == {"PROVIDER_TEMPORARILY_UNAVAILABLE": 2}
     assert item["attention_count"] == 0
+
+
+def test_activity_reports_identification_idle_until_work_is_claimable(
+    app: FastAPI, identification_queue: AsyncMock
+) -> None:
+    # Deferred-not-due jobs are waiting but not claimable: the lane must not
+    # pretend the queue is running while nothing can be claimed.
+    identification_queue.activity_snapshot.return_value = {
+        **identification_queue.activity_snapshot.return_value,
+        "control_state": "running",
+        "counts": {"queued": 1},
+        "claimable_count": 0,
+        "attention_count": 1,
+        "deferred_count": 1,
+        "deferred_reason_counts": {"PROVIDER_TEMPORARILY_UNAVAILABLE": 1},
+    }
+    override_user_auth(app, role="user")
+    items = build_test_client(app).get("/library/activity").json()["items"]
+    identification = next(item for item in items if item["kind"] == "identification")
+    assert identification["state"] == "idle"
+    assert identification["waiting_count"] == 1
+
+    identification_queue.activity_snapshot.return_value = {
+        **identification_queue.activity_snapshot.return_value,
+        "counts": {"queued": 1},
+        "claimable_count": 1,
+    }
+    items = build_test_client(app).get("/library/activity").json()["items"]
+    identification = next(item for item in items if item["kind"] == "identification")
+    assert identification["state"] == "running"
+    assert identification["attention_count"] == 1
 
 
 def test_activity_projects_admin_work_and_scan_finalization_truthfully(

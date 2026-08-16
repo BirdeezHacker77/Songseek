@@ -1251,6 +1251,7 @@ class NativeLibraryStore(PersistenceBase):
                 "ALTER TABLE library_management_import_journal ADD COLUMN baseline_file_mtime_ns INTEGER",
                 "ALTER TABLE library_management_import_journal ADD COLUMN baseline_file_mode INTEGER",
                 "ALTER TABLE library_operation_jobs ADD COLUMN next_attempt_at REAL",
+                "ALTER TABLE library_identification_jobs ADD COLUMN attention_cause TEXT",
             ):
                 try:
                     connection.execute(statement)
@@ -6529,10 +6530,16 @@ class NativeLibraryStore(PersistenceBase):
             )
 
     async def enqueue_identification_job(
-        self, job: IdentificationJob, *, expected_policy_revision: str | None = None
+        self,
+        job: IdentificationJob,
+        *,
+        expected_policy_revision: str | None = None,
+        resurrect_attention: bool = True,
     ) -> str:
         job_id, _ = await self.enqueue_identification_job_result(
-            job, expected_policy_revision=expected_policy_revision
+            job,
+            expected_policy_revision=expected_policy_revision,
+            resurrect_attention=resurrect_attention,
         )
         return job_id
 
@@ -6541,6 +6548,7 @@ class NativeLibraryStore(PersistenceBase):
         job: IdentificationJob,
         *,
         expected_policy_revision: str | None = None,
+        resurrect_attention: bool = True,
     ) -> tuple[str, bool]:
         def operation(connection: sqlite3.Connection) -> tuple[str, bool]:
             if expected_policy_revision is not None:
@@ -6557,7 +6565,9 @@ class NativeLibraryStore(PersistenceBase):
                         raise StaleRevisionError(
                             "The library policy changed while identification was queued."
                         )
-            return self._enqueue_identification_job_result(connection, job)
+            return self._enqueue_identification_job_result(
+                connection, job, resurrect_attention=resurrect_attention
+            )
 
         result = await self._write(operation)
         if result[0]:
@@ -6576,12 +6586,16 @@ class NativeLibraryStore(PersistenceBase):
         grouping_context: tuple[str, str] | None = None,
         queue_cursor: str | None = None,
         background: bool = False,
+        resurrect_attention: bool = True,
     ) -> list[tuple[str, bool]]:
         """Enqueue one bounded job batch in a single store-owned transaction."""
 
         def operation(connection: sqlite3.Connection) -> list[tuple[str, bool]]:
             results = [
-                self._enqueue_identification_job_result(connection, job) for job in jobs
+                self._enqueue_identification_job_result(
+                    connection, job, resurrect_attention=resurrect_attention
+                )
+                for job in jobs
             ]
             created = sum(created for _, created in results)
             if scan_run_id is not None and created:
@@ -6631,7 +6645,11 @@ class NativeLibraryStore(PersistenceBase):
         return result
 
     def _enqueue_identification_job_result(
-        self, connection: sqlite3.Connection, job: IdentificationJob
+        self,
+        connection: sqlite3.Connection,
+        job: IdentificationJob,
+        *,
+        resurrect_attention: bool = True,
     ) -> tuple[str, bool]:
         subject_column = (
             "local_album_id" if job.local_album_id is not None else "local_track_id"
@@ -6662,8 +6680,8 @@ class NativeLibraryStore(PersistenceBase):
                 (job.created_at, decision["id"]),
             )
         existing = connection.execute(
-            "SELECT id, state, last_failure_code FROM library_identification_jobs "
-            "WHERE dedupe_key = ? "
+            "SELECT id, state, last_failure_code, attention_cause "
+            "FROM library_identification_jobs WHERE dedupe_key = ? "
             + (
                 "AND state IN ('queued','running','paused') "
                 if job.kind == "review_retry"
@@ -6674,16 +6692,20 @@ class NativeLibraryStore(PersistenceBase):
         ).fetchone()
         if existing is not None:
             if (
-                str(existing["state"]) == "failed"
+                resurrect_attention
+                and str(existing["state"]) == "failed"
                 and str(existing["last_failure_code"] or "") in ATTENTION_FAILURE_CODES
+                and str(existing["attention_cause"] or "")
+                == "PROVIDER_TEMPORARILY_UNAVAILABLE"
             ):
-                # A terminal-failed attention job must not block every future
-                # enqueue of the same dedupe key: resurrect it so a fixed album
-                # identifies again instead of silently never retrying.
+                # Terminal-failed attention jobs must not block later enqueues of
+                # the same dedupe key. Only provider-caused caps resurrect;
+                # deterministic failures stay terminal until the album's input
+                # changes (a new dedupe key).
                 connection.execute(
                     "UPDATE library_identification_jobs SET state = 'queued', "
                     "attempt_count = 0, not_before = ?, last_failure_code = NULL, "
-                    "terminal_at = NULL, updated_at = ?, "
+                    "attention_cause = NULL, terminal_at = NULL, updated_at = ?, "
                     "row_revision = row_revision + 1, event_revision = event_revision + 1 "
                     "WHERE id = ?",
                     (job.not_before, job.created_at, existing["id"]),
@@ -7470,23 +7492,67 @@ class NativeLibraryStore(PersistenceBase):
         expected_job_revision: int,
         failure_code: str,
         now: float,
+        attention_cause: str | None = None,
     ) -> int:
-        """Fail a running job terminally, keeping the row for auditability."""
+        """Fail a running job terminally, keeping the row for auditability.
+
+        Album-scoped terminal failures surface a review row so the album stays
+        findable in the review queue and can be dismissed or retried there.
+        """
 
         def operation(connection: sqlite3.Connection) -> int:
             row = connection.execute(
                 "UPDATE library_identification_jobs SET state = 'failed', "
-                "last_failure_code = ?, terminal_at = ?, lease_owner = NULL, "
-                "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
-                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
-                "WHERE id = ? AND state = 'running' AND lease_owner = ? "
-                "AND row_revision = ? RETURNING row_revision",
-                (failure_code, now, now, job_id, worker_id, expected_job_revision),
+                "last_failure_code = ?, attention_cause = ?, terminal_at = ?, "
+                "lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, "
+                "updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE id = ? AND state = 'running' "
+                "AND lease_owner = ? AND row_revision = ? RETURNING row_revision",
+                (
+                    failure_code,
+                    attention_cause,
+                    now,
+                    now,
+                    job_id,
+                    worker_id,
+                    expected_job_revision,
+                ),
             ).fetchone()
             if row is None:
                 raise StaleRevisionError(
                     "The identification job changed before it could be failed."
                 )
+            job = connection.execute(
+                "SELECT local_album_id, local_track_id, input_revision "
+                "FROM library_identification_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if (
+                job is not None
+                and job["local_album_id"] is not None
+                and job["local_track_id"] is None
+            ):
+                active_review = connection.execute(
+                    "SELECT id FROM library_identification_reviews "
+                    "WHERE local_album_id = ? AND input_revision = ? "
+                    "AND state != 'resolved'",
+                    (job["local_album_id"], job["input_revision"]),
+                ).fetchone()
+                if active_review is None:
+                    connection.execute(
+                        "INSERT INTO library_identification_reviews "
+                        "(id, local_album_id, state, reason_code, attempt_id, "
+                        "input_revision, created_at, updated_at) "
+                        "VALUES (?, ?, 'needs_review', ?, NULL, ?, ?, ?)",
+                        (
+                            str(uuid.uuid4()),
+                            job["local_album_id"],
+                            failure_code,
+                            job["input_revision"],
+                            now,
+                            now,
+                        ),
+                    )
             self._bump_stream(connection, "identification")
             return int(row["row_revision"])
 
@@ -7531,9 +7597,9 @@ class NativeLibraryStore(PersistenceBase):
         def operation(connection: sqlite3.Connection) -> int:
             cursor = connection.execute(
                 "UPDATE library_identification_jobs SET state = 'failed', "
-                "terminal_at = ?, updated_at = ?, "
-                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
-                "WHERE state = 'queued' "
+                "attention_cause = 'SUBJECT_NOT_AVAILABLE', terminal_at = ?, "
+                "updated_at = ?, row_revision = row_revision + 1, "
+                "event_revision = event_revision + 1 WHERE state = 'queued' "
                 "AND last_failure_code = 'SUBJECT_NOT_AVAILABLE' "
                 "AND updated_at < ? AND row_revision < ? AND event_revision < ?",
                 (now, now, now - grace_seconds, MAX_REVISION, MAX_REVISION),
@@ -7668,7 +7734,9 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._read(operation)
 
-    async def get_identification_activity_snapshot(self) -> dict[str, Any]:
+    async def get_identification_activity_snapshot(
+        self, *, now: float
+    ) -> dict[str, Any]:
         """Return redacted aggregate queue state for activity and admin progress UI."""
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -7687,8 +7755,11 @@ class NativeLibraryStore(PersistenceBase):
             }
             active = connection.execute(
                 "SELECT MIN(created_at) AS started_at, MAX(updated_at) AS updated_at, "
-                "SUM(CASE WHEN last_failure_code IS NOT NULL THEN 1 ELSE 0 END) AS deferred_count "
-                "FROM library_identification_jobs WHERE state IN ('queued','running','paused')"
+                "SUM(CASE WHEN last_failure_code IS NOT NULL THEN 1 ELSE 0 END) AS deferred_count, "
+                "SUM(CASE WHEN state IN ('queued','paused') "
+                "AND (not_before IS NULL OR not_before <= ?) THEN 1 ELSE 0 END) AS claimable_count "
+                "FROM library_identification_jobs WHERE state IN ('queued','running','paused')",
+                (now,),
             ).fetchone()
             active_priority = connection.execute(
                 "SELECT priority FROM library_identification_jobs "
@@ -7739,6 +7810,7 @@ class NativeLibraryStore(PersistenceBase):
                 "started_at": active["started_at"],
                 "updated_at": active["updated_at"],
                 "deferred_count": int(active["deferred_count"] or 0),
+                "claimable_count": int(active["claimable_count"] or 0),
                 "deferred_reason_counts": deferred_reason_counts,
                 "attention_count": attention_count,
                 "kept_local_count": kept_local_count,
@@ -16260,6 +16332,7 @@ class NativeLibraryStore(PersistenceBase):
                 "detach_keep_tagged": "keep_tagged",
                 "exclude": "excluded",
                 "restore": "resolved",
+                "dismiss": "resolved",
             }.get(action, action)
             if action == "exclude":
                 if album_id is not None:
@@ -16295,6 +16368,18 @@ class NativeLibraryStore(PersistenceBase):
                 "((local_album_id = ? AND ? IS NOT NULL) OR (local_track_id = ? AND ? IS NOT NULL))",
                 (now, now, album_id, album_id, track_id, track_id),
             )
+            if action == "dismiss":
+                # Dismissed attention must not keep the failed job counting in
+                # attention_count: the review is resolved and nothing else would
+                # clear the markers for a never-resurrecting cap.
+                connection.execute(
+                    "UPDATE library_identification_jobs SET last_failure_code = NULL, "
+                    "attention_cause = NULL, updated_at = ?, "
+                    "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                    "WHERE state = 'failed' AND input_revision = ? AND "
+                    "((local_album_id = ? AND ? IS NOT NULL) OR (local_track_id = ? AND ? IS NOT NULL))",
+                    (now, review["input_revision"], album_id, album_id, track_id, track_id),
+                )
             updated = connection.execute(
                 "UPDATE library_identification_reviews SET state = ?, reason_code = ?, "
                 "decided_by_user_id = ?, decided_at = ?, updated_at = ?, "
@@ -25609,8 +25694,11 @@ class NativeLibraryStore(PersistenceBase):
                 raise ResourceNotFoundError("Re-identification job not found.")
             if (
                 job["state"] != "ready"
-                or int(job["row_revision"]) != expected_job_revision
-            ):
+                and not (
+                    job["state"] == "succeeded"
+                    and decision_mode == "leave_unmanaged"
+                )
+            ) or int(job["row_revision"]) != expected_job_revision:
                 raise StaleRevisionError(
                     "The re-identification candidates changed before selection."
                 )
@@ -25662,18 +25750,20 @@ class NativeLibraryStore(PersistenceBase):
                 )
             result = json.loads(str(snapshot["result_json"]))
             attempt_id = str(result["attempt_id"])
-            evidence_row = connection.execute(
-                "SELECT * FROM library_identification_evidence WHERE attempt_id = ? "
-                "AND candidate_key = ?",
-                (attempt_id, candidate_key),
-            ).fetchone()
-            if evidence_row is None:
-                raise StaleRevisionError(
-                    "The selected candidate is no longer available."
+            evidence = None
+            if candidate_key != "":
+                evidence_row = connection.execute(
+                    "SELECT * FROM library_identification_evidence WHERE attempt_id = ? "
+                    "AND candidate_key = ?",
+                    (attempt_id, candidate_key),
+                ).fetchone()
+                if evidence_row is None:
+                    raise StaleRevisionError(
+                        "The selected candidate is no longer available."
+                    )
+                evidence = msgspec.json.decode(
+                    bytes(evidence_row["evidence_json"]), type=CandidateEvidence
                 )
-            evidence = msgspec.json.decode(
-                bytes(evidence_row["evidence_json"]), type=CandidateEvidence
-            )
             if decision_mode == "leave_unmanaged":
                 before_identity = (
                     dict(current_album_identity)
@@ -25689,7 +25779,8 @@ class NativeLibraryStore(PersistenceBase):
                         (actor_user_id, now, snapshot["local_album_id"]),
                     )
                 elif (
-                    is_valid_mbid(evidence.release_group_mbid)
+                    evidence is not None
+                    and is_valid_mbid(evidence.release_group_mbid)
                     and evidence.album_title_classification != "contradictory"
                     and evidence.album_artist_classification != "contradictory"
                 ):
@@ -25760,6 +25851,10 @@ class NativeLibraryStore(PersistenceBase):
                     reason_code="MANAGEMENT_EXCLUDED",
                     before=before_identity,
                     now=now,
+                )
+            if evidence is None:
+                raise StaleRevisionError(
+                    "The selected candidate is no longer available."
                 )
             if decision_mode == "custom_edition":
                 if not confirmation:
@@ -26250,7 +26345,7 @@ class NativeLibraryStore(PersistenceBase):
         updated = connection.execute(
             "UPDATE library_operation_jobs SET state='succeeded',terminal_code=?,"
             "terminal_at=?,updated_at=?,row_revision=row_revision+1,"
-            "event_revision=event_revision+1 WHERE id=? AND state='ready' "
+            "event_revision=event_revision+1 WHERE id=? AND state IN ('ready','succeeded') "
             "AND row_revision=? RETURNING *",
             (terminal_code, now, now, job_id, expected_job_revision),
         ).fetchone()
