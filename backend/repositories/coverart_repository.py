@@ -35,6 +35,7 @@ from repositories.coverart_album import AlbumCoverFetcher
 from repositories.coverart_disk_cache import CoverDiskCache
 from infrastructure.degradation import try_get_degradation_context
 from infrastructure.integration_result import IntegrationResult
+from infrastructure.service_health import report_breaker_health
 from models.library_management_artwork import ArtworkCandidate, ArtworkImageType
 from repositories.coverart_management_models import CaaManagementResponse
 
@@ -78,6 +79,10 @@ def _sniff_image_content_type(data: bytes) -> Optional[str]:
 
 COVER_ART_ARCHIVE_BASE = "https://coverartarchive.org"
 COVER_NEGATIVE_TTL_SECONDS = 4 * 3600
+# Short marker for upstream-outage failures (breaker open / transient fetch error):
+# repeats serve the placeholder immediately instead of re-paying the fetch chain,
+# and recovered art reappears within minutes - unlike the 4h authoritative negative.
+COVER_TRANSIENT_NEGATIVE_TTL_SECONDS = 900
 COVER_MEMORY_MAX_ENTRIES = 128
 COVER_MEMORY_MAX_BYTES = 16 * 1024 * 1024
 MANAGEMENT_ARTWORK_METADATA_MAX_BYTES = 5 * 1024 * 1024
@@ -91,7 +96,15 @@ def _default_cache_dir() -> Path:
 
 
 _coverart_circuit_breaker = CircuitBreaker(
-    failure_threshold=5, success_threshold=2, timeout=60.0, name="coverart"
+    failure_threshold=5,
+    success_threshold=2,
+    timeout=60.0,
+    name="coverart",
+    on_state_change=report_breaker_health(
+        "coverartarchive",
+        "cover art",
+        message="Cover Art Archive is temporarily unavailable.",
+    ),
 )
 
 _library_cover_circuit_breaker = CircuitBreaker(
@@ -863,8 +876,13 @@ class CoverArtRepository:
             ExternalServiceError,
             RateLimitedError,
         ) as e:
-            # Transient failure: fail soft WITHOUT caching a negative (the artist may well have
-            # an image; it was just a blip) and without deferring - the next request retries.
+            # Transient failure: bank a SHORT negative (15 min) so a sustained upstream outage
+            # doesn't re-pay the full fetch chain on every request/poll; recovered art
+            # reappears on the first request after expiry. Authoritative no-art still uses
+            # the 4h negative below.
+            await self._disk_cache.write_negative(
+                file_path, ttl_seconds=COVER_TRANSIENT_NEGATIVE_TTL_SECONDS
+            )
             _record_degradation(f"Artist image fetch failed for {artist_id[:8]}: {e}")
             return None
 
@@ -957,6 +975,24 @@ class CoverArtRepository:
             )
 
         if await self._disk_cache.is_negative(file_path):
+            return await self._prefer_audiodb_album_cover(
+                release_group_id,
+                identifier,
+                suffix,
+                file_path,
+                None,
+                priority,
+            )
+
+        if _coverart_circuit_breaker.is_open():
+            # Sustained CAA outage: skip the inline 2-attempt fetch (~12-15s hang per
+            # request) and do NOT spawn the deferred best-release resolve - it would
+            # fail the same way and then write the 4h negative meant for authoritative
+            # no-art. Bank a short transient negative so repeats serve the placeholder
+            # immediately; the first request after TTL expiry re-probes the breaker.
+            await self._disk_cache.write_negative(
+                file_path, ttl_seconds=COVER_TRANSIENT_NEGATIVE_TTL_SECONDS
+            )
             return await self._prefer_audiodb_album_cover(
                 release_group_id,
                 identifier,
@@ -1169,6 +1205,23 @@ class CoverArtRepository:
             )
 
         if await self._disk_cache.is_negative(file_path):
+            return await self._prefer_release_audiodb_cover(
+                release_id,
+                identifier,
+                suffix,
+                file_path,
+                None,
+                priority,
+                is_disconnected,
+            )
+
+        if _coverart_circuit_breaker.is_open():
+            # Sustained CAA outage: skip the inline 2-attempt fetch (~12-15s hang per
+            # request). Bank a short transient negative so repeats serve the placeholder
+            # immediately; the first request after TTL expiry re-probes the breaker.
+            await self._disk_cache.write_negative(
+                file_path, ttl_seconds=COVER_TRANSIENT_NEGATIVE_TTL_SECONDS
+            )
             return await self._prefer_release_audiodb_cover(
                 release_id,
                 identifier,
