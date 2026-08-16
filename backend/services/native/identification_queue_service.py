@@ -14,6 +14,8 @@ PRIORITY_HISTORICAL_BACKLOG = 40
 PRIORITY_SUPPORTING_MAINTENANCE = 50
 LEASE_SECONDS = 60.0
 MAX_BACKOFF_SECONDS = 6 * 60 * 60
+MAX_DEFERRAL_ATTEMPTS = 10
+SUBJECT_NOT_AVAILABLE_GRACE_SECONDS = 24 * 60 * 60
 
 
 class IdentificationQueueService:
@@ -140,6 +142,14 @@ class IdentificationQueueService:
     ) -> int:
         timestamp = time.time() if now is None else now
         attempts = max(1, int(job.get("attempt_count", 1)))
+        if attempts >= MAX_DEFERRAL_ATTEMPTS:
+            return await self._store.terminal_fail_identification_job(
+                str(job["id"]),
+                worker_id=worker_id,
+                expected_job_revision=int(job["row_revision"]),
+                failure_code="MAX_DEFERRALS_EXCEEDED",
+                now=timestamp,
+            )
         backoff = min(MAX_BACKOFF_SECONDS, 30 * (2 ** min(attempts - 1, 10)))
         return await self._store.defer_identification_job(
             str(job["id"]),
@@ -148,6 +158,28 @@ class IdentificationQueueService:
             failure_code=failure_code,
             not_before=timestamp + backoff,
             now=timestamp,
+        )
+
+    async def fail(
+        self,
+        job: dict,
+        worker_id: str,
+        failure_code: str,
+        *,
+        now: float | None = None,
+    ) -> int:
+        """Terminally fail a running job, keeping the row for auditability."""
+        return await self._store.terminal_fail_identification_job(
+            str(job["id"]),
+            worker_id=worker_id,
+            expected_job_revision=int(job["row_revision"]),
+            failure_code=failure_code,
+            now=time.time() if now is None else now,
+        )
+
+    async def reset_provider_deferrals(self, *, now: float | None = None) -> int:
+        return await self._store.reset_provider_identification_deferrals(
+            now=time.time() if now is None else now
         )
 
     async def pause(
@@ -191,9 +223,14 @@ class IdentificationQueueService:
         return (await self._store.get_identification_control())["state"] == "paused"
 
     async def recover(self, *, now: float | None = None) -> int:
-        return await self._store.recover_expired_identification_leases(
-            now=time.time() if now is None else now
+        timestamp = time.time() if now is None else now
+        recovered = await self._store.recover_expired_identification_leases(
+            now=timestamp
         )
+        await self._store.gc_stale_identification_jobs(
+            now=timestamp, grace_seconds=SUBJECT_NOT_AVAILABLE_GRACE_SECONDS
+        )
+        return recovered
 
     async def activity_snapshot(self) -> dict:
         return await self._store.get_identification_activity_snapshot()

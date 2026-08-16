@@ -225,6 +225,15 @@ class ScanInventoryItem(AppStruct):
     scope_relative_path: str = "."
 
 
+class ScanFailureRecord(AppStruct):
+    root_id: str
+    relative_path: str
+    failure_code: str
+    recorded_at: float
+    failure_detail: str = ""
+    phase: Literal["discovering", "indexing", "reconciling"] = "discovering"
+
+
 class ScannedTrackWrite(msgspec.Struct):
     artist: LocalArtist
     album: LocalAlbum

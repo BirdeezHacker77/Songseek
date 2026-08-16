@@ -28,6 +28,8 @@ export interface LibraryActivityItem {
 	needs_review_count: number;
 	failed_count: number;
 	deferred_count: number;
+	deferred_reason_counts: Record<string, number>;
+	attention_count: number;
 	priority_band: string | null;
 	oldest_backlog_at: number | null;
 	provider_unavailable: boolean;
@@ -135,6 +137,20 @@ export interface ScanRunHistoryResponse {
 
 export interface ScanRunDetailResponse {
 	snapshot: ScanRunSnapshot;
+}
+
+export interface ScanRunFailureItem {
+	root_id: string;
+	relative_path: string;
+	failure_code: string;
+	failure_detail: string;
+	phase: 'discovering' | 'indexing' | 'reconciling';
+	recorded_at: number;
+}
+
+export interface ScanRunFailuresResponse {
+	items: ScanRunFailureItem[];
+	next_cursor: number | null;
 }
 
 export interface ScanEstimateResponse {
@@ -483,6 +499,7 @@ export interface TypedLibrarySettings {
 	staging_path: string;
 	naming_template: string;
 	acoustid_api_key: string;
+	enabled: boolean;
 }
 
 export interface TargetLibrarySettingsResponse extends TypedLibrarySettings {

@@ -19,6 +19,7 @@ from api.v1.schemas.library_operations import (
 )
 from core.exceptions import ExternalServiceError, ResourceNotFoundError, ValidationError
 from infrastructure.queue.priority_queue import RequestPriority
+from infrastructure.resilience.retry import CircuitOpenError
 from infrastructure.persistence.native_library_store import NativeLibraryStore
 from models.identification import (
     AlbumCandidate,
@@ -58,6 +59,15 @@ from services.native.library_operation_service import (
 MANAGEMENT_READINESS_PURPOSE = "management_readiness"
 MANAGEMENT_MAPPING_VERSION = "management-edition-readiness-v3"
 
+# MusicBrainz breaker timeout is 60 s; this 2x window (matching the artist
+# reconciliation service) gives the breaker a recovery window between attempts.
+_PROVIDER_DEFERRED_RETRY_SECONDS = 120.0
+
+
+class _ProviderUnavailable(Exception):
+    """Control-flow: the identity provider is unavailable, so the audit defers
+    the whole job instead of writing 'unverifiable' findings during the outage."""
+
 
 class IdentityRepairService:
     def __init__(
@@ -66,11 +76,13 @@ class IdentityRepairService:
         provider: IdentificationProviderProtocol | None = None,
         evidence: AlbumEvidenceEngine | None = None,
         canonical_provider: CanonicalMusicBrainzRepositoryProtocol | None = None,
+        provider_available: Callable[[], bool] | None = None,
     ) -> None:
         self._store = store
         self._provider = provider
         self._evidence = evidence or AlbumEvidenceEngine()
         self._canonical_provider = canonical_provider
+        self._provider_available = provider_available
         self._operations = LibraryOperationService(store)
 
     async def create(
@@ -207,6 +219,7 @@ class IdentityRepairService:
         *,
         now: float | None = None,
         checkpoint: Callable[[], Awaitable[None]] | None = None,
+        provider_available: Callable[[], bool] | None = None,
     ) -> OperationResponse:
         snapshot = await self._store.get_operation_snapshot(str(job["id"]))
         scope = (
@@ -219,8 +232,13 @@ class IdentityRepairService:
             if scope
             else "existing_matches"
         )
+        availability = (
+            self._provider_available if provider_available is None else provider_available
+        )
         while True:
             timestamp = time.time() if now is None else now
+            if availability is not None and not availability():
+                return await self._defer_audit(str(job["id"]), worker_id, timestamp)
             controlled = await self._store.checkpoint_operation_control(
                 str(job["id"]), worker_id, now=timestamp
             )
@@ -245,13 +263,21 @@ class IdentityRepairService:
             )
             if not renewed:
                 raise ResourceNotFoundError("The identity check lease changed.")
-            if purpose == MANAGEMENT_READINESS_PURPOSE:
-                finding, attempt, evidence = await self._classify_management_readiness(
-                    str(job["id"]), work, context, timestamp
-                )
-            else:
-                finding, attempt, evidence = await self._classify(
-                    str(job["id"]), work, context
+            try:
+                if purpose == MANAGEMENT_READINESS_PURPOSE:
+                    finding, attempt, evidence = await self._classify_management_readiness(
+                        str(job["id"]), work, context, timestamp
+                    )
+                else:
+                    finding, attempt, evidence = await self._classify(
+                        str(job["id"]), work, context
+                    )
+            except _ProviderUnavailable:
+                return await self._defer_audit(
+                    str(job["id"]),
+                    worker_id,
+                    timestamp,
+                    ordinal=int(work["ordinal"]),
                 )
             await self._store.save_repair_finding_for_work(
                 str(job["id"]),
@@ -265,6 +291,24 @@ class IdentityRepairService:
             )
             if checkpoint is not None:
                 await checkpoint()
+
+    async def _defer_audit(
+        self,
+        job_id: str,
+        worker_id: str,
+        timestamp: float,
+        *,
+        ordinal: int | None = None,
+    ) -> OperationResponse:
+        deferred = await self._store.defer_repair_audit_work(
+            job_id=job_id,
+            ordinal=ordinal,
+            worker_id=worker_id,
+            reason_code="PROVIDER_DEFERRED",
+            now=timestamp,
+            retry_not_before=timestamp + _PROVIDER_DEFERRED_RETRY_SECONDS,
+        )
+        return self._operations._response(deferred)
 
     async def _classify_management_readiness(
         self,
@@ -359,19 +403,10 @@ class IdentityRepairService:
                 includes=("artist-credits", "recordings", "release-groups"),
                 priority=RequestPriority.BACKGROUND_SYNC,
             )
-        except ExternalServiceError:
-            return (
-                self._finding(
-                    job_id,
-                    work,
-                    "unverifiable",
-                    "PROVIDER_DEFERRED",
-                    False,
-                    identity_revision=int(identity["row_revision"]),
-                ),
-                None,
-                [],
-            )
+        except (ExternalServiceError, CircuitOpenError) as error:
+            raise _ProviderUnavailable(
+                "MusicBrainz is unavailable; deferring the identity audit."
+            ) from error
         if release is None:
             return (
                 self._finding(
@@ -415,19 +450,10 @@ class IdentityRepairService:
                 tracks,
                 candidate,
             )
-        except ExternalServiceError:
-            return (
-                self._finding(
-                    job_id,
-                    work,
-                    "unverifiable",
-                    "PROVIDER_DEFERRED",
-                    False,
-                    identity_revision=int(identity["row_revision"]),
-                ),
-                None,
-                [],
-            )
+        except (ExternalServiceError, CircuitOpenError) as error:
+            raise _ProviderUnavailable(
+                "MusicBrainz is unavailable; deferring the identity audit."
+            ) from error
         evaluated = self._evidence.evaluate_candidate(local_tracks, candidate)
         self._disambiguate_duplicate_recordings(
             local_tracks,
@@ -1011,7 +1037,6 @@ class IdentityRepairService:
             )
         attempt: IdentificationAttempt | None = None
         records: list[IdentificationEvidenceRecord] = []
-        provider_deferred = False
         stored: IdentificationEvidenceRecord | None = None
         candidate: AlbumCandidate | None = None
         fingerprint_filled = False
@@ -1021,9 +1046,10 @@ class IdentityRepairService:
                     str(identity["release_mbid"]),
                     RequestPriority.BACKGROUND_SYNC,
                 )
-            except ExternalServiceError:
-                candidate = None
-                provider_deferred = True
+            except (ExternalServiceError, CircuitOpenError) as error:
+                raise _ProviderUnavailable(
+                    "MusicBrainz is unavailable; deferring the identity audit."
+                ) from error
             if candidate is not None:
                 grouping_tracks = [_to_grouping_track(row) for row in tracks]
                 for track, row in zip(grouping_tracks, tracks, strict=True):
@@ -1085,9 +1111,7 @@ class IdentityRepairService:
                     job_id,
                     work,
                     "unverifiable",
-                    "PROVIDER_DEFERRED"
-                    if provider_deferred
-                    else "EVIDENCE_UNAVAILABLE",
+                    "EVIDENCE_UNAVAILABLE",
                     False,
                     identity_revision=int(identity["row_revision"]),
                 ),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from infrastructure.cache.cache_keys import (
     library_raw_albums_key,
@@ -488,6 +489,13 @@ def get_library_administrative_work_service() -> "LibraryAdministrativeWorkServi
     return LibraryAdministrativeWorkService(get_native_library_store())
 
 
+def get_mb_provider_availability() -> Callable[[], bool]:
+    """Live MusicBrainz breaker read shared by identification and activity routes."""
+    from repositories.musicbrainz_base import mb_circuit_breaker
+
+    return lambda: not mb_circuit_breaker.is_open()
+
+
 @singleton
 def get_target_album_identification_service() -> "AlbumIdentificationService":
     from services.native.album_candidate_service import AlbumCandidateService
@@ -496,7 +504,6 @@ def get_target_album_identification_service() -> "AlbumIdentificationService":
     from services.native.conditional_fingerprint_service import (
         ConditionalFingerprintService,
     )
-    from repositories.musicbrainz_base import mb_circuit_breaker
 
     from .cache_providers import get_native_library_store
 
@@ -520,7 +527,7 @@ def get_target_album_identification_service() -> "AlbumIdentificationService":
         ConditionalFingerprintService(store, get_audio_fingerprinter()),
         invalidate,
         _schedule_identified_album_work,
-        provider_available=lambda: not mb_circuit_breaker.is_open(),
+        provider_available=get_mb_provider_availability(),
     )
 
 
@@ -634,6 +641,7 @@ def get_target_identity_repair_service() -> "IdentityRepairService":
         get_musicbrainz_identification_repository(),
         AlbumEvidenceEngine(),
         get_musicbrainz_repository(),
+        provider_available=get_mb_provider_availability(),
     )
 
 
@@ -2580,6 +2588,9 @@ def get_acquisition_cleanup_service() -> "AcquisitionCleanupService":
         lambda: Path(
             get_preferences_service().get_sabnzbd_connection_raw().downloads_mount
         ),
+        sab_category_getter=lambda: get_preferences_service()
+        .get_sabnzbd_connection_raw()
+        .category,
     )
 
 

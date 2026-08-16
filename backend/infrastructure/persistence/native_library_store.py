@@ -100,6 +100,7 @@ from models.library_work import (
     OperationWorkItem,
     RepairFinding,
     ReviewDecision,
+    ScanFailureRecord,
     ScanInventoryItem,
     ScanRequest,
     ScanRequestResult,
@@ -131,6 +132,7 @@ UNKNOWN_ARTIST_ID = "00000000-0000-4000-8000-000000000002"
 AUTOMATIC_SAFE_EVIDENCE_REASONS = frozenset(
     {"SUPPORTED", "ACCEPTED", "SUPPORTED_EMBEDDED_IDS"}
 )
+ATTENTION_FAILURE_CODES = frozenset({"MAX_DEFERRALS_EXCEEDED", "SUBJECT_NOT_AVAILABLE"})
 BULK_PREVIEW_BATCH_SIZE = 500
 BULK_PREVIEW_CLEANUP_BATCH_SIZE = 5_000
 MANAGEMENT_PERSISTENCE_BATCH_SIZE = 500
@@ -6660,7 +6662,8 @@ class NativeLibraryStore(PersistenceBase):
                 (job.created_at, decision["id"]),
             )
         existing = connection.execute(
-            "SELECT id FROM library_identification_jobs WHERE dedupe_key = ? "
+            "SELECT id, state, last_failure_code FROM library_identification_jobs "
+            "WHERE dedupe_key = ? "
             + (
                 "AND state IN ('queued','running','paused') "
                 if job.kind == "review_retry"
@@ -6670,6 +6673,23 @@ class NativeLibraryStore(PersistenceBase):
             (job.dedupe_key,),
         ).fetchone()
         if existing is not None:
+            if (
+                str(existing["state"]) == "failed"
+                and str(existing["last_failure_code"] or "") in ATTENTION_FAILURE_CODES
+            ):
+                # A terminal-failed attention job must not block every future
+                # enqueue of the same dedupe key: resurrect it so a fixed album
+                # identifies again instead of silently never retrying.
+                connection.execute(
+                    "UPDATE library_identification_jobs SET state = 'queued', "
+                    "attempt_count = 0, not_before = ?, last_failure_code = NULL, "
+                    "terminal_at = NULL, updated_at = ?, "
+                    "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                    "WHERE id = ?",
+                    (job.not_before, job.created_at, existing["id"]),
+                )
+                self._bump_stream(connection, "identification")
+                return str(existing["id"]), True
             return str(existing["id"]), False
         queued_subject = connection.execute(
             f"SELECT id FROM library_identification_jobs WHERE {subject_column} = ? "
@@ -7442,6 +7462,88 @@ class NativeLibraryStore(PersistenceBase):
         self.work_wakeups.notify_after("identification", not_before - now)
         return result
 
+    async def terminal_fail_identification_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        expected_job_revision: int,
+        failure_code: str,
+        now: float,
+    ) -> int:
+        """Fail a running job terminally, keeping the row for auditability."""
+
+        def operation(connection: sqlite3.Connection) -> int:
+            row = connection.execute(
+                "UPDATE library_identification_jobs SET state = 'failed', "
+                "last_failure_code = ?, terminal_at = ?, lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE id = ? AND state = 'running' AND lease_owner = ? "
+                "AND row_revision = ? RETURNING row_revision",
+                (failure_code, now, now, job_id, worker_id, expected_job_revision),
+            ).fetchone()
+            if row is None:
+                raise StaleRevisionError(
+                    "The identification job changed before it could be failed."
+                )
+            self._bump_stream(connection, "identification")
+            return int(row["row_revision"])
+
+        return await self._write(operation)
+
+    async def reset_provider_identification_deferrals(self, *, now: float) -> int:
+        """Clear backoff on provider-deferred queued jobs after recovery.
+
+        Only rows deferred for PROVIDER_TEMPORARILY_UNAVAILABLE are reset; other
+        deferral reasons keep their backoff untouched.
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(
+                "UPDATE library_identification_jobs SET attempt_count = 0, "
+                "not_before = 0, last_failure_code = NULL, updated_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE state = 'queued' "
+                "AND last_failure_code = 'PROVIDER_TEMPORARILY_UNAVAILABLE' "
+                "AND row_revision < ? AND event_revision < ?",
+                (now, MAX_REVISION, MAX_REVISION),
+            )
+            if cursor.rowcount:
+                self._bump_stream(connection, "identification")
+            return cursor.rowcount
+
+        result = await self._write(operation)
+        if result:
+            self.work_wakeups.notify("identification")
+        return result
+
+    async def gc_stale_identification_jobs(
+        self, *, now: float, grace_seconds: float
+    ) -> int:
+        """Terminally fail queued SUBJECT_NOT_AVAILABLE jobs past the grace period.
+
+        Tracks can legitimately reappear, so the worker keeps deferring until the
+        grace expires; this sweep is the backstop for rows that are never claimed
+        again (the deferral cap bounds actively-claimed rows first).
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(
+                "UPDATE library_identification_jobs SET state = 'failed', "
+                "terminal_at = ?, updated_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE state = 'queued' "
+                "AND last_failure_code = 'SUBJECT_NOT_AVAILABLE' "
+                "AND updated_at < ? AND row_revision < ? AND event_revision < ?",
+                (now, now, now - grace_seconds, MAX_REVISION, MAX_REVISION),
+            )
+            if cursor.rowcount:
+                self._bump_stream(connection, "identification")
+            return cursor.rowcount
+
+        return await self._write(operation)
+
     async def pause_identification_queue(
         self,
         *,
@@ -7614,6 +7716,22 @@ class NativeLibraryStore(PersistenceBase):
                     "WHERE state IN ('queued','running','paused')"
                 ).fetchone()[0]
             )
+            attention_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM library_identification_jobs "
+                    "WHERE state = 'failed' AND last_failure_code IN "
+                    "('MAX_DEFERRALS_EXCEEDED','SUBJECT_NOT_AVAILABLE')"
+                ).fetchone()[0]
+            )
+            deferred_reason_counts = {
+                str(row["last_failure_code"]): int(row["count"])
+                for row in connection.execute(
+                    "SELECT last_failure_code, COUNT(*) AS count "
+                    "FROM library_identification_jobs "
+                    "WHERE state IN ('queued','running','paused') "
+                    "AND last_failure_code IS NOT NULL GROUP BY last_failure_code"
+                ).fetchall()
+            }
             return {
                 "control_state": str(control["state"]),
                 "control_revision": int(control["row_revision"]),
@@ -7621,6 +7739,8 @@ class NativeLibraryStore(PersistenceBase):
                 "started_at": active["started_at"],
                 "updated_at": active["updated_at"],
                 "deferred_count": int(active["deferred_count"] or 0),
+                "deferred_reason_counts": deferred_reason_counts,
+                "attention_count": attention_count,
                 "kept_local_count": kept_local_count,
                 "active_priority": (
                     int(active_priority["priority"])
@@ -9053,6 +9173,13 @@ class NativeLibraryStore(PersistenceBase):
                 )
                 return None, 0, True
             run_id = str(row["id"])
+            deleted_failures = connection.execute(
+                "DELETE FROM library_scan_failures WHERE rowid IN ("
+                "SELECT rowid FROM library_scan_failures WHERE run_id=? LIMIT ?)",
+                (run_id, max(1, limit)),
+            ).rowcount
+            if deleted_failures:
+                return run_id, deleted_failures, False
             for table in (
                 "library_scan_grouping_evidence",
                 "library_scan_grouping_edges",
@@ -9725,6 +9852,15 @@ class NativeLibraryStore(PersistenceBase):
                     for root_id, path, failure_code in failures
                 ],
             )
+            connection.executemany(
+                "INSERT OR IGNORE INTO library_scan_failures "
+                "(run_id, root_id, relative_path, failure_code, failure_detail, "
+                "phase, recorded_at) VALUES (?, ?, ?, ?, '', 'indexing', ?)",
+                [
+                    (run_id, root_id, path, failure_code, updated_at)
+                    for root_id, path, failure_code in failures
+                ],
+            )
             if catalog_changed:
                 self._bump_catalog(connection)
             allowed = {
@@ -9764,6 +9900,69 @@ class NativeLibraryStore(PersistenceBase):
             return self._scan_state_from_row(updated)
 
         return await self._write_scan(operation)
+
+    async def record_scan_failures(
+        self, run_id: str, failures: list[ScanFailureRecord]
+    ) -> None:
+        """Persist per-path scan failures; the PK dedupes repeated reports."""
+
+        if not failures:
+            return
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.executemany(
+                "INSERT OR IGNORE INTO library_scan_failures "
+                "(run_id, root_id, relative_path, failure_code, failure_detail, "
+                "phase, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        failure.root_id,
+                        failure.relative_path,
+                        failure.failure_code,
+                        failure.failure_detail,
+                        failure.phase,
+                        failure.recorded_at,
+                    )
+                    for failure in failures
+                ],
+            )
+
+        return await super()._background_write(operation)
+
+    async def list_scan_run_failures(
+        self,
+        run_id: str,
+        *,
+        limit: int = 50,
+        cursor_rowid: int | None = None,
+    ) -> tuple[list[ScanFailureRecord], int | None]:
+        """Read one rowid-keyset page of recorded scan failures for a run."""
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[list[ScanFailureRecord], int | None]:
+            rows = connection.execute(
+                "SELECT rowid, root_id, relative_path, failure_code, failure_detail, "
+                "phase, recorded_at FROM library_scan_failures WHERE run_id = ? "
+                "AND (? IS NULL OR rowid > ?) ORDER BY rowid LIMIT ?",
+                (run_id, cursor_rowid, cursor_rowid, max(1, limit) + 1),
+            ).fetchall()
+            page = rows[: max(1, limit)]
+            next_cursor = int(page[-1]["rowid"]) if len(rows) > len(page) else None
+            return [
+                ScanFailureRecord(
+                    root_id=str(row["root_id"]),
+                    relative_path=str(row["relative_path"]),
+                    failure_code=str(row["failure_code"]),
+                    recorded_at=float(row["recorded_at"]),
+                    failure_detail=str(row["failure_detail"]),
+                    phase=row["phase"],
+                )
+                for row in page
+            ], next_cursor
+
+        return await self._read(operation)
 
     async def upsert_scanned_track(
         self,
@@ -27468,6 +27667,57 @@ class NativeLibraryStore(PersistenceBase):
             }
 
         return await self._read(operation)
+
+    async def defer_repair_audit_work(
+        self,
+        *,
+        job_id: str,
+        ordinal: int | None,
+        worker_id: str,
+        reason_code: str,
+        now: float,
+        retry_not_before: float | None = None,
+    ) -> dict[str, Any]:
+        """Release a running repair audit back to queued for a later retry.
+
+        The running work item (when one is claimed) is returned to 'pending'
+        with the failure code; the whole job is queued with next_attempt_at so
+        the audit resumes exactly at the deferred item. Nothing is marked
+        succeeded and no finding row is written.
+        """
+
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            if ordinal is not None:
+                work_update = connection.execute(
+                    "UPDATE library_operation_work SET state = 'pending', failure_code = ?, "
+                    "updated_at = ?, row_revision = row_revision + 1 "
+                    "WHERE job_id = ? AND ordinal = ? AND state = 'running'",
+                    (reason_code, now, job_id, ordinal),
+                )
+                if work_update.rowcount != 1:
+                    raise StaleRevisionError(
+                        "The repair audit work lease changed while it was deferred."
+                    )
+            updated = connection.execute(
+                "UPDATE library_operation_jobs SET state = 'queued', lease_owner = NULL, "
+                "lease_expires_at = NULL, heartbeat_at = NULL, updated_at = ?, "
+                "next_attempt_at = ?, "
+                "row_revision = row_revision + 1, event_revision = event_revision + 1 "
+                "WHERE id = ? AND kind = 'repair' AND state = 'running' "
+                "AND lease_owner = ? RETURNING *",
+                (now, retry_not_before, job_id, worker_id),
+            ).fetchone()
+            if updated is None:
+                raise StaleRevisionError(
+                    "The repair audit lease changed while it was deferred."
+                )
+            self._bump_stream(connection, "operation")
+            return dict(updated)
+
+        result = await self._write(operation)
+        if retry_not_before is not None:
+            self.work_wakeups.notify_after("operation", retry_not_before - now)
+        return result
 
     async def save_repair_finding_for_work(
         self,

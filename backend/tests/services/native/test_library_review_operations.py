@@ -33,6 +33,7 @@ from core.exceptions import (
     ValidationError,
 )
 from infrastructure.persistence.native_library_store import NativeLibraryStore
+from infrastructure.resilience.retry import CircuitOpenError
 from models.audio import FingerprintResult
 from models.identification import (
     AlbumCandidate,
@@ -178,6 +179,25 @@ class _UnavailableRepairProvider(_IdentificationProvider):
 
     async def get_exact_release_candidate(self, release_mbid, priority):
         raise ExternalServiceError("private provider failure")
+
+
+class _OrderedRepairProvider(_RepairProvider):
+    def __init__(self) -> None:
+        self.exact_calls: list[str] = []
+
+    async def get_exact_release_candidate(self, release_mbid, priority):
+        self.exact_calls.append(release_mbid)
+        return await super().get_exact_release_candidate(release_mbid, priority)
+
+
+class _CircuitOpenRepairProvider(_IdentificationProvider):
+    async def get_album_candidate(
+        self, release_group_mbid, target_track_count, priority
+    ):
+        raise CircuitOpenError("MusicBrainz breaker open")
+
+    async def get_exact_release_candidate(self, release_mbid, priority):
+        raise CircuitOpenError("MusicBrainz breaker open")
 
 
 class _CanonicalReleaseProvider:
@@ -4800,7 +4820,7 @@ async def test_repair_stop_restart_resume_and_stale_apply_preserve_playback(
 
 
 @pytest.mark.asyncio
-async def test_repair_audit_generates_missing_evidence_and_provider_failure_is_unverifiable(
+async def test_repair_audit_generates_missing_evidence_and_defers_whole_job_when_provider_fails(
     store: NativeLibraryStore, db_path: Path
 ) -> None:
     await _seed_album(store, "1")
@@ -4859,21 +4879,147 @@ async def test_repair_audit_generates_missing_evidence_and_provider_failure_is_u
         "worker", now=8, lease_seconds=60, kind="repair"
     )
     assert claimed is not None
-    await unavailable.run_claimed_audit(claimed, "worker", now=9)
-    second_findings = await unavailable.findings(second.id)
-    by_album = {item.local_album_id: item for item in second_findings.items}
-    assert by_album["album-1"].finding_code == "unverifiable"
-    assert by_album["album-1"].reason_code == "PROVIDER_DEFERRED"
-    assert by_album["album-2"].finding_code == "unverifiable"
-    assert by_album["album-2"].reason_code == "PROVIDER_DEFERRED"
-    assert by_album["album-2"].apply_eligible is False
-    filtered = await unavailable.findings(second.id, finding_category="unverifiable")
-    assert {item.local_album_id for item in filtered.items} == {
-        "album-1",
-        "album-2",
-    }
+    deferred = await unavailable.run_claimed_audit(claimed, "worker", now=9)
+    assert deferred.state == "queued"
+    assert deferred.succeeded_count == 0
+    job_row = await store.get_operation_job(second.id)
+    assert job_row is not None
+    assert job_row["state"] == "queued"
+    assert job_row["lease_owner"] is None
+    assert job_row["next_attempt_at"] == pytest.approx(9 + 120)
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT local_album_id, state, failure_code FROM library_operation_work "
+            "WHERE job_id = ? ORDER BY ordinal",
+            (second.id,),
+        ).fetchall()
+    assert work == [
+        ("album-1", "pending", "PROVIDER_DEFERRED"),
+        ("album-2", "pending", None),
+    ]
+    assert (await unavailable.findings(second.id)).items == []
+    assert (
+        await store.claim_operation_job(
+            "worker", now=100, lease_seconds=60, kind="repair"
+        )
+        is None
+    )
+    reclaimed = await store.claim_operation_job(
+        "worker", now=129, lease_seconds=60, kind="repair"
+    )
+    assert reclaimed is not None
+    assert reclaimed["id"] == second.id
+    assert reclaimed["next_attempt_at"] is None
     with pytest.raises(ValidationError, match="category is invalid"):
         await unavailable.findings(second.id, finding_category="not-a-category")
+
+
+@pytest.mark.asyncio
+async def test_repair_audit_resumes_at_the_deferred_item_after_provider_recovery(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    await _seed_album(store, "2", identity_source="legacy_import")
+    repair = IdentityRepairService(
+        store, _UnavailableRepairProvider(), AlbumEvidenceEngine()
+    )
+    created = await repair.create(
+        RepairCreateRequest(idempotency_key="repair-resume"), "admin", now=3
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    deferred = await repair.run_claimed_audit(claimed, "worker", now=5)
+    assert deferred.state == "queued"
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ? "
+            "ORDER BY ordinal",
+            (created.id,),
+        ).fetchall()
+    assert work == [
+        ("pending", "PROVIDER_DEFERRED"),
+        ("pending", None),
+    ]
+
+    provider = _OrderedRepairProvider()
+    recovered = IdentityRepairService(store, provider, AlbumEvidenceEngine())
+    reclaimed = await store.claim_operation_job(
+        "worker", now=5 + 120, lease_seconds=60, kind="repair"
+    )
+    assert reclaimed is not None
+    assert reclaimed["id"] == created.id
+    ready = await recovered.run_claimed_audit(reclaimed, "worker", now=5 + 121)
+    assert ready.state == "ready"
+    assert ready.repair_summary is not None
+    assert ready.repair_summary.provider_deferred_count == 0
+    assert ready.repair_summary.total_identities == 2
+    # The deferred item is the first pending on resume: the audit continues
+    # exactly where the provider failure left it.
+    assert provider.exact_calls == ["release-1", "release-2"]
+
+
+@pytest.mark.asyncio
+async def test_repair_audit_defers_before_any_provider_call_when_breaker_open(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    provider = _OrderedRepairProvider()
+    repair = IdentityRepairService(
+        store,
+        provider,
+        AlbumEvidenceEngine(),
+        provider_available=lambda: False,
+    )
+    created = await repair.create(
+        RepairCreateRequest(idempotency_key="repair-open-breaker"), "admin", now=3
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    deferred = await repair.run_claimed_audit(claimed, "worker", now=5)
+    assert deferred.state == "queued"
+    job_row = await store.get_operation_job(created.id)
+    assert job_row is not None
+    assert job_row["next_attempt_at"] == pytest.approx(5 + 120)
+    assert provider.exact_calls == []
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("pending", None)]
+
+
+@pytest.mark.asyncio
+async def test_repair_audit_defers_when_provider_raises_circuit_open_error(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1", identity_source="legacy_import")
+    repair = IdentityRepairService(
+        store, _CircuitOpenRepairProvider(), AlbumEvidenceEngine()
+    )
+    created = await repair.create(
+        RepairCreateRequest(idempotency_key="repair-circuit-open"), "admin", now=3
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    deferred = await repair.run_claimed_audit(claimed, "worker", now=5)
+    assert deferred.state == "queued"
+    job_row = await store.get_operation_job(created.id)
+    assert job_row is not None
+    assert job_row["next_attempt_at"] == pytest.approx(5 + 120)
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("pending", "PROVIDER_DEFERRED")]
+    assert (await repair.findings(created.id)).items == []
 
 
 @pytest.mark.asyncio
@@ -5467,17 +5613,21 @@ async def test_management_identity_preparation_defers_a_complete_mapping_when_pr
     )
     assert claimed is not None
 
-    ready = await preparation.run_claimed_audit(claimed, "worker", now=5)
-    finding = (
-        await preparation.findings(created.id, finding_category="unverifiable")
-    ).items[0]
+    deferred = await preparation.run_claimed_audit(claimed, "worker", now=5)
 
     assert provider.calls == ["release-1"]
-    assert ready.repair_summary is not None
-    assert ready.repair_summary.ready_album_count == 0
-    assert ready.repair_summary.provider_deferred_count == 1
-    assert finding.reason_code == "PROVIDER_DEFERRED"
-    assert finding.apply_eligible is False
+    assert deferred.state == "queued"
+    assert deferred.succeeded_count == 0
+    job_row = await store.get_operation_job(created.id)
+    assert job_row is not None
+    assert job_row["next_attempt_at"] == pytest.approx(5 + 120)
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("pending", "PROVIDER_DEFERRED")]
+    assert (await preparation.findings(created.id)).items == []
 
 
 @pytest.mark.asyncio
@@ -5891,10 +6041,8 @@ async def test_management_identity_preparation_defers_recording_redirect_failure
             "UPDATE local_track_external_identities SET recording_mbid = 'retired-recording' "
             "WHERE local_track_id = 'track-1-1'"
         )
-    preparation = IdentityRepairService(
-        store,
-        canonical_provider=_CanonicalReleaseProvider(recording_unavailable=True),
-    )
+    provider = _CanonicalReleaseProvider(recording_unavailable=True)
+    preparation = IdentityRepairService(store, canonical_provider=provider)
     created = await preparation.create_management_preparation(
         IdentityPreparationCreateRequest(idempotency_key="recording-provider-failure"),
         "admin",
@@ -5904,14 +6052,20 @@ async def test_management_identity_preparation_defers_recording_redirect_failure
         "worker", now=4, lease_seconds=60, kind="repair"
     )
     assert claimed is not None
-    await preparation.run_claimed_audit(claimed, "worker", now=5)
+    deferred = await preparation.run_claimed_audit(claimed, "worker", now=5)
 
-    finding = (
-        await preparation.findings(created.id, finding_category="unverifiable")
-    ).items[0]
-    assert finding.reason_code == "PROVIDER_DEFERRED"
-    assert finding.evidence_id is None
-    assert finding.apply_eligible is False
+    assert provider.recording_calls == ["retired-recording"]
+    assert deferred.state == "queued"
+    job_row = await store.get_operation_job(created.id)
+    assert job_row is not None
+    assert job_row["next_attempt_at"] == pytest.approx(5 + 120)
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("pending", "PROVIDER_DEFERRED")]
+    assert (await preparation.findings(created.id)).items == []
 
 
 @pytest.mark.asyncio
@@ -6125,6 +6279,7 @@ async def test_management_identity_preparation_blocks_missing_conflicting_and_st
 @pytest.mark.asyncio
 async def test_management_identity_preparation_defers_provider_failures(
     store: NativeLibraryStore,
+    db_path: Path,
 ) -> None:
     await _seed_album(store, "1", identity_source="legacy_import")
     preparation = IdentityRepairService(
@@ -6139,14 +6294,19 @@ async def test_management_identity_preparation_defers_provider_failures(
         "worker", now=4, lease_seconds=60, kind="repair"
     )
     assert claimed is not None
-    ready = await preparation.run_claimed_audit(claimed, "worker", now=5)
-    finding = (
-        await preparation.findings(created.id, finding_category="unverifiable")
-    ).items[0]
-    assert ready.repair_summary is not None
-    assert ready.repair_summary.provider_deferred_count == 1
-    assert finding.reason_code == "PROVIDER_DEFERRED"
-    assert finding.apply_eligible is False
+    deferred = await preparation.run_claimed_audit(claimed, "worker", now=5)
+    assert deferred.state == "queued"
+    assert deferred.succeeded_count == 0
+    job_row = await store.get_operation_job(created.id)
+    assert job_row is not None
+    assert job_row["next_attempt_at"] == pytest.approx(5 + 120)
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("pending", "PROVIDER_DEFERRED")]
+    assert (await preparation.findings(created.id)).items == []
 
 
 @pytest.mark.asyncio
