@@ -334,8 +334,9 @@
 						<div class="min-w-0 flex-1">
 							<h3 class="font-semibold">Local library</h3>
 							<p class="mt-1 text-xs text-base-content/60">
-								Pause scanning, identification, and file organization without removing your roots.
-								Existing catalog data and playback keep working.
+								Scanning, identification, and file organization run while this is on. Turn it off to
+								pause the library without removing your roots. Existing catalog data and playback
+								keep working.
 							</p>
 						</div>
 						<label class="flex cursor-pointer items-center gap-2">

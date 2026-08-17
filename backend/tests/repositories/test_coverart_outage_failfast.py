@@ -127,3 +127,40 @@ async def test_artist_transient_negative_short_circuits_next_request(tmp_path):
         assert second is None
         # The second request short-circuited at is_negative: no new fetch.
         assert repo._artist_fetcher.fetch_artist_image.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_local_cover_served_while_breaker_open(tmp_path):
+    """Local folder art never depended on CAA, so an open breaker must not hide it."""
+    _open_breaker()
+    track = tmp_path / "track.flac"
+    track.write_bytes(b"fake flac")
+    cover = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+    (tmp_path / "cover.jpg").write_bytes(cover)
+    library_db = MagicMock()
+    library_db.get_library_files_for_album = AsyncMock(
+        return_value=[{"file_path": str(track)}]
+    )
+
+    async with httpx.AsyncClient() as http_client:
+        repo = CoverArtRepository(
+            http_client=http_client,
+            cache=MagicMock(),
+            cache_dir=tmp_path,
+            library_db=library_db,
+            local_cover_priority=lambda: True,
+        )
+        repo._disk_cache.read = AsyncMock(return_value=None)
+        repo._disk_cache.is_negative = AsyncMock(return_value=False)
+        repo._disk_cache.write_negative = AsyncMock()
+        repo._disk_cache.write = AsyncMock()
+        repo._album_fetcher.fetch_release_group_cover = AsyncMock()
+        repo._album_fetcher.fetch_cached_audiodb_cover = AsyncMock(return_value=None)
+
+        result = await repo.get_release_group_cover(
+            RG_MBID, size="250", defer_best_release=True
+        )
+
+        assert result == (cover, "image/jpeg", "folder")
+        repo._album_fetcher.fetch_release_group_cover.assert_not_awaited()
+        repo._disk_cache.write_negative.assert_not_awaited()

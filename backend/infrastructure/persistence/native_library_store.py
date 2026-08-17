@@ -7036,6 +7036,27 @@ class NativeLibraryStore(PersistenceBase):
 
         return await self._read(operation)
 
+    async def get_indexed_track_paths_for_release_group(
+        self, release_group_mbid: str
+    ) -> list[str]:
+        """Absolute file paths of indexed tracks sealed to this release group."""
+
+        def operation(connection: sqlite3.Connection) -> list[str]:
+            rows = connection.execute(
+                "SELECT t.file_path FROM local_tracks t "
+                "JOIN local_album_external_identities i "
+                "ON i.local_album_id = t.local_album_id "
+                "JOIN local_albums a ON a.id = t.local_album_id "
+                "WHERE i.provider = 'musicbrainz' "
+                "AND lower(i.release_group_mbid) = lower(?) "
+                "AND a.retired_into_album_id IS NULL "
+                "AND t.availability = 'indexed' ORDER BY t.file_path",
+                (release_group_mbid,),
+            ).fetchall()
+            return [str(row["file_path"]) for row in rows if row["file_path"]]
+
+        return await self._read(operation)
+
     async def get_attempt_evidence(
         self, attempt_id: str
     ) -> list[IdentificationEvidenceRecord]:
