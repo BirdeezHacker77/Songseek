@@ -11,10 +11,12 @@ from api.v1.schemas.library_operations import (
     OperationResponse,
     RepairFindingListResponse,
     RepairEstimateResponse,
+    RepairFindingResponse,
     ReviewActionResponse,
     ReviewDetailResponse,
     ReviewListItem,
     ReviewListResponse,
+    SuggestedEditionSummary,
 )
 from api.v1.schemas.artist_reconciliation import (
     ArtistDuplicateGroupDetail,
@@ -338,6 +340,72 @@ def test_management_identity_preparation_contracts(
     services["repair"].discard_management_preparation.assert_awaited_once_with(
         "job-1", expected_row_revision=3
     )
+
+
+def test_management_identity_preparation_findings_serialize_suggested_edition(
+    app: FastAPI, services: dict[str, AsyncMock]
+) -> None:
+    override_admin_auth(app)
+    suggested = RepairFindingResponse(
+        id="finding-suggested",
+        local_album_id="album-1",
+        album_title="Album 1",
+        album_artist_name="Artist 1",
+        album_year=2020,
+        cover_available=False,
+        evidence_id="evidence-1",
+        review_id=None,
+        finding_code="exact_release_suggested",
+        reason_code="EXACT_EDITION_SUGGESTED",
+        confidence="complete",
+        apply_eligible=True,
+        state="open",
+        suggested_edition=SuggestedEditionSummary(
+            release_mbid="release-1",
+            release_group_mbid="rg-1",
+            title="Album 1",
+            track_count=11,
+            competing_count=3,
+            date="2019-03-01",
+            country="DE",
+            status="Official",
+        ),
+    )
+    bare = RepairFindingResponse(
+        id="finding-bare",
+        local_album_id="album-2",
+        album_title="Album 2",
+        album_artist_name="Artist 2",
+        album_year=None,
+        cover_available=False,
+        evidence_id=None,
+        review_id=None,
+        finding_code="exact_release_required",
+        reason_code="EXACT_EDITION_NOT_ACCEPTED",
+        confidence="bounded",
+        apply_eligible=False,
+        state="open",
+    )
+    services["repair"].findings.return_value = RepairFindingListResponse(
+        items=[suggested, bare]
+    )
+    response = build_test_client(app).get(
+        "/library/management/identity-preparations/job-1/findings",
+        params={"finding_category": "exact_release_required"},
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items[0]["suggested_edition"] == {
+        "release_mbid": "release-1",
+        "release_group_mbid": "rg-1",
+        "title": "Album 1",
+        "track_count": 11,
+        "competing_count": 3,
+        "date": "2019-03-01",
+        "country": "DE",
+        "status": "Official",
+    }
+    assert items[1]["suggested_edition"] is None
 
 
 def test_route_errors_use_typed_envelopes(

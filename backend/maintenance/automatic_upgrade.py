@@ -749,6 +749,7 @@ def run_automatic_copy_upgrade(
             "image_version": image_version,
             "backup_directory": str(backup.directory),
             "error_type": type(error).__name__,
+            "error_message": str(error),
             "restored_signature": _current_signature(database, config),
         }
         failure_evidence = getattr(error, "evidence", None)
@@ -760,8 +761,9 @@ def run_automatic_copy_upgrade(
         except OSError:
             logger.error("automatic_upgrade.failure_state_write_failed")
         logger.error(
-            "automatic_upgrade.failed error_type=%s",
+            "automatic_upgrade.failed error_type=%s error_message=%s",
             type(error).__name__,
+            str(error),
         )
         raise AutomaticUpgradeError(
             "The library upgrade could not be completed. Your previous database and "

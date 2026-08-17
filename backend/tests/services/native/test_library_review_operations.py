@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+import msgspec.json
 
 from api.v1.schemas.library_operations import (
     ArtistMergeApplyRequest,
@@ -6547,3 +6548,627 @@ async def test_diagnostic_export_is_bounded_redacted_and_ephemeral(
         "raw_provider_responses",
         "exception_text",
     ]
+
+
+def _suggestion_evidence(
+    *,
+    suffix: str = "1",
+    release_mbid: str,
+    release_group_mbid: str = "rg-suggested",
+    reason_code: str = "SUPPORTED",
+    release_date: str | None = "2020-01-01",
+    album_title: str = "Album 1",
+    complete: bool = True,
+) -> CandidateEvidence:
+    return CandidateEvidence(
+        release_group_mbid=release_group_mbid,
+        release_mbid=release_mbid,
+        album_title=album_title,
+        release_date=release_date,
+        track_evidence=[
+            TrackEvidence(
+                local_track_id=f"track-{suffix}-1",
+                classification="supported",
+                candidate_track_title="Track 1",
+                candidate_disc_number=1,
+                candidate_track_position=1,
+                recording_mbid=f"recording-{release_mbid}",
+                release_track_mbid=(
+                    f"release-track-{release_mbid}" if complete else None
+                ),
+            )
+        ],
+        reason_code=reason_code,
+        matcher_version="identification-test",
+    )
+
+
+def _seed_stored_attempt(
+    db_path: Path,
+    *,
+    local_album_id: str,
+    attempt_id: str,
+    revisions: tuple[str, str, str],
+    evidence: list[tuple[str, CandidateEvidence]],
+    compacted: bool = False,
+    completed_at: float = 2,
+) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO library_identification_attempts "
+            "(id, local_album_id, trigger, input_tag_revision, input_policy_revision, "
+            "input_file_revision, matcher_version, state, terminal_reason_code, "
+            "started_at, completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                attempt_id,
+                local_album_id,
+                "automatic",
+                revisions[0],
+                revisions[2],
+                revisions[1],
+                "identification-test",
+                "ambiguous",
+                "AMBIGUOUS",
+                completed_at - 1,
+                completed_at,
+            ),
+        )
+        for evidence_id, candidate in evidence:
+            encoded = msgspec.json.encode(candidate)
+            connection.execute(
+                "INSERT INTO library_identification_evidence "
+                "(id, attempt_id, candidate_key, evidence_json, evidence_size_bytes, "
+                "compacted, created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    evidence_id,
+                    attempt_id,
+                    f"candidate-{evidence_id}",
+                    encoded,
+                    len(encoded),
+                    int(compacted),
+                    completed_at,
+                ),
+            )
+
+
+def _tie_release(
+    release_mbid: str,
+    *,
+    status: str | None,
+    date: str | None,
+    country: str | None,
+    track_count: int = 1,
+) -> MbManagementRelease:
+    return MbManagementRelease(
+        id=release_mbid,
+        title="Album 1",
+        status=status,
+        date=date,
+        country=country,
+        media=[MbManagementMedium(position=1, track_count=track_count)],
+        release_group=MbManagementReleaseGroup(id="rg-suggested", title="Album 1"),
+    )
+
+
+class _SuggestedEditionProvider:
+    def __init__(
+        self,
+        releases: dict[str, MbManagementRelease] | None = None,
+        *,
+        unavailable: bool = False,
+    ) -> None:
+        self.releases = releases or {}
+        self.unavailable = unavailable
+        self.calls: list[str] = []
+
+    async def get_canonical_release(
+        self,
+        release_mbid,
+        *,
+        includes,
+        preferred_locales=(),
+        artist_standardization="credited",
+        priority,
+        bypass_cache=False,
+    ):
+        self.calls.append(release_mbid)
+        if self.unavailable:
+            raise ExternalServiceError("private canonical provider failure")
+        return self.releases.get(release_mbid)
+
+    async def resolve_recording_mbid(self, recording_mbid, *, priority):
+        return recording_mbid
+
+
+async def _run_preparation(
+    store: NativeLibraryStore,
+    provider: object,
+    *,
+    idempotency_key: str,
+):
+    preparation = IdentityRepairService(store, canonical_provider=provider)
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(idempotency_key=idempotency_key),
+        "admin",
+        now=3,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    ready = await preparation.run_claimed_audit(claimed, "worker", now=5)
+    return preparation, created, ready
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_suggests_single_stored_candidate(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-suggested",
+        revisions=album_input_revisions(context["tracks"]),
+        evidence=[
+            ("evidence-suggested", _suggestion_evidence(release_mbid="release-one"))
+        ],
+    )
+    provider = _SuggestedEditionProvider()
+    preparation, created, ready = await _run_preparation(
+        store, provider, idempotency_key="suggest-single"
+    )
+    assert ready.repair_summary is not None
+    finding = (
+        await preparation.findings(
+            created.id, finding_category="exact_release_required"
+        )
+    ).items[0]
+    assert finding.finding_code == "exact_release_suggested"
+    assert finding.reason_code == "EXACT_EDITION_SUGGESTED"
+    assert finding.apply_eligible is True
+    assert finding.evidence_id == "evidence-suggested"
+    assert finding.suggested_edition is not None
+    assert finding.suggested_edition.release_mbid == "release-one"
+    assert finding.suggested_edition.release_group_mbid == "rg-suggested"
+    assert finding.suggested_edition.title == "Album 1"
+    assert finding.suggested_edition.date == "2020-01-01"
+    assert finding.suggested_edition.track_count == 1
+    assert finding.suggested_edition.competing_count == 1
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_tie_breaks_official_first(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-tie-official",
+        revisions=album_input_revisions(context["tracks"]),
+        evidence=[
+            ("evidence-a", _suggestion_evidence(release_mbid="release-a")),
+            ("evidence-b", _suggestion_evidence(release_mbid="release-b")),
+        ],
+    )
+    provider = _SuggestedEditionProvider(
+        {
+            "release-a": _tie_release(
+                "release-a", status="Promotion", date="2019-01-01", country="XW"
+            ),
+            "release-b": _tie_release(
+                "release-b", status="Official", date="2021-05-01", country="DE"
+            ),
+        }
+    )
+    preparation, created, _ = await _run_preparation(
+        store, provider, idempotency_key="suggest-tie-official"
+    )
+    finding = (
+        await preparation.findings(
+            created.id, finding_category="exact_release_required"
+        )
+    ).items[0]
+    assert finding.finding_code == "exact_release_suggested"
+    assert finding.evidence_id == "evidence-b"
+    assert finding.suggested_edition is not None
+    assert finding.suggested_edition.release_mbid == "release-b"
+    assert finding.suggested_edition.status == "Official"
+    assert finding.suggested_edition.competing_count == 2
+    assert sorted(provider.calls) == ["release-a", "release-b"]
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_tie_breaks_earliest_then_worldwide(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-tie-date",
+        revisions=album_input_revisions(context["tracks"]),
+        evidence=[
+            ("evidence-a", _suggestion_evidence(release_mbid="release-a")),
+            ("evidence-b", _suggestion_evidence(release_mbid="release-b")),
+        ],
+    )
+    provider = _SuggestedEditionProvider(
+        {
+            "release-a": _tie_release(
+                "release-a", status="Official", date="2020-01-01", country="XW"
+            ),
+            "release-b": _tie_release(
+                "release-b", status="Official", date="2019-03-01", country="DE"
+            ),
+        }
+    )
+    preparation, created, _ = await _run_preparation(
+        store, provider, idempotency_key="suggest-tie-date"
+    )
+    finding = (
+        await preparation.findings(
+            created.id, finding_category="exact_release_required"
+        )
+    ).items[0]
+    assert finding.suggested_edition is not None
+    assert finding.suggested_edition.release_mbid == "release-b"
+    assert finding.suggested_edition.date == "2019-03-01"
+    assert finding.suggested_edition.country == "DE"
+    assert finding.suggested_edition.competing_count == 2
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_tie_breaks_worldwide_on_equal_dates(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-tie-xw",
+        revisions=album_input_revisions(context["tracks"]),
+        evidence=[
+            ("evidence-a", _suggestion_evidence(release_mbid="release-a")),
+            ("evidence-b", _suggestion_evidence(release_mbid="release-b")),
+        ],
+    )
+    provider = _SuggestedEditionProvider(
+        {
+            "release-a": _tie_release(
+                "release-a", status="Official", date="2020-01-01", country="DE"
+            ),
+            "release-b": _tie_release(
+                "release-b",
+                status="Official",
+                date="2020-01-01",
+                country="XW",
+                track_count=11,
+            ),
+        }
+    )
+    preparation, created, _ = await _run_preparation(
+        store, provider, idempotency_key="suggest-tie-xw"
+    )
+    finding = (
+        await preparation.findings(
+            created.id, finding_category="exact_release_required"
+        )
+    ).items[0]
+    assert finding.suggested_edition is not None
+    assert finding.suggested_edition.release_mbid == "release-b"
+    assert finding.suggested_edition.country == "XW"
+    assert finding.suggested_edition.track_count == 11
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_defers_suggestion_fetch_failures(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-deferred",
+        revisions=album_input_revisions(context["tracks"]),
+        evidence=[
+            ("evidence-a", _suggestion_evidence(release_mbid="release-a")),
+            ("evidence-b", _suggestion_evidence(release_mbid="release-b")),
+        ],
+    )
+    preparation = IdentityRepairService(
+        store, canonical_provider=_SuggestedEditionProvider(unavailable=True)
+    )
+    created = await preparation.create_management_preparation(
+        IdentityPreparationCreateRequest(idempotency_key="suggest-deferred"),
+        "admin",
+        now=3,
+    )
+    claimed = await store.claim_operation_job(
+        "worker", now=4, lease_seconds=60, kind="repair"
+    )
+    assert claimed is not None
+    deferred = await preparation.run_claimed_audit(claimed, "worker", now=5)
+    assert deferred.state == "queued"
+    job_row = await store.get_operation_job(created.id)
+    assert job_row is not None
+    assert job_row["next_attempt_at"] == pytest.approx(5 + 120)
+    with sqlite3.connect(db_path) as connection:
+        work = connection.execute(
+            "SELECT state, failure_code FROM library_operation_work WHERE job_id = ?",
+            (created.id,),
+        ).fetchall()
+    assert work == [("pending", "PROVIDER_DEFERRED")]
+    assert (await preparation.findings(created.id)).items == []
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_bare_when_evidence_unusable(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    await _seed_album(store, "2")
+    await _seed_album(store, "3")
+    await _seed_album(store, "4")
+    contexts = {}
+    for suffix in ("1", "2", "3", "4"):
+        context = await store.get_album_identification_context(f"album-{suffix}")
+        assert context is not None
+        contexts[suffix] = context
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-stale-revisions",
+        revisions=("stale-tag", "stale-file", "stale-policy"),
+        evidence=[("evidence-1", _suggestion_evidence(release_mbid="release-1"))],
+    )
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-2",
+        attempt_id="attempt-compacted",
+        revisions=album_input_revisions(contexts["2"]["tracks"]),
+        evidence=[("evidence-2", _suggestion_evidence(release_mbid="release-2"))],
+        compacted=True,
+    )
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-3",
+        attempt_id="attempt-incomplete",
+        revisions=album_input_revisions(contexts["3"]["tracks"]),
+        evidence=[
+            (
+                "evidence-3",
+                _suggestion_evidence(release_mbid="release-3", complete=False),
+            )
+        ],
+    )
+    preparation, created, _ = await _run_preparation(
+        store, _SuggestedEditionProvider(), idempotency_key="suggest-bare"
+    )
+    findings = await preparation.findings(
+        created.id, finding_category="exact_release_required", limit=200
+    )
+    assert len(findings.items) == 4
+    for item in findings.items:
+        assert item.finding_code == "exact_release_required"
+        assert item.reason_code == "EXACT_EDITION_NOT_ACCEPTED"
+        assert item.apply_eligible is False
+        assert item.suggested_edition is None
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_apply_seals_suggested_edition(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    await _seed_album(store, "1")
+    context = await store.get_album_identification_context("album-1")
+    assert context is not None
+    _seed_stored_attempt(
+        db_path,
+        local_album_id="album-1",
+        attempt_id="attempt-apply",
+        revisions=album_input_revisions(context["tracks"]),
+        evidence=[
+            ("evidence-apply", _suggestion_evidence(release_mbid="release-apply"))
+        ],
+    )
+    before_estimate = await store.estimate_management_identity_preparation([])
+    assert before_estimate["exact_release_required_count"] == 1
+    preparation, created, ready = await _run_preparation(
+        store, _SuggestedEditionProvider(), idempotency_key="suggest-apply"
+    )
+    await preparation.begin_management_preparation_apply(
+        created.id,
+        expected_row_revision=ready.row_revision,
+        confirmation=True,
+        now=6,
+    )
+    claimed_apply = await store.claim_operation_job(
+        "worker", now=7, lease_seconds=60, kind="repair"
+    )
+    assert claimed_apply is not None
+    done = await preparation.run_claimed_apply(claimed_apply, "worker", "admin", now=8)
+    assert done.state == "succeeded"
+    assert done.succeeded_count == 1
+    with sqlite3.connect(db_path) as connection:
+        identity = connection.execute(
+            "SELECT release_group_mbid, release_mbid, decision_source, "
+            "selected_by_user_id, attempt_id FROM local_album_external_identities "
+            "WHERE local_album_id = 'album-1'"
+        ).fetchone()
+        assert identity == (
+            "rg-suggested",
+            "release-apply",
+            "manual",
+            "admin",
+            "attempt-apply",
+        )
+        track = connection.execute(
+            "SELECT local_track_id, recording_mbid, release_mbid, release_track_mbid, "
+            "medium_position, release_track_position, decision_source, attempt_id "
+            "FROM local_track_external_identities WHERE local_track_id = 'track-1-1'"
+        ).fetchone()
+        assert track == (
+            "track-1-1",
+            "recording-release-apply",
+            "release-apply",
+            "release-track-release-apply",
+            1,
+            1,
+            "manual",
+            "attempt-apply",
+        )
+        review = connection.execute(
+            "SELECT state, reason_code, decided_by_user_id "
+            "FROM library_identification_reviews WHERE id = 'review-1'"
+        ).fetchone()
+        assert review == ("resolved", "SUGGESTED_EDITION_ACCEPTED", "admin")
+        action = connection.execute(
+            "SELECT action_kind, reason_code, before_json, after_json "
+            "FROM library_catalog_actions WHERE local_album_id = 'album-1'"
+        ).fetchone()
+        assert action is not None
+        assert action[0] == "accept_suggested_edition"
+        assert action[1] == "SUGGESTED_EDITION_ACCEPTED"
+        assert json.loads(action[2]) == {}
+        after_payload = json.loads(action[3])
+        assert after_payload["release_group_mbid"] == "rg-suggested"
+        assert after_payload["release_mbid"] == "release-apply"
+        assert after_payload["tracks"] == [
+            {
+                "local_track_id": "track-1-1",
+                "recording_mbid": "recording-release-apply",
+                "release_track_mbid": "release-track-release-apply",
+                "medium_position": 1,
+                "release_track_position": 1,
+            }
+        ]
+        finding_row = connection.execute(
+            "SELECT state, apply_result FROM library_identity_repair_findings "
+            "WHERE job_id = ?",
+            (created.id,),
+        ).fetchone()
+        assert finding_row == ("applied", "EDITION_ACCEPTED")
+    after_estimate = await store.estimate_management_identity_preparation([])
+    assert after_estimate["exact_release_required_count"] == 0
+    assert after_estimate["ready_album_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_management_identity_preparation_apply_skips_stale_suggested_editions(
+    store: NativeLibraryStore, db_path: Path
+) -> None:
+    for suffix in ("1", "2", "3", "4"):
+        await _seed_album(store, suffix)
+        context = await store.get_album_identification_context(f"album-{suffix}")
+        assert context is not None
+        revisions = album_input_revisions(context["tracks"])
+        if suffix == "4":
+            _seed_stored_attempt(
+                db_path,
+                local_album_id="album-4",
+                attempt_id="attempt-unsafe-4",
+                revisions=revisions,
+                evidence=[
+                    (
+                        "evidence-unsafe-4",
+                        _suggestion_evidence(
+                            suffix="4",
+                            release_mbid="release-stale-4",
+                            reason_code="AMBIGUOUS",
+                        ),
+                    )
+                ],
+                completed_at=1,
+            )
+        _seed_stored_attempt(
+            db_path,
+            local_album_id=f"album-{suffix}",
+            attempt_id=f"attempt-stale-{suffix}",
+            revisions=album_input_revisions(context["tracks"]),
+            evidence=[
+                (
+                    f"evidence-stale-{suffix}",
+                    _suggestion_evidence(
+                        suffix=suffix, release_mbid=f"release-stale-{suffix}"
+                    ),
+                )
+            ],
+        )
+    preparation, created, ready = await _run_preparation(
+        store, _SuggestedEditionProvider(), idempotency_key="suggest-stale-apply"
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE local_albums SET row_revision = row_revision + 1 "
+            "WHERE id = 'album-1'"
+        )
+        connection.execute(
+            "UPDATE local_tracks SET tag_revision = 'tag-changed' "
+            "WHERE id = 'track-2-1'"
+        )
+        connection.execute(
+            "UPDATE library_identity_repair_findings SET evidence_id = 'evidence-unsafe-4' "
+            "WHERE job_id = ? AND local_album_id = 'album-4'",
+            (created.id,),
+        )
+        connection.commit()
+    sealed_context = await store.get_album_identification_context("album-3")
+    assert sealed_context is not None
+    await store.attach_album_identity(
+        LocalAlbumExternalIdentity(
+            local_album_id="album-3",
+            release_group_mbid="rg-other",
+            release_mbid="release-other",
+            decision_source="manual",
+            selected_at=6,
+        ),
+        expected_album_revision=int(sealed_context["album"]["row_revision"]),
+    )
+    await preparation.begin_management_preparation_apply(
+        created.id,
+        expected_row_revision=ready.row_revision,
+        confirmation=True,
+        now=6,
+    )
+    claimed_apply = await store.claim_operation_job(
+        "worker", now=7, lease_seconds=60, kind="repair"
+    )
+    assert claimed_apply is not None
+    done = await preparation.run_claimed_apply(claimed_apply, "worker", "admin", now=8)
+    assert done.state == "succeeded"
+    assert done.succeeded_count == 0
+    assert done.skipped_count == 4
+    with sqlite3.connect(db_path) as connection:
+        findings = connection.execute(
+            "SELECT local_album_id, state, apply_result "
+            "FROM library_identity_repair_findings WHERE job_id = ? ORDER BY local_album_id",
+            (created.id,),
+        ).fetchall()
+        assert findings == [
+            (f"album-{suffix}", "stale", "STALE_SUBJECT")
+            for suffix in ("1", "2", "3", "4")
+        ]
+        identities = connection.execute(
+            "SELECT local_album_id, release_mbid FROM local_album_external_identities "
+            "ORDER BY local_album_id"
+        ).fetchall()
+        assert identities == [("album-3", "release-other")]
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM local_track_external_identities"
+            ).fetchone()[0]
+            == 0
+        )

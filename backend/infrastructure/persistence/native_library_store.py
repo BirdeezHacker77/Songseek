@@ -1187,6 +1187,9 @@ class NativeLibraryStore(PersistenceBase):
                 "ALTER TABLE library_identity_repair_findings ADD COLUMN reason_code TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE library_identity_repair_findings ADD COLUMN apply_eligible INTEGER NOT NULL DEFAULT 0 CHECK(apply_eligible IN (0,1))",
                 "ALTER TABLE library_identity_repair_findings ADD COLUMN apply_result TEXT",
+                "ALTER TABLE library_identity_repair_findings ADD COLUMN suggested_release_mbid TEXT",
+                "ALTER TABLE library_identity_repair_findings ADD COLUMN suggested_release_group_mbid TEXT",
+                "ALTER TABLE library_identity_repair_findings ADD COLUMN suggested_edition_json TEXT NOT NULL DEFAULT '{}'",
                 "ALTER TABLE library_catalog_actions ADD COLUMN local_artist_id TEXT REFERENCES local_artists(id) ON DELETE RESTRICT",
                 "ALTER TABLE library_scan_run_scopes ADD COLUMN scope_id TEXT",
                 "ALTER TABLE library_scan_run_scopes ADD COLUMN root_path TEXT",
@@ -27460,7 +27463,9 @@ class NativeLibraryStore(PersistenceBase):
                 "INSERT INTO library_identity_repair_findings "
                 "(id, job_id, local_album_id, evidence_id, expected_album_revision, "
                 "expected_identity_revision, finding_code, confidence, reason_code, "
-                "apply_eligible, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "apply_eligible, suggested_release_mbid, suggested_release_group_mbid, "
+                "suggested_edition_json, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         finding.id,
@@ -27473,6 +27478,9 @@ class NativeLibraryStore(PersistenceBase):
                         finding.confidence,
                         finding.reason_code,
                         int(finding.apply_eligible),
+                        finding.suggested_release_mbid,
+                        finding.suggested_release_group_mbid,
+                        finding.suggested_edition_json,
                         updated_at,
                         updated_at,
                     )
@@ -27481,6 +27489,33 @@ class NativeLibraryStore(PersistenceBase):
             )
 
         await self._write(operation)
+
+    async def get_latest_album_identification_evidence(
+        self, local_album_id: str
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+        """Latest attempt (any trigger) that still has uncompacted evidence."""
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+            attempt = connection.execute(
+                "SELECT a.* FROM library_identification_attempts a "
+                "WHERE a.local_album_id = ? AND EXISTS ("
+                "SELECT 1 FROM library_identification_evidence e "
+                "WHERE e.attempt_id = a.id AND e.compacted = 0) "
+                "ORDER BY a.completed_at DESC, a.id DESC LIMIT 1",
+                (local_album_id,),
+            ).fetchone()
+            if attempt is None:
+                return None
+            rows = connection.execute(
+                "SELECT * FROM library_identification_evidence "
+                "WHERE attempt_id = ? AND compacted = 0 ORDER BY candidate_key",
+                (attempt["id"],),
+            ).fetchall()
+            return dict(attempt), [dict(row) for row in rows]
+
+        return await self._read(operation)
 
     async def create_repair_operation(
         self,
@@ -27870,7 +27905,8 @@ class NativeLibraryStore(PersistenceBase):
                 "INSERT INTO library_identity_repair_findings "
                 "(id, job_id, local_album_id, evidence_id, expected_album_revision, "
                 "expected_identity_revision, finding_code, confidence, reason_code, apply_eligible, "
-                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "suggested_release_mbid, suggested_release_group_mbid, suggested_edition_json, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     finding.id,
                     job_id,
@@ -27882,6 +27918,9 @@ class NativeLibraryStore(PersistenceBase):
                     finding.confidence,
                     finding.reason_code,
                     int(finding.apply_eligible),
+                    finding.suggested_release_mbid,
+                    finding.suggested_release_group_mbid,
+                    finding.suggested_edition_json,
                     now,
                     now,
                 ),
@@ -28162,7 +28201,7 @@ class NativeLibraryStore(PersistenceBase):
             if management_readiness:
                 evidence_row = (
                     connection.execute(
-                        "SELECT e.evidence_json, e.attempt_id, "
+                        "SELECT e.evidence_json, e.attempt_id, e.compacted, "
                         "a.input_tag_revision, a.input_file_revision, "
                         "a.input_policy_revision FROM library_identification_evidence e "
                         "JOIN library_identification_attempts a ON a.id = e.attempt_id "
@@ -28190,164 +28229,181 @@ class NativeLibraryStore(PersistenceBase):
                     if evidence_row is not None
                     else None
                 )
-                current_revisions = tuple(_album_input_revision(track_rows).split(":"))
-                proposed = {
-                    item.local_track_id: item
-                    for item in (evidence.track_evidence if evidence else [])
-                    if item.classification == "supported"
-                }
-                stale = bool(
-                    finding is None
-                    or album is None
-                    or identity is None
-                    or evidence_row is None
-                    or evidence is None
-                    or int(album["row_revision"])
-                    != int(work["expected_subject_revision"])
-                    or int(identity["row_revision"])
-                    != int(finding["expected_identity_revision"])
-                    or str(identity["release_group_mbid"])
-                    != evidence.release_group_mbid
-                    or str(identity["release_mbid"] or "")
-                    != str(evidence.release_mbid or "")
-                    or current_revisions
-                    != (
-                        str(evidence_row["input_tag_revision"]),
-                        str(evidence_row["input_file_revision"]),
-                        str(evidence_row["input_policy_revision"]),
+                if finding is not None and finding["finding_code"] == (
+                    "exact_release_suggested"
+                ):
+                    state, failure_code = self._apply_suggested_edition_tx(
+                        connection,
+                        work=work,
+                        finding=finding,
+                        album=album,
+                        identity=identity,
+                        evidence_row=evidence_row,
+                        track_rows=track_rows,
+                        evidence=evidence,
+                        job_id=job_id,
+                        actor_user_id=actor_user_id,
+                        now=now,
                     )
-                    or set(proposed) != {str(row["id"]) for row in track_rows}
-                )
-                release_track_ids: set[str] = set()
-                if not stale:
-                    for row in track_rows:
-                        item = proposed[str(row["id"])]
-                        if (
-                            not item.recording_mbid
-                            or not item.release_track_mbid
-                            or item.candidate_disc_number is None
-                            or item.candidate_track_position is None
-                            or item.release_track_mbid in release_track_ids
-                            or not _recording_evidence_matches(
-                                row["recording_mbid"], item
-                            )
-                            or (
-                                row["identity_release_mbid"]
-                                and row["identity_release_mbid"]
-                                != evidence.release_mbid
-                            )
-                            or (
-                                row["release_track_mbid"]
-                                and row["release_track_mbid"] != item.release_track_mbid
-                            )
-                            or (
-                                row["embedded_release_group_mbid"]
-                                and row["embedded_release_group_mbid"]
-                                != evidence.release_group_mbid
-                            )
-                            or (
-                                row["embedded_release_mbid"]
-                                and row["embedded_release_mbid"]
-                                != evidence.release_mbid
-                            )
-                            or not _recording_evidence_matches(
-                                row["embedded_recording_mbid"], item
-                            )
-                            or (
-                                row["embedded_release_track_mbid"]
-                                and row["embedded_release_track_mbid"]
-                                != item.release_track_mbid
-                            )
-                        ):
-                            stale = True
-                            break
-                        release_track_ids.add(item.release_track_mbid)
-                if stale:
-                    state = "skipped"
-                    failure_code = "STALE_SUBJECT"
-                    if finding is not None:
-                        connection.execute(
-                            "UPDATE library_identity_repair_findings SET finding_code = 'stale', "
-                            "state = 'stale', "
-                            "apply_result = 'STALE_SUBJECT', updated_at = ?, "
-                            "row_revision = row_revision + 1 WHERE id = ?",
-                            (now, finding["id"]),
-                        )
                 else:
-                    assert finding is not None
-                    assert evidence is not None
-                    assert evidence_row is not None
-                    before = [
-                        {
-                            "local_track_id": str(row["id"]),
-                            "recording_mbid": row["recording_mbid"],
-                            "release_mbid": row["identity_release_mbid"],
-                            "release_track_mbid": row["release_track_mbid"],
-                        }
-                        for row in track_rows
-                    ]
-                    for local_track_id, item in proposed.items():
+                    current_revisions = tuple(_album_input_revision(track_rows).split(":"))
+                    proposed = {
+                        item.local_track_id: item
+                        for item in (evidence.track_evidence if evidence else [])
+                        if item.classification == "supported"
+                    }
+                    stale = bool(
+                        finding is None
+                        or album is None
+                        or identity is None
+                        or evidence_row is None
+                        or evidence is None
+                        or int(album["row_revision"])
+                        != int(work["expected_subject_revision"])
+                        or int(identity["row_revision"])
+                        != int(finding["expected_identity_revision"])
+                        or str(identity["release_group_mbid"])
+                        != evidence.release_group_mbid
+                        or str(identity["release_mbid"] or "")
+                        != str(evidence.release_mbid or "")
+                        or current_revisions
+                        != (
+                            str(evidence_row["input_tag_revision"]),
+                            str(evidence_row["input_file_revision"]),
+                            str(evidence_row["input_policy_revision"]),
+                        )
+                        or set(proposed) != {str(row["id"]) for row in track_rows}
+                    )
+                    release_track_ids: set[str] = set()
+                    if not stale:
+                        for row in track_rows:
+                            item = proposed[str(row["id"])]
+                            if (
+                                not item.recording_mbid
+                                or not item.release_track_mbid
+                                or item.candidate_disc_number is None
+                                or item.candidate_track_position is None
+                                or item.release_track_mbid in release_track_ids
+                                or not _recording_evidence_matches(
+                                    row["recording_mbid"], item
+                                )
+                                or (
+                                    row["identity_release_mbid"]
+                                    and row["identity_release_mbid"]
+                                    != evidence.release_mbid
+                                )
+                                or (
+                                    row["release_track_mbid"]
+                                    and row["release_track_mbid"] != item.release_track_mbid
+                                )
+                                or (
+                                    row["embedded_release_group_mbid"]
+                                    and row["embedded_release_group_mbid"]
+                                    != evidence.release_group_mbid
+                                )
+                                or (
+                                    row["embedded_release_mbid"]
+                                    and row["embedded_release_mbid"]
+                                    != evidence.release_mbid
+                                )
+                                or not _recording_evidence_matches(
+                                    row["embedded_recording_mbid"], item
+                                )
+                                or (
+                                    row["embedded_release_track_mbid"]
+                                    and row["embedded_release_track_mbid"]
+                                    != item.release_track_mbid
+                                )
+                            ):
+                                stale = True
+                                break
+                            release_track_ids.add(item.release_track_mbid)
+                    if stale:
+                        state = "skipped"
+                        failure_code = "STALE_SUBJECT"
+                        if finding is not None:
+                            connection.execute(
+                                "UPDATE library_identity_repair_findings SET finding_code = 'stale', "
+                                "state = 'stale', "
+                                "apply_result = 'STALE_SUBJECT', updated_at = ?, "
+                                "row_revision = row_revision + 1 WHERE id = ?",
+                                (now, finding["id"]),
+                            )
+                    else:
+                        assert finding is not None
+                        assert evidence is not None
+                        assert evidence_row is not None
+                        before = [
+                            {
+                                "local_track_id": str(row["id"]),
+                                "recording_mbid": row["recording_mbid"],
+                                "release_mbid": row["identity_release_mbid"],
+                                "release_track_mbid": row["release_track_mbid"],
+                            }
+                            for row in track_rows
+                        ]
+                        for local_track_id, item in proposed.items():
+                            connection.execute(
+                                "INSERT INTO local_track_external_identities "
+                                "(local_track_id, provider, recording_mbid, release_mbid, "
+                                "release_track_mbid, medium_position, release_track_position, "
+                                "decision_source, attempt_id, selected_at) "
+                                "VALUES (?, 'musicbrainz', ?, ?, ?, ?, ?, 'manual', ?, ?) "
+                                "ON CONFLICT(local_track_id, provider) DO UPDATE SET "
+                                "recording_mbid = excluded.recording_mbid, "
+                                "release_mbid = excluded.release_mbid, "
+                                "release_track_mbid = excluded.release_track_mbid, "
+                                "medium_position = excluded.medium_position, "
+                                "release_track_position = excluded.release_track_position, "
+                                "decision_source = 'manual', attempt_id = excluded.attempt_id, "
+                                "selected_at = excluded.selected_at, "
+                                "row_revision = row_revision + 1",
+                                (
+                                    local_track_id,
+                                    item.recording_mbid,
+                                    evidence.release_mbid,
+                                    item.release_track_mbid,
+                                    item.candidate_disc_number,
+                                    item.candidate_track_position,
+                                    evidence_row["attempt_id"],
+                                    now,
+                                ),
+                            )
+                        after = [
+                            {
+                                "local_track_id": local_track_id,
+                                "recording_mbid": item.recording_mbid,
+                                "release_mbid": evidence.release_mbid,
+                                "release_track_mbid": item.release_track_mbid,
+                                "medium_position": item.candidate_disc_number,
+                                "release_track_position": item.candidate_track_position,
+                            }
+                            for local_track_id, item in sorted(proposed.items())
+                        ]
                         connection.execute(
-                            "INSERT INTO local_track_external_identities "
-                            "(local_track_id, provider, recording_mbid, release_mbid, "
-                            "release_track_mbid, medium_position, release_track_position, "
-                            "decision_source, attempt_id, selected_at) "
-                            "VALUES (?, 'musicbrainz', ?, ?, ?, ?, ?, 'manual', ?, ?) "
-                            "ON CONFLICT(local_track_id, provider) DO UPDATE SET "
-                            "recording_mbid = excluded.recording_mbid, "
-                            "release_mbid = excluded.release_mbid, "
-                            "release_track_mbid = excluded.release_track_mbid, "
-                            "medium_position = excluded.medium_position, "
-                            "release_track_position = excluded.release_track_position, "
-                            "decision_source = 'manual', attempt_id = excluded.attempt_id, "
-                            "selected_at = excluded.selected_at, "
-                            "row_revision = row_revision + 1",
+                            "INSERT INTO library_catalog_actions "
+                            "(id, actor_user_id, action_kind, local_album_id, "
+                            "operation_job_id, before_json, after_json, reason_code, "
+                            "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                             (
-                                local_track_id,
-                                item.recording_mbid,
-                                evidence.release_mbid,
-                                item.release_track_mbid,
-                                item.candidate_disc_number,
-                                item.candidate_track_position,
-                                evidence_row["attempt_id"],
+                                str(uuid.uuid4()),
+                                actor_user_id,
+                                "accept_management_track_mappings",
+                                work["local_album_id"],
+                                job_id,
+                                json.dumps(before, sort_keys=True),
+                                json.dumps(after, sort_keys=True),
+                                "EXACT_RELEASE_MAPPINGS_ACCEPTED",
                                 now,
                             ),
                         )
-                    after = [
-                        {
-                            "local_track_id": local_track_id,
-                            "recording_mbid": item.recording_mbid,
-                            "release_mbid": evidence.release_mbid,
-                            "release_track_mbid": item.release_track_mbid,
-                            "medium_position": item.candidate_disc_number,
-                            "release_track_position": item.candidate_track_position,
-                        }
-                        for local_track_id, item in sorted(proposed.items())
-                    ]
-                    connection.execute(
-                        "INSERT INTO library_catalog_actions "
-                        "(id, actor_user_id, action_kind, local_album_id, "
-                        "operation_job_id, before_json, after_json, reason_code, "
-                        "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                        (
-                            str(uuid.uuid4()),
-                            actor_user_id,
-                            "accept_management_track_mappings",
-                            work["local_album_id"],
-                            job_id,
-                            json.dumps(before, sort_keys=True),
-                            json.dumps(after, sort_keys=True),
-                            "EXACT_RELEASE_MAPPINGS_ACCEPTED",
-                            now,
-                        ),
-                    )
-                    connection.execute(
-                        "UPDATE library_identity_repair_findings SET state = 'applied', "
-                        "apply_result = 'MAPPINGS_ACCEPTED', updated_at = ?, "
-                        "row_revision = row_revision + 1 WHERE id = ?",
-                        (now, finding["id"]),
-                    )
-                    self._bump_catalog(connection)
+                        connection.execute(
+                            "UPDATE library_identity_repair_findings SET state = 'applied', "
+                            "apply_result = 'MAPPINGS_ACCEPTED', updated_at = ?, "
+                            "row_revision = row_revision + 1 WHERE id = ?",
+                            (now, finding["id"]),
+                        )
+                        self._bump_catalog(connection)
             elif (
                 finding is None
                 or album is None
@@ -28483,6 +28539,207 @@ class NativeLibraryStore(PersistenceBase):
             return {"state": state, "failure_code": failure_code}
 
         return await self._write(operation)
+
+    def _apply_suggested_edition_tx(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        work: sqlite3.Row,
+        finding: sqlite3.Row,
+        album: sqlite3.Row | None,
+        identity: sqlite3.Row | None,
+        evidence_row: sqlite3.Row | None,
+        track_rows: list[sqlite3.Row],
+        evidence: CandidateEvidence | None,
+        job_id: str,
+        actor_user_id: str,
+        now: float,
+    ) -> tuple[str, str | None]:
+        """Seal one accepted suggested edition; mirrors manual candidate accept."""
+        mapped = (
+            _complete_track_identity_mapping(track_rows, evidence)
+            if evidence is not None
+            else None
+        )
+        stale = bool(
+            album is None
+            or evidence_row is None
+            or evidence is None
+            or mapped is None
+            or int(evidence_row["compacted"])
+            or int(album["row_revision"]) != int(work["expected_subject_revision"])
+            or tuple(_album_input_revision(track_rows).split(":"))
+            != (
+                str(evidence_row["input_tag_revision"]),
+                str(evidence_row["input_file_revision"]),
+                str(evidence_row["input_policy_revision"]),
+            )
+            or (identity is None) != (finding["expected_identity_revision"] is None)
+            or (
+                identity is not None
+                and (
+                    int(identity["row_revision"])
+                    != int(finding["expected_identity_revision"])
+                    or identity["release_mbid"] is not None
+                )
+            )
+            or evidence.reason_code not in AUTOMATIC_SAFE_EVIDENCE_REASONS
+        )
+        if not stale:
+            assert evidence is not None
+            assert mapped is not None
+            for row, item in zip(track_rows, mapped, strict=True):
+                if (
+                    not _recording_evidence_matches(row["recording_mbid"], item)
+                    or (
+                        row["identity_release_mbid"]
+                        and row["identity_release_mbid"] != evidence.release_mbid
+                    )
+                    or (
+                        row["release_track_mbid"]
+                        and row["release_track_mbid"] != item.release_track_mbid
+                    )
+                    or (
+                        row["embedded_release_group_mbid"]
+                        and row["embedded_release_group_mbid"]
+                        != evidence.release_group_mbid
+                    )
+                    or (
+                        row["embedded_release_mbid"]
+                        and row["embedded_release_mbid"] != evidence.release_mbid
+                    )
+                    or not _recording_evidence_matches(
+                        row["embedded_recording_mbid"], item
+                    )
+                    or (
+                        row["embedded_release_track_mbid"]
+                        and row["embedded_release_track_mbid"]
+                        != item.release_track_mbid
+                    )
+                ):
+                    stale = True
+                    break
+        if stale:
+            connection.execute(
+                "UPDATE library_identity_repair_findings SET finding_code = 'stale', "
+                "state = 'stale', apply_result = 'STALE_SUBJECT', updated_at = ?, "
+                "row_revision = row_revision + 1 WHERE id = ?",
+                (now, finding["id"]),
+            )
+            return "skipped", "STALE_SUBJECT"
+        assert evidence is not None
+        assert evidence_row is not None
+        assert mapped is not None
+        before = (
+            {
+                "release_group_mbid": identity["release_group_mbid"],
+                "release_mbid": identity["release_mbid"],
+            }
+            if identity is not None
+            else {}
+        )
+        connection.execute(
+            "INSERT INTO local_album_external_identities "
+            "(local_album_id, provider, release_group_mbid, release_mbid, "
+            "decision_source, matcher_version, attempt_id, selected_by_user_id, "
+            "selected_at) "
+            "VALUES (?, 'musicbrainz', ?, ?, 'manual', ?, ?, ?, ?) "
+            "ON CONFLICT(local_album_id, provider) DO UPDATE SET "
+            "release_group_mbid = excluded.release_group_mbid, "
+            "release_mbid = excluded.release_mbid, "
+            "decision_source = 'manual', matcher_version = excluded.matcher_version, "
+            "attempt_id = excluded.attempt_id, "
+            "selected_by_user_id = excluded.selected_by_user_id, "
+            "selected_at = excluded.selected_at, row_revision = row_revision + 1",
+            (
+                work["local_album_id"],
+                evidence.release_group_mbid,
+                evidence.release_mbid,
+                evidence.matcher_version,
+                evidence_row["attempt_id"],
+                actor_user_id,
+                now,
+            ),
+        )
+        connection.execute(
+            "DELETE FROM local_track_external_identities WHERE local_track_id IN "
+            "(SELECT id FROM local_tracks WHERE local_album_id = ? "
+            "AND availability = 'indexed')",
+            (work["local_album_id"],),
+        )
+        for item in mapped:
+            connection.execute(
+                "INSERT INTO local_track_external_identities "
+                "(local_track_id, provider, recording_mbid, release_mbid, "
+                "release_track_mbid, medium_position, release_track_position, "
+                "decision_source, attempt_id, selected_at) "
+                "VALUES (?, 'musicbrainz', ?, ?, ?, ?, ?, 'manual', ?, ?)",
+                (
+                    item.local_track_id,
+                    item.recording_mbid,
+                    evidence.release_mbid,
+                    item.release_track_mbid,
+                    item.candidate_disc_number,
+                    item.candidate_track_position,
+                    evidence_row["attempt_id"],
+                    now,
+                ),
+            )
+        connection.execute(
+            "DELETE FROM library_custom_edition_active WHERE local_album_id = ?",
+            (work["local_album_id"],),
+        )
+        connection.execute(
+            "DELETE FROM library_management_exclusions WHERE local_album_id = ?",
+            (work["local_album_id"],),
+        )
+        connection.execute(
+            "UPDATE library_identification_reviews SET state = 'resolved', "
+            "reason_code = 'SUGGESTED_EDITION_ACCEPTED', decided_by_user_id = ?, "
+            "decided_at = ?, updated_at = ?, decision_revision = decision_revision + 1, "
+            "row_revision = row_revision + 1 WHERE local_album_id = ? "
+            "AND state != 'resolved'",
+            (actor_user_id, now, now, work["local_album_id"]),
+        )
+        after = {
+            "release_group_mbid": evidence.release_group_mbid,
+            "release_mbid": evidence.release_mbid,
+            "tracks": [
+                {
+                    "local_track_id": item.local_track_id,
+                    "recording_mbid": item.recording_mbid,
+                    "release_track_mbid": item.release_track_mbid,
+                    "medium_position": item.candidate_disc_number,
+                    "release_track_position": item.candidate_track_position,
+                }
+                for item in mapped
+            ],
+        }
+        connection.execute(
+            "INSERT INTO library_catalog_actions "
+            "(id, actor_user_id, action_kind, local_album_id, operation_job_id, "
+            "before_json, after_json, reason_code, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()),
+                actor_user_id,
+                "accept_suggested_edition",
+                work["local_album_id"],
+                job_id,
+                json.dumps(before, sort_keys=True),
+                json.dumps(after, sort_keys=True),
+                "SUGGESTED_EDITION_ACCEPTED",
+                now,
+            ),
+        )
+        connection.execute(
+            "UPDATE library_identity_repair_findings SET state = 'applied', "
+            "apply_result = 'EDITION_ACCEPTED', updated_at = ?, "
+            "row_revision = row_revision + 1 WHERE id = ?",
+            (now, finding["id"]),
+        )
+        self._bump_catalog(connection)
+        return "succeeded", None
 
     async def list_repair_findings(
         self,

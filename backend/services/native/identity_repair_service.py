@@ -7,6 +7,8 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 
+import msgspec.json
+
 from api.v1.schemas.library_operations import (
     IdentityPreparationCreateRequest,
     IdentityPreparationEstimateResponse,
@@ -16,11 +18,16 @@ from api.v1.schemas.library_operations import (
     RepairEstimateResponse,
     RepairFindingListResponse,
     RepairFindingResponse,
+    SuggestedEditionSummary,
 )
 from core.exceptions import ExternalServiceError, ResourceNotFoundError, ValidationError
 from infrastructure.queue.priority_queue import RequestPriority
 from infrastructure.resilience.retry import CircuitOpenError
-from infrastructure.persistence.native_library_store import NativeLibraryStore
+from infrastructure.persistence.native_library_store import (
+    AUTOMATIC_SAFE_EVIDENCE_REASONS,
+    NativeLibraryStore,
+    _complete_track_identity_mapping,
+)
 from models.identification import (
     AlbumCandidate,
     CandidateEvidence,
@@ -57,7 +64,7 @@ from services.native.library_operation_service import (
 )
 
 MANAGEMENT_READINESS_PURPOSE = "management_readiness"
-MANAGEMENT_MAPPING_VERSION = "management-edition-readiness-v3"
+MANAGEMENT_MAPPING_VERSION = "management-edition-readiness-v4"
 
 # MusicBrainz breaker timeout is 60 s; this 2x window (matching the artist
 # reconciliation service) gives the breaker a recovery window between attempts.
@@ -352,19 +359,8 @@ class IdentityRepairService:
             or not identity["release_group_mbid"]
             or not identity["release_mbid"]
         ):
-            return (
-                self._finding(
-                    job_id,
-                    work,
-                    "exact_release_required",
-                    "EXACT_EDITION_NOT_ACCEPTED",
-                    False,
-                    identity_revision=(
-                        int(identity["row_revision"]) if identity is not None else None
-                    ),
-                ),
-                None,
-                [],
+            return await self._classify_exact_release_suggestion(
+                job_id, work, context, identity
             )
         tracks = [row for row in context["tracks"] if row["availability"] == "indexed"]
         release_track_ids = [
@@ -587,6 +583,141 @@ class IdentityRepairService:
             attempt,
             [record],
         )
+
+    async def _classify_exact_release_suggestion(
+        self,
+        job_id: str,
+        work: dict,
+        context: dict,
+        identity: dict | None,
+    ) -> tuple[
+        RepairFinding,
+        IdentificationAttempt | None,
+        list[IdentificationEvidenceRecord],
+    ]:
+        """Suggest one sealable exact edition from stored identification evidence."""
+        album_id = str(work["local_album_id"])
+        identity_revision = (
+            int(identity["row_revision"]) if identity is not None else None
+        )
+
+        def bare() -> tuple[
+            RepairFinding,
+            IdentificationAttempt | None,
+            list[IdentificationEvidenceRecord],
+        ]:
+            return (
+                self._finding(
+                    job_id,
+                    work,
+                    "exact_release_required",
+                    "EXACT_EDITION_NOT_ACCEPTED",
+                    False,
+                    identity_revision=identity_revision,
+                ),
+                None,
+                [],
+            )
+
+        tracks = [row for row in context["tracks"] if row["availability"] == "indexed"]
+        if not tracks:
+            return bare()
+        stored = await self._store.get_latest_album_identification_evidence(album_id)
+        if stored is None:
+            return bare()
+        attempt, evidence_rows = stored
+        if album_input_revisions(tracks) != (
+            str(attempt["input_tag_revision"]),
+            str(attempt["input_file_revision"]),
+            str(attempt["input_policy_revision"]),
+        ):
+            return bare()
+        suggestible: list[tuple[dict, CandidateEvidence]] = []
+        for row in evidence_rows:
+            candidate_evidence = msgspec.json.decode(
+                bytes(row["evidence_json"]), type=CandidateEvidence
+            )
+            if (
+                candidate_evidence.reason_code in AUTOMATIC_SAFE_EVIDENCE_REASONS
+                and candidate_evidence.release_mbid
+                and _complete_track_identity_mapping(tracks, candidate_evidence)
+                is not None
+            ):
+                suggestible.append((row, candidate_evidence))
+        if not suggestible:
+            return bare()
+        competing_count = len(suggestible)
+        if competing_count == 1:
+            winner_row, winner = suggestible[0]
+            summary: dict[str, object] = {
+                "title": winner.album_title,
+                "date": winner.release_date,
+                "country": None,
+                "status": None,
+                "track_count": len(winner.track_evidence)
+                + len(winner.unmatched_expected_tracks),
+                "competing_count": 1,
+            }
+        else:
+            ranked: list[
+                tuple[tuple[int, str, int, str], dict, CandidateEvidence, dict]
+            ] = []
+            for row, candidate_evidence in suggestible:
+                release: MbManagementRelease | None = None
+                if self._canonical_provider is not None:
+                    try:
+                        release = await self._canonical_provider.get_canonical_release(
+                            str(candidate_evidence.release_mbid),
+                            includes=("media",),
+                            priority=RequestPriority.BACKGROUND_SYNC,
+                        )
+                    except (ExternalServiceError, CircuitOpenError) as error:
+                        raise _ProviderUnavailable(
+                            "MusicBrainz is unavailable; deferring the identity audit."
+                        ) from error
+                    if release is None:
+                        continue
+                summary = {
+                    "title": (
+                        release.title
+                        if release is not None
+                        else candidate_evidence.album_title
+                    ),
+                    "date": (release.date if release is not None else None)
+                    or candidate_evidence.release_date,
+                    "country": release.country if release is not None else None,
+                    "status": release.status if release is not None else None,
+                    "track_count": (
+                        sum(medium.track_count for medium in release.media)
+                        if release is not None
+                        else len(candidate_evidence.track_evidence)
+                        + len(candidate_evidence.unmatched_expected_tracks)
+                    ),
+                    "competing_count": competing_count,
+                }
+                key = (
+                    0 if release is not None and release.status == "Official" else 1,
+                    str(summary["date"] or "9999"),
+                    0 if release is not None and release.country == "XW" else 1,
+                    str(candidate_evidence.release_mbid),
+                )
+                ranked.append((key, row, candidate_evidence, summary))
+            if not ranked:
+                return bare()
+            _, winner_row, winner, summary = min(ranked, key=lambda item: item[0])
+        finding = self._finding(
+            job_id,
+            work,
+            "exact_release_suggested",
+            "EXACT_EDITION_SUGGESTED",
+            True,
+            evidence_id=str(winner_row["id"]),
+            identity_revision=identity_revision,
+        )
+        finding.suggested_release_mbid = str(winner.release_mbid)
+        finding.suggested_release_group_mbid = winner.release_group_mbid
+        finding.suggested_edition_json = json.dumps(summary, sort_keys=True)
+        return finding, None, []
 
     async def _normalize_recording_redirects(
         self,
@@ -933,7 +1064,10 @@ class IdentityRepairService:
             categories = {
                 "ready": ["ready"],
                 "mapping_ready": ["mapping_ready"],
-                "exact_release_required": ["exact_release_required"],
+                "exact_release_required": [
+                    "exact_release_required",
+                    "exact_release_suggested",
+                ],
                 "needs_review": ["needs_review"],
                 "unverifiable": ["unverifiable", "stale"],
             }
@@ -969,6 +1103,22 @@ class IdentityRepairService:
         next_cursor = None
         if result["has_more"] and rows:
             next_cursor = f"{rows[-1]['updated_at']}:{rows[-1]['id']}"
+
+        def _suggested_edition(row: dict) -> SuggestedEditionSummary | None:
+            if not row["suggested_release_mbid"]:
+                return None
+            payload = json.loads(str(row["suggested_edition_json"]))
+            return SuggestedEditionSummary(
+                release_mbid=str(row["suggested_release_mbid"]),
+                release_group_mbid=str(row["suggested_release_group_mbid"]),
+                title=str(payload.get("title") or ""),
+                track_count=int(payload.get("track_count") or 0),
+                competing_count=int(payload.get("competing_count") or 1),
+                date=payload.get("date"),
+                country=payload.get("country"),
+                status=payload.get("status"),
+            )
+
         return RepairFindingListResponse(
             items=[
                 RepairFindingResponse(
@@ -986,6 +1136,7 @@ class IdentityRepairService:
                     apply_eligible=bool(row["apply_eligible"]),
                     state=str(row["state"]),
                     apply_result=row["apply_result"],
+                    suggested_edition=_suggested_edition(row),
                     updated_at=float(row["updated_at"]),
                     row_revision=int(row["row_revision"]),
                 )

@@ -451,6 +451,17 @@ export interface MembershipPreviewResponse {
 	reference_counts: Record<string, number>;
 }
 
+export interface SuggestedEditionSummary {
+	release_mbid: string;
+	release_group_mbid: string;
+	title: string;
+	track_count: number;
+	competing_count: number;
+	date: string | null;
+	country: string | null;
+	status: string | null;
+}
+
 export interface RepairFindingResponse {
 	id: string;
 	local_album_id: string;
@@ -466,6 +477,7 @@ export interface RepairFindingResponse {
 	apply_eligible: boolean;
 	state: string;
 	apply_result: string | null;
+	suggested_edition: SuggestedEditionSummary | null;
 	updated_at: number;
 	row_revision: number;
 }

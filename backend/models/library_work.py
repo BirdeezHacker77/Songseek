@@ -207,6 +207,9 @@ class RepairFinding(AppStruct):
     expected_identity_revision: int | None = None
     reason_code: str = ""
     apply_eligible: bool = False
+    suggested_release_mbid: str | None = None
+    suggested_release_group_mbid: str | None = None
+    suggested_edition_json: str = "{}"
 
 
 class ScanInventoryItem(AppStruct):

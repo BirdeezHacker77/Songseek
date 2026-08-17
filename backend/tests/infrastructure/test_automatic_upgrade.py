@@ -188,6 +188,8 @@ def test_failed_working_migration_records_sanitized_reference_counts(
         )
     )
     assert state["failure_evidence"] == evidence
+    assert state["error_type"] == "_WorkingMigrationError"
+    assert state["error_message"] == "checked failure"
     assert "source_key" not in json.dumps(state["failure_evidence"])
 
 
@@ -1290,9 +1292,7 @@ def test_target_startup_hard_timeout_stops_advancing_heartbeat(
         lambda *_args, **_kwargs: StalledProcess(),
     )
     monkeypatch.setattr(automatic_upgrade, "_target_progress", progress)
-    monkeypatch.setattr(
-        automatic_upgrade, "_TARGET_STARTUP_HARD_TIMEOUT_SECONDS", 0.03
-    )
+    monkeypatch.setattr(automatic_upgrade, "_TARGET_STARTUP_HARD_TIMEOUT_SECONDS", 0.03)
 
     assert (
         run_target_supervisor(
