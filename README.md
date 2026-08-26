@@ -1,6 +1,10 @@
 <div align="center">
 
-<img src="Images/logo_wide.png" alt="SongSeek" width="400" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Images/logo_wide.png">
+  <source media="(prefers-color-scheme: light)" srcset="Images/logo_wide_dark.png">
+  <img src="Images/logo_wide_dark.png" alt="SongSeek" width="400">
+</picture>
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/BirdeezHacker77/Songseek?label=stars&logo=github&logoColor=white)](https://github.com/BirdeezHacker77/Songseek)

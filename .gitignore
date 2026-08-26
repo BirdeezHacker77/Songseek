@@ -57,3 +57,4 @@ Docs/
 
 # Local dev app directory
 backend/app-dev/
+tools/.logo-build/
