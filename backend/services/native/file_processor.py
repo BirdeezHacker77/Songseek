@@ -619,6 +619,7 @@ class FileProcessor:
             | None
         ) = None,
         policy_revision_getter: Callable[[], str] | None = None,
+        user_root_resolver: Callable[[str], Awaitable[str | None]] | None = None,
     ) -> None:
         self._tagger = tagger
         self._naming = naming_engine
@@ -641,6 +642,10 @@ class FileProcessor:
         self._library_root_ids = library_root_ids or []
         self._publish_import_bundle = publish_import_bundle
         self._policy_revision_getter = policy_revision_getter
+        # Maps a user id to the library root their downloads import into. None (the
+        # default) keeps the pre-per-user-roots behaviour: everything lands in the
+        # first configured root.
+        self._user_root_resolver = user_root_resolver
 
     def _target_location(self, path: Path) -> tuple[str, str]:
         resolved = path.resolve(strict=False)
@@ -1225,7 +1230,8 @@ class FileProcessor:
         AcoustID is the optional recording-identity backstop."""
         source, tag, info = candidate.path, candidate.tag, candidate.info
         target_tag = self._build_folder_target_tag(manifest, track, tag)
-        target_path = self._library_paths[0] / self._naming.format_path(
+        root_id, root_path = await self._user_root(manifest.requested_by_user_id)
+        target_path = root_path / self._naming.format_path(
             manifest.naming_template, target_tag, info.file_format
         )
 
@@ -1238,12 +1244,17 @@ class FileProcessor:
         # of this verified file - import alongside, keep the squatter for review (D5).
         # Upgrade runs are exempt: replace-at-position is their OWNED semantics
         # (CollectionMgmt D4/D18), and the strictly-better rule already governs.
+        # Dedup is scoped to this user's root: with per-user roots, another user
+        # already holding this track is not a duplicate of *this* import and must
+        # not suppress it. Unassigned users all resolve to the first root, so a
+        # single-root install still dedupes library-wide exactly as before.
         replacement: dict | None = None
         if target_tag.track_number:
             present = await self._library.get_file_at_position(
                 manifest.release_group_mbid,
                 target_tag.disc_number or 1,
                 target_tag.track_number,
+                root_id=root_id,
             )
             occupied_by_other = (
                 manifest.origin != "upgrade"
@@ -1484,6 +1495,37 @@ class FileProcessor:
             )
         return self._library_paths[0]
 
+    async def _user_root(self, user_id: str | None) -> tuple[str | None, Path]:
+        """The (root_id, path) this user's imports belong in.
+
+        Falls back to the first configured root - the behaviour of every install
+        before per-user roots existed - in four cases, none of which are errors:
+        no resolver wired, no user on the manifest, no root assigned to the user,
+        or an assigned root that is no longer configured. Roots are stored in
+        preferences and can be deleted after assignment, so a dangling id is a
+        normal state, not a corruption; failing an import over one would strand
+        the download for a configuration mistake the user cannot see.
+        """
+        default = (
+            self._library_root_ids[0] if self._library_root_ids else None,
+            self._root_library_path(),
+        )
+        if self._user_root_resolver is None or not user_id:
+            return default
+        root_id = await self._user_root_resolver(user_id)
+        if not root_id:
+            return default
+        for candidate_id, candidate_path in zip(
+            self._library_root_ids, self._library_paths, strict=False
+        ):
+            if candidate_id == root_id:
+                return root_id, candidate_path
+        logger.warning(
+            "import.user_root_unresolved",
+            extra={"user_id": user_id, "root_id": root_id},
+        )
+        return default
+
     async def place_held_management_bundle(
         self, held_files: list["HeldImport"]
     ) -> list[Path]:
@@ -1540,7 +1582,8 @@ class FileProcessor:
                     held.artist_mbid or tag.musicbrainz_album_artist_id
                 ),
             )
-            target_path = self._root_library_path() / self._naming.format_path(
+            held_root_id, held_root_path = await self._user_root(held.user_id)
+            target_path = held_root_path / self._naming.format_path(
                 held.naming_template or "", target_tag, info.file_format
             )
             replacement: dict | None = None
@@ -1553,6 +1596,7 @@ class FileProcessor:
                     held.release_group_mbid,
                     held.disc_number or 1,
                     held.track_number,
+                    root_id=held_root_id,
                 )
                 if present is not None and present.get("file_path") != str(target_path):
                     if (
@@ -1624,7 +1668,8 @@ class FileProcessor:
             musicbrainz_album_artist_id=held.artist_mbid
             or tag.musicbrainz_album_artist_id,
         )
-        target_path = self._root_library_path() / self._naming.format_path(
+        held_root_id, held_root_path = await self._user_root(held.user_id)
+        target_path = held_root_path / self._naming.format_path(
             held.naming_template or "", target_tag, info.file_format
         )
         # D10 confirm-replace: an upgrade's held file (AcoustID disagreed, a human
@@ -1644,7 +1689,10 @@ class FileProcessor:
         replacement: dict | None = None
         if origin == "upgrade" and held.track_number and held.release_group_mbid:
             present = await self._library.get_file_at_position(
-                held.release_group_mbid, held.disc_number or 1, held.track_number
+                held.release_group_mbid,
+                held.disc_number or 1,
+                held.track_number,
+                root_id=held_root_id,
             )
             if present is not None and present.get("file_path") != str(target_path):
                 if self._position_upgrade_target(origin, present, info) is None:
@@ -1811,7 +1859,8 @@ class FileProcessor:
             if expected_track is not None
             else self._build_target_tag(manifest, tag)
         )
-        target_path = self._library_paths[0] / self._naming.format_path(
+        root_id, root_path = await self._user_root(manifest.requested_by_user_id)
+        target_path = root_path / self._naming.format_path(
             manifest.naming_template, target_tag, info.file_format
         )
 
@@ -1831,12 +1880,14 @@ class FileProcessor:
         # review (D5: never auto-delete). Without this, the correct re-download was
         # unlinked as a "duplicate" of the wrong file, forever. Upgrade runs are
         # exempt: replace-at-position is their owned semantics (CollectionMgmt D4/D18).
+        # Scoped to this user's root - see the matching note in _place_matched_file.
         replacement: dict | None = None
         if target_tag.track_number:
             present = await self._library.get_file_at_position(
                 manifest.release_group_mbid,
                 target_tag.disc_number or 1,
                 target_tag.track_number,
+                root_id=root_id,
             )
             occupied_by_other = (
                 manifest.origin != "upgrade"

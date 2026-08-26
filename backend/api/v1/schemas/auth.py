@@ -56,6 +56,8 @@ class UserResponse(AppStruct):
     username: str | None = None
     username_display: str | None = None
     providers: list[str] = []
+    # None means "not assigned": downloads fall back to the first configured root.
+    library_root_id: str | None = None
 
 
 class AuthResponse(AppStruct):
@@ -82,6 +84,24 @@ class UserListResponse(AppStruct):
 
 class SetRoleRequest(AppStruct):
     role: str
+
+
+class SetLibraryRootRequest(AppStruct):
+    """Which library root a user's downloads import into. ``None`` clears the
+    assignment, so that user falls back to the first configured root."""
+
+    library_root_id: str | None = None
+
+
+class LibraryRootAssignment(AppStruct):
+    """One selectable root, plus who already holds it. Roots are not exclusive -
+    several users may share one - but the settings UI shows current holders so an
+    admin can see that before assigning."""
+
+    id: str
+    label: str
+    path: str
+    assigned_user_ids: list[str] = []
 
 
 class UserQuotaOverrideBody(AppStruct):
@@ -163,6 +183,7 @@ def user_to_response(user, providers: list[str] | None = None) -> UserResponse:
         username = user.username,
         username_display = user.username_display,
         providers = providers or [],
+        library_root_id = getattr(user, "library_root_id", None),
     )
 
 

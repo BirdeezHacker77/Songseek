@@ -25,6 +25,12 @@ class UserRecord(msgspec.Struct, frozen = True):
     avatar_url: str | None = None
     username: str | None = None          # lowercased, unique, used for login lookup
     username_display: str | None = None  # preferred casing; NULL -> fall back to username
+    # Library root this user's downloads import into, as a LibraryRootSettings.id.
+    # NULL means "not assigned" and falls back to the first configured root, which
+    # is what every install did before per-user roots existed. Not a foreign key:
+    # roots live in preferences, not the database, so a stale id is possible and
+    # the import path treats an unresolvable id as unassigned.
+    library_root_id: str | None = None
 
 
 class AuthProviderRecord(msgspec.Struct, frozen = True):
@@ -164,7 +170,10 @@ class AuthStore:
             # Username login (D3): additive, idempotent. `username` is the lowercased
             # login identifier; `username_display` preserves preferred casing. The
             # partial unique index lets pre-backfill NULL rows coexist.
-            for column in ("username", "username_display"):
+            # `library_root_id` (per-user download roots): additive, idempotent, and
+            # deliberately not a foreign key - library roots are stored in preferences
+            # rather than this database, so nothing here can enforce the reference.
+            for column in ("username", "username_display", "library_root_id"):
                 try:
                     conn.execute(f"ALTER TABLE auth_users ADD COLUMN {column} TEXT")
                 except sqlite3.OperationalError:
@@ -191,6 +200,7 @@ class AuthStore:
             last_login_at = row["last_login_at"],
             username = row["username"],
             username_display = row["username_display"],
+            library_root_id = row["library_root_id"],
         )
 
     @staticmethod
@@ -307,6 +317,50 @@ class AuthStore:
                 "UPDATE auth_users SET role = ? WHERE id = ?", (role, user_id)
             )
         await self._write(operation)
+
+    async def update_library_root(self, user_id: str, root_id: str | None) -> bool:
+        """Assign (or clear, when None) the library root this user's downloads import
+        into. Returns False when no such user exists.
+
+        The id is not validated here: roots live in preferences and can be removed
+        after assignment, so validity is checked by the caller at assignment time and
+        again, tolerantly, at import time. An id that no longer resolves is treated
+        as unassigned rather than failing the import.
+        """
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                "UPDATE auth_users SET library_root_id = ? WHERE id = ?",
+                (root_id, user_id),
+            )
+            return cursor.rowcount > 0
+        return await self._write(operation)
+
+    async def get_user_library_root(self, user_id: str) -> str | None:
+        """The root id assigned to one user, or None when unassigned or unknown.
+
+        Called on the import path for every file, so it stays a single indexed
+        primary-key lookup rather than loading the user record.
+        """
+        def operation(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT library_root_id FROM auth_users WHERE id = ?", (user_id,)
+            ).fetchone()
+            return row["library_root_id"] if row is not None else None
+        return await self._read(operation)
+
+    async def get_library_root_assignments(self) -> dict[str, str]:
+        """Every user id that has a root assigned, mapped to that root id.
+
+        The import path resolves one user at a time, but the settings UI needs the
+        whole map to show which roots are already spoken for.
+        """
+        def operation(conn: sqlite3.Connection) -> dict[str, str]:
+            rows = conn.execute(
+                "SELECT id, library_root_id FROM auth_users "
+                "WHERE library_root_id IS NOT NULL"
+            ).fetchall()
+            return {row["id"]: row["library_root_id"] for row in rows}
+        return await self._read(operation)
 
     async def delete_user(self, user_id: str) -> bool:
         def operation(conn: sqlite3.Connection) -> bool:

@@ -66,10 +66,17 @@ def _make(tmp_path: Path, *, with_bin: bool = True, store: DownloadStore | None 
         )
         return value
 
-    async def get_file_at_position(release_group_mbid, disc_number, track_number):
-        return with_root(
+    async def get_file_at_position(
+        release_group_mbid, disc_number, track_number, *, root_id=None
+    ):
+        # Single-root harness: every row it can return is under "root-a", so a
+        # matching root_id filters nothing and a different one filters everything.
+        row = with_root(
             await original_position(release_group_mbid, disc_number, track_number)
         )
+        if row is not None and root_id is not None and row["root_id"] != root_id:
+            return None
+        return row
 
     async def get_attributions_for_paths(paths):
         rows = await original_attributions(paths)

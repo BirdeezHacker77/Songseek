@@ -565,11 +565,26 @@ class LibraryManager(LibraryStub):
         await self._db.delete_album_by_mbid(release_group_mbid)
 
     async def get_file_at_position(
-        self, release_group_mbid: str, disc_number: int, track_number: int
+        self,
+        release_group_mbid: str,
+        disc_number: int,
+        track_number: int,
+        *,
+        root_id: str | None = None,
     ) -> dict | None:
         """The active library row occupying one (disc, track) slot of an album, if
         any. The import path uses it to avoid writing a second file for a track the
-        library already holds (a re-pull or a different-format copy)."""
+        library already holds (a re-pull or a different-format copy).
+
+        ``root_id`` is accepted for interface parity with the target catalog, which
+        does scope by root, and is deliberately not applied here. The legacy
+        ``library_files`` table has no root column because every row it holds was
+        written by the pre-multi-root import path, which always used the first
+        configured root - so its contents are a single root by construction and
+        filtering would be a no-op at best. Imports run through the target catalog
+        (``get_file_processor`` delegates to ``get_target_file_processor``); this
+        method serves reads against pre-migration data.
+        """
         return await self._db.get_active_file_at_position(
             release_group_mbid, disc_number, track_number
         )

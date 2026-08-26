@@ -1044,9 +1044,19 @@ def _build_file_processor(
     from services.native.file_processor import FileProcessor
     from services.native.recycle_bin import resolve_bin_path
 
+    from .auth_providers import get_auth_store
     from .repo_providers import get_download_client_repository, get_download_store
 
     policy = get_preferences_service().get_download_policy()
+
+    async def resolve_user_root(user_id: str) -> str | None:
+        """Which library root this user's downloads import into (None -> first root).
+
+        Resolved per import rather than captured once, so an admin reassigning a
+        user in Settings takes effect on their next download without a restart.
+        """
+        return await get_auth_store().get_user_library_root(user_id)
+
     return FileProcessor(
         get_audio_tagger(),
         naming_engine=get_naming_template_engine(),
@@ -1062,6 +1072,7 @@ def _build_file_processor(
         library_root_ids=library_root_ids,
         publish_import_bundle=publish_import_bundle,
         policy_revision_getter=policy_revision_getter,
+        user_root_resolver=resolve_user_root,
     )
 
 

@@ -280,6 +280,39 @@ This walks you from a running container to a library that imports downloads. The
 
 As admin, go to **Settings > Library** and add your library path(s), using the in-container path (for example `/data/music`). SongSeek validates the path at startup and on save; a non-writable or missing path is reported there rather than crashing the app.
 
+### 1b. Optional: give each user their own library root
+
+By default every download imports into the **first** configured library root, no
+matter who requested it. If you would rather keep users separate - one folder per
+person, each indexed as its own library in Navidrome or Plex - add a root per user
+in **Settings > Library**, then assign them in **Settings > Users** using the root
+dropdown next to each user's role.
+
+What this changes:
+
+- A user's downloads import into their assigned root instead of the first one.
+- Two users requesting the same album each get **their own copy**, under their own
+  root. Position-dedup is scoped per root, so one user already holding a track no
+  longer suppresses another user's import of it. Budget disk accordingly: N users
+  requesting the same album means N copies.
+- A user requesting the same album twice still dedupes normally within their root.
+
+What it does not change:
+
+- Users left unassigned keep the previous behaviour exactly, so existing installs
+  are unaffected until you assign someone.
+- Assignment applies to **future imports only**. Already-imported files are not
+  moved, because relocating them would race the scanner and rewrite paths an
+  external library is already indexing. Move existing files yourself and re-scan if
+  you want them relocated.
+- Roots are not exclusive - several users can share one if you want partial
+  separation. The picker shows who already holds each root.
+- Deleting a root in Settings > Library does not fail assigned users' downloads;
+  an assignment that no longer resolves falls back to the first root and logs
+  `import.user_root_unresolved`.
+
+> This is a SongSeek addition and is not present in upstream DroppedNeedle.
+
 ### 2. Configure the download client
 
 Go to **Settings > Download Client** (admin):

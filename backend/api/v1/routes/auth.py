@@ -14,6 +14,7 @@ from api.v1.schemas.auth import (
     ImportUsersRequest,
     ImportUsersResponse,
     JellyfinLoginRequest,
+    LibraryRootAssignment,
     LoginRequest,
     OIDCAuthorizeResponse,
     OIDCExchangeRequest,
@@ -22,6 +23,7 @@ from api.v1.schemas.auth import (
     PlexPinResponse,
     PlexPollResponse,
     SessionListResponse,
+    SetLibraryRootRequest,
     SetRoleRequest,
     SetupRequest,
     SetupStatusResponse,
@@ -35,6 +37,7 @@ from api.v1.schemas.auth import (
 )
 from core.dependencies import get_quota_service
 from core.dependencies.auth_providers import get_auth_service, get_plex_user_auth_service, get_jellyfin_user_auth_service, get_oidc_user_auth_service, get_user_import_service
+from core.dependencies.type_aliases import LibraryPolicyResolverDep
 from core.exceptions import AuthenticationError, ConfigurationError, ExternalServiceError, RegistrationError
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep, CurrentTokenDep, CurrentUserDep
@@ -342,6 +345,60 @@ async def admin_set_role(
     except AuthenticationError as e:
         logger.debug(f"Role update failed for user {user_id[:8]}: {e}")
         raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "Could not update role")
+
+
+@router.get("/admin/library-roots", response_model = list[LibraryRootAssignment])
+async def admin_list_library_roots(
+    _admin: CurrentAdminDep,
+    resolver: LibraryPolicyResolverDep,
+    auth: AuthService = Depends(get_auth_service),
+) -> list[LibraryRootAssignment]:
+    """Configured library roots plus the users already assigned to each.
+
+    Drives the per-user root picker in Settings -> Users. Roots are defined in
+    Settings -> Library; this endpoint only reports them alongside assignments.
+    """
+    assignments = await auth.get_library_root_assignments()
+    holders: dict[str, list[str]] = {}
+    for user_id, root_id in assignments.items():
+        holders.setdefault(root_id, []).append(user_id)
+    return [
+        LibraryRootAssignment(
+            id = root.id,
+            label = root.label,
+            path = root.path,
+            assigned_user_ids = sorted(holders.get(root.id, [])),
+        )
+        for root in resolver.settings.library_roots
+    ]
+
+
+@router.put("/admin/users/{user_id}/library-root", status_code = status.HTTP_204_NO_CONTENT)
+async def admin_set_user_library_root(
+    user_id: str,
+    _admin: CurrentAdminDep,
+    resolver: LibraryPolicyResolverDep,
+    body: SetLibraryRootRequest = MsgSpecBody(SetLibraryRootRequest),
+    auth: AuthService = Depends(get_auth_service),
+) -> None:
+    """Assign the library root this user's downloads import into, or clear it.
+
+    Only affects future imports: already-imported files are not moved, because
+    relocating them would race the scanner and rewrite paths the user's Navidrome
+    library is already indexing.
+    """
+    root_id = (body.library_root_id or "").strip() or None
+    if root_id is not None:
+        known = {root.id for root in resolver.settings.library_roots}
+        if root_id not in known:
+            raise HTTPException(
+                status_code = status.HTTP_400_BAD_REQUEST,
+                detail = "No such library root - add it in Settings > Library first",
+            )
+    if not await auth.set_library_root(user_id, root_id):
+        raise HTTPException(
+            status_code = status.HTTP_404_NOT_FOUND, detail = "User not found"
+        )
 
 
 @router.get("/admin/users/{user_id}/quota", response_model = UserQuotaResponse)

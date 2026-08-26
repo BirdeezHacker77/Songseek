@@ -783,14 +783,27 @@ class TargetImportLibraryService:
         return rows
 
     async def get_file_at_position(
-        self, album_id: str, disc_number: int, track_number: int
+        self,
+        album_id: str,
+        disc_number: int,
+        track_number: int,
+        *,
+        root_id: str | None = None,
     ) -> dict | None:
+        """The track occupying one (disc, track) slot of an album, if any.
+
+        ``root_id`` narrows the search to a single library root. Per-user roots make
+        this necessary: without it, one user already holding a track would look like
+        a duplicate to every other user, and their import would be dropped in favour
+        of a file under someone else's root. None keeps the library-wide behaviour.
+        """
         return next(
             (
                 row
                 for row in await self._store.get_target_album_tracks(album_id)
                 if int(row["disc_number"] or 1) == disc_number
                 and int(row["track_number"] or 0) == track_number
+                and (root_id is None or row["root_id"] == root_id)
             ),
             None,
         )

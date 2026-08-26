@@ -414,6 +414,19 @@ class AuthService:
                 raise AuthenticationError("Cannot remove the last admin account")
         await self._store.update_user_role(user_id, role)
 
+    async def set_library_root(self, user_id: str, root_id: str | None) -> bool:
+        """Assign (or clear, with None) the library root this user downloads into.
+
+        Returns False when the user does not exist. The root id itself is validated
+        by the caller against configured roots - this layer has no view of
+        preferences.
+        """
+        return await self._store.update_library_root(user_id, root_id)
+
+    async def get_library_root_assignments(self) -> dict[str, str]:
+        """Every user id with a root assigned, mapped to that root id."""
+        return await self._store.get_library_root_assignments()
+
     async def delete_user(self, user_id: str, *, requesting_user_id: str) -> None:
         if requesting_user_id == user_id:
             raise AuthenticationError("Cannot delete your own account")

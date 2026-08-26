@@ -41,6 +41,15 @@
 		username_display: string | null;
 		avatar_url: string | null;
 		providers: string[];
+		// null = unassigned; that user's downloads land in the first configured root
+		library_root_id: string | null;
+	}
+
+	interface LibraryRootOption {
+		id: string;
+		label: string;
+		path: string;
+		assigned_user_ids: string[];
 	}
 
 	const PAGE_SIZE = 20;
@@ -50,6 +59,12 @@
 	let error = $state<string | null>(null);
 	let savingRole = $state<string | null>(null);
 	let roleError = $state<string | null>(null);
+
+	// Per-user library roots: which root each user's downloads import into. Roots
+	// themselves are defined in Settings -> Library; this screen only assigns them.
+	let libraryRoots = $state<LibraryRootOption[]>([]);
+	let savingRoot = $state<string | null>(null);
+	let rootError = $state<string | null>(null);
 	let page = $state(1);
 	let total = $state(0);
 
@@ -154,6 +169,37 @@
 		} finally {
 			savingRole = null;
 		}
+	}
+
+	async function loadLibraryRoots() {
+		try {
+			libraryRoots = await api.get<LibraryRootOption[]>('/api/v1/auth/admin/library-roots');
+		} catch {
+			// Non-fatal: the picker hides itself when no roots are known, and the rest
+			// of the user list stays usable.
+			libraryRoots = [];
+		}
+	}
+
+	async function setLibraryRoot(userId: string, rootId: string) {
+		savingRoot = userId;
+		rootError = null;
+		const library_root_id = rootId || null;
+		try {
+			await api.put(`/api/v1/auth/admin/users/${userId}/library-root`, { library_root_id });
+			users = users.map((u) => (u.id === userId ? { ...u, library_root_id } : u));
+			// Refresh so the "also assigned to" hints on other rows stay truthful.
+			await loadLibraryRoots();
+		} catch (e: unknown) {
+			rootError = (e as { message?: string })?.message ?? 'Could not update library root';
+		} finally {
+			savingRoot = null;
+		}
+	}
+
+	function rootLabel(rootId: string | null): string {
+		if (!rootId) return 'Default (first root)';
+		return libraryRoots.find((r) => r.id === rootId)?.label ?? 'Unknown root';
 	}
 
 	async function handleCreateUser() {
@@ -323,6 +369,7 @@
 
 	onMount(() => {
 		void loadUsers();
+		void loadLibraryRoots();
 	});
 </script>
 
@@ -469,6 +516,10 @@
 		<div class="alert alert-error py-2 text-sm">{roleError}</div>
 	{/if}
 
+	{#if rootError}
+		<div class="alert alert-error py-2 text-sm">{rootError}</div>
+	{/if}
+
 	{#if error}
 		<div class="alert alert-error py-2 text-sm">{error}</div>
 	{/if}
@@ -556,6 +607,25 @@
 								<option value="trusted">Trusted</option>
 								<option value="admin">Admin</option>
 							</select>
+						{/if}
+						{#if libraryRoots.length > 0}
+							{#if savingRoot === user.id}
+								<span class="loading loading-spinner loading-xs"></span>
+							{:else}
+								<select
+									class="select select-bordered select-xs max-w-[10rem]"
+									value={user.library_root_id ?? ''}
+									onchange={(e) =>
+										void setLibraryRoot(user.id, (e.target as HTMLSelectElement).value)}
+									aria-label={`Library root for ${user.display_name}`}
+									title={`Downloads import into: ${rootLabel(user.library_root_id)}`}
+								>
+									<option value="">Default (first root)</option>
+									{#each libraryRoots as root (root.id)}
+										<option value={root.id}>{root.label}</option>
+									{/each}
+								</select>
+							{/if}
 						{/if}
 						<button
 							class="btn btn-ghost btn-sm btn-circle {quotaOpen.has(user.id)
