@@ -11,6 +11,15 @@
 # (it compiles the frontend and installs Python dependencies); later ones reuse
 # Docker's layer cache.
 #
+# Everything you need to change is a stack ENVIRONMENT VARIABLE, set in the
+# Portainer UI below the compose editor - you never have to edit this file:
+#
+#   MEDIA_PATH   host path holding your music and downloads   (default /srv/media)
+#   PUID / PGID  owner of that media; run `id` on the host    (default 1000/1000)
+#   TZ           e.g. America/Denver                          (default Etc/UTC)
+#   HOST_PORT    port to reach SongSeek on                    (default 8688)
+#   UMASK        002 group-writable, 027 locked down          (default 002)
+#
 # config/cache/plugins are NAMED VOLUMES on purpose. Portainer re-clones this
 # repository into a new directory on every redeploy, so a relative bind mount
 # like ./config would be easy to lose track of. Named volumes survive redeploys,
@@ -27,19 +36,19 @@ services:
     environment:
       # Must match the user that owns your music on the host. Run `id` to check.
       # Getting these wrong is the most common cause of "permission denied" on import.
-      - PUID=1000
-      - PGID=1000
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
       # 002 = group-writable, which is usually what you want when other tools
       # (Navidrome, a file manager) also touch the library. Use 027 to lock it down.
-      - UMASK=002
+      - UMASK=${UMASK:-002}
       - PORT=8688
-      - TZ=Etc/UTC
+      - TZ=${TZ:-Etc/UTC}
       # Where your download client writes completed files, as seen INSIDE this
       # container. It must sit under the same /data mount as the library below,
       # otherwise every import is a slow copy instead of an instant move.
-      - SLSKD_DOWNLOADS_PATH=/data/slskd/complete
+      - SLSKD_DOWNLOADS_PATH=${SLSKD_DOWNLOADS_PATH:-/data/slskd/complete}
     ports:
-      - "8688:8688"
+      - "${HOST_PORT:-8688}:8688"
     volumes:
       - songseek-config:/app/config
       - songseek-cache:/app/cache
@@ -57,7 +66,7 @@ services:
       #
       # Do NOT add separate binds for each user folder: every bind is its own
       # rename boundary, which turns fast moves back into slow copies.
-      - /srv/media:/data:rw
+      - ${MEDIA_PATH:-/srv/media}:/data:rw
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
