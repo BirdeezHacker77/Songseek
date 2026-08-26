@@ -1,0 +1,41 @@
+# Normalise line endings in the repository to LF.
+#
+# Without this, a Windows clone with core.autocrlf=true checks every file out as
+# CRLF. That is invisible for most files, but it silently breaks two things:
+#
+#   1. entrypoint.sh gets copied into the Docker image with CRLF, so the shebang
+#      reads "#!/bin/sh\r" and the container dies with
+#      "exec /entrypoint.sh failed: No such file or directory".
+#   2. Prettier flags every file in the frontend, because it expects LF, which
+#      buries any real formatting problem in ~900 false positives.
+#
+# The repository already stores LF, so this changes no committed content - it
+# only makes checkouts consistent across platforms.
+* text=auto eol=lf
+
+# Scripts and container inputs must be LF even if the rule above is relaxed.
+*.sh        text eol=lf
+entrypoint.sh text eol=lf
+Dockerfile  text eol=lf
+
+# Binary: never touch these.
+*.png  binary
+*.webp binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.mp3  binary
+*.flac binary
+*.opus binary
+*.aac  binary
+*.wma  binary
+*.ogg  binary
+*.m4a  binary
+*.wav  binary
+*.pdf  binary
+*.zip  binary
