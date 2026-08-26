@@ -1,0 +1,72 @@
+# SongSeek stack for Portainer, building the image from this repository.
+#
+# Deploy with: Portainer -> Stacks -> Add stack -> Repository
+#   Repository URL   https://github.com/BirdeezHacker77/Songseek
+#   Reference        refs/heads/main
+#   Compose path     docker-compose.portainer.yml
+#
+# Because this file has a `build:` section, Portainer builds the image on the
+# Linux host itself. Nothing is pulled from Docker Hub, so no registry account,
+# no login and no published image are needed. The first deploy takes a while
+# (it compiles the frontend and installs Python dependencies); later ones reuse
+# Docker's layer cache.
+#
+# config/cache/plugins are NAMED VOLUMES on purpose. Portainer re-clones this
+# repository into a new directory on every redeploy, so a relative bind mount
+# like ./config would be easy to lose track of. Named volumes survive redeploys,
+# stack edits and image rebuilds. Back them up with:
+#   docker run --rm -v songseek-config:/c -v "$PWD":/b alpine tar czf /b/config.tgz -C /c .
+
+services:
+  songseek:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: songseek:local
+    container_name: songseek
+    environment:
+      # Must match the user that owns your music on the host. Run `id` to check.
+      # Getting these wrong is the most common cause of "permission denied" on import.
+      - PUID=1000
+      - PGID=1000
+      # 002 = group-writable, which is usually what you want when other tools
+      # (Navidrome, a file manager) also touch the library. Use 027 to lock it down.
+      - UMASK=002
+      - PORT=8688
+      - TZ=Etc/UTC
+      # Where your download client writes completed files, as seen INSIDE this
+      # container. It must sit under the same /data mount as the library below,
+      # otherwise every import is a slow copy instead of an instant move.
+      - SLSKD_DOWNLOADS_PATH=/data/slskd/complete
+    ports:
+      - "8688:8688"
+    volumes:
+      - songseek-config:/app/config
+      - songseek-cache:/app/cache
+      - songseek-plugins:/app/plugins
+      # ONE mount covering both the music library and the download client's output.
+      # Change the host side to wherever your media actually lives.
+      #
+      # For per-user library roots, lay the host side out like this:
+      #   /srv/media/music/jarom/     -> add as a root in Settings > Library
+      #   /srv/media/music/alice/     -> add as a root
+      #   /srv/media/slskd/complete/  -> your download client's output
+      #
+      # Then Settings > Users assigns each person a root, and Navidrome can point
+      # at each /srv/media/music/<name> folder as its own separate library.
+      #
+      # Do NOT add separate binds for each user folder: every bind is its own
+      # rename boundary, which turns fast moves back into slow copies.
+      - /srv/media:/data:rw
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8688/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 3
+
+volumes:
+  songseek-config:
+  songseek-cache:
+  songseek-plugins:
