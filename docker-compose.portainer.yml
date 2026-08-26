@@ -19,6 +19,15 @@
 #   TZ           e.g. America/Denver                          (default Etc/UTC)
 #   HOST_PORT    port to reach SongSeek on                    (default 8688)
 #   UMASK        002 group-writable, 027 locked down          (default 002)
+#   CONFIG_PATH  host dir for /app/config, or leave unset for a volume
+#   CACHE_PATH   host dir for /app/cache  (holds library.db)
+#   SLSKD_DOWNLOADS_PATH  completed downloads, as seen inside the container
+#
+# /app/config is NOT optional. It holds config.json: your library roots, the
+# slskd URL and API key, the AudioDB key and the instance id. Leaving it
+# unmounted loses every one of those on each container recreate, while the
+# database in /app/cache survives - so users keep their per-user root
+# assignments while the roots themselves vanish.
 #
 # config/cache/plugins are NAMED VOLUMES on purpose. Portainer re-clones this
 # repository into a new directory on every redeploy, so a relative bind mount
@@ -50,9 +59,12 @@ services:
     ports:
       - "${HOST_PORT:-8688}:8688"
     volumes:
-      - songseek-config:/app/config
-      - songseek-cache:/app/cache
-      - songseek-plugins:/app/plugins
+      # Named volumes by default. Set CONFIG_PATH / CACHE_PATH to a host
+      # directory instead if you would rather keep these where you can back
+      # them up or inspect them - either value works in the same slot.
+      - ${CONFIG_PATH:-songseek-config}:/app/config
+      - ${CACHE_PATH:-songseek-cache}:/app/cache
+      - ${PLUGINS_PATH:-songseek-plugins}:/app/plugins
       # ONE mount covering both the music library and the download client's output.
       # Change the host side to wherever your media actually lives.
       #
