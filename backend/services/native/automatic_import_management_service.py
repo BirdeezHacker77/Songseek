@@ -84,6 +84,7 @@ from services.native.library_management_profile_service import (
     LibraryManagementProfileService,
 )
 from services.native.lyrics_management_policy import (
+    lyrics_sidecar_content,
     planned_lyrics_outputs,
     required_lyrics_outputs_available,
     synchronized_lyrics_supported,
@@ -293,7 +294,17 @@ class AutomaticImportManagementService:
                             "Required ReplayGain analysis failed for this import.",
                         )
                 first_output_ordinal = min(value.ordinal for value in requests)
-                sidecars_added = False
+                # Artifact assembly is deferred until every track has been
+                # projected. Sidecars are folder-scoped - one os.walk covers the
+                # whole bundle - but a track-scoped sidecar has to follow the new
+                # name of ITS audio file, so the complete source-stem to
+                # destination map must exist before any of them can be placed.
+                first_output_context: (
+                    tuple[LibraryManagementImportFile, object, object, object, str]
+                    | None
+                ) = None
+                lyrics_sidecars: list[LibraryManagementImportArtifact] = []
+                track_destinations: dict[str, str] = {}
                 for request in sorted(requests, key=lambda value: value.ordinal):
                     current = current_by_ordinal[request.ordinal]
                     canonical_track = canonical_tracks[
@@ -304,6 +315,7 @@ class AutomaticImportManagementService:
                         desired,
                         artwork_outputs,
                         management_warnings,
+                        lyrics_projection,
                     ) = await self._project_file(
                         request=request,
                         current=current,
@@ -332,29 +344,37 @@ class AutomaticImportManagementService:
                         projection.document,
                         canonical_track,
                     )
-                    artifacts: list[LibraryManagementImportArtifact] = []
+                    track_destinations[Path(request.input_path).stem] = (
+                        destination_relative
+                    )
+                    sidecar_text = lyrics_sidecar_content(
+                        profile.enrichment.lyrics, lyrics_projection
+                    )
+                    if sidecar_text is not None:
+                        sidecar_content = sidecar_text.encode("utf-8")
+                        lyrics_sidecars.append(
+                            LibraryManagementImportArtifact(
+                                kind="sidecar",
+                                destination_root_id=request.destination_root_id,
+                                destination_relative_path=PurePosixPath(
+                                    destination_relative
+                                )
+                                .with_suffix(".lrc")
+                                .as_posix(),
+                                content=sidecar_content,
+                                source_fingerprint=hashlib.sha256(
+                                    sidecar_content
+                                ).hexdigest(),
+                            )
+                        )
                     if request.ordinal == first_output_ordinal:
-                        artifacts.extend(
-                            await self._external_artifacts(
-                                artwork_outputs,
-                                current,
-                                desired_metadata,
-                                pinned,
-                                root,
-                                destination_relative,
-                                request.destination_root_id,
-                            )
+                        first_output_context = (
+                            request,
+                            current,
+                            desired_metadata,
+                            artwork_outputs,
+                            destination_relative,
                         )
-                        artifacts.extend(
-                            await asyncio.to_thread(
-                                self._sidecar_artifacts,
-                                request,
-                                profile,
-                                destination_relative,
-                            )
-                        )
-                        artifacts = self._coalesce_artifacts(artifacts)
-                        sidecars_added = True
                     by_ordinal[request.ordinal] = msgspec.structs.replace(
                         request,
                         destination_relative_path=destination_relative,
@@ -373,9 +393,45 @@ class AutomaticImportManagementService:
                         naming_policy_revision=naming_policy_revision(pinned),
                         undo_retention_days=settings.undo_retention_days,
                         management_warnings=management_warnings,
-                        artifacts=tuple(artifacts),
+                        artifacts=(),
                     )
-                assert sidecars_added
+                assert first_output_context is not None
+                (
+                    first_request,
+                    first_current,
+                    first_metadata,
+                    first_artwork_outputs,
+                    first_destination,
+                ) = first_output_context
+                artifacts = list(
+                    await self._external_artifacts(
+                        first_artwork_outputs,
+                        first_current,
+                        first_metadata,
+                        pinned,
+                        root,
+                        first_destination,
+                        first_request.destination_root_id,
+                    )
+                )
+                artifacts.extend(
+                    await asyncio.to_thread(
+                        self._sidecar_artifacts,
+                        first_request,
+                        profile,
+                        first_destination,
+                        track_destinations,
+                    )
+                )
+                artifacts = self._merge_lyrics_sidecars(
+                    artifacts,
+                    lyrics_sidecars,
+                    preserve_existing=profile.enrichment.lyrics.preserve_existing,
+                )
+                by_ordinal[first_output_ordinal] = msgspec.structs.replace(
+                    by_ordinal[first_output_ordinal],
+                    artifacts=tuple(self._coalesce_artifacts(artifacts)),
+                )
                 for request in sorted(
                     (value for value in bundle.files if value.conversion_recycle_only),
                     key=lambda value: value.ordinal,
@@ -653,7 +709,7 @@ class AutomaticImportManagementService:
                 ),
             ]
         )
-        return desired_metadata, desired, artwork.external, warnings
+        return desired_metadata, desired, artwork.external, warnings, lyrics_projection
 
     def _destination_relative(
         self,
@@ -813,17 +869,53 @@ class AutomaticImportManagementService:
                 )
 
     @staticmethod
+    def _artifact_key(
+        artifact: LibraryManagementImportArtifact,
+    ) -> tuple[str, str]:
+        return (
+            artifact.destination_root_id,
+            unicodedata.normalize("NFC", artifact.destination_relative_path).casefold(),
+        )
+
+    @staticmethod
+    def _merge_lyrics_sidecars(
+        artifacts: list[LibraryManagementImportArtifact],
+        lyrics: list[LibraryManagementImportArtifact],
+        *,
+        preserve_existing: bool,
+    ) -> list[LibraryManagementImportArtifact]:
+        """Reconcile fetched .lrc files with any that shipped with the download.
+
+        Both resolve to the same destination once a track-scoped sidecar is
+        renamed onto its audio file's stem, and their bytes will rarely match, so
+        leaving both in place would trip the collision guard in
+        `_coalesce_artifacts` and hold the whole import. `preserve_existing`
+        already means "keep the lyrics that are there" for tags, so it decides
+        this too.
+        """
+        if not lyrics:
+            return artifacts
+        keys = {AutomaticImportManagementService._artifact_key(v) for v in artifacts}
+        if preserve_existing:
+            return artifacts + [
+                artifact
+                for artifact in lyrics
+                if AutomaticImportManagementService._artifact_key(artifact) not in keys
+            ]
+        replaced = {AutomaticImportManagementService._artifact_key(v) for v in lyrics}
+        return [
+            artifact
+            for artifact in artifacts
+            if AutomaticImportManagementService._artifact_key(artifact) not in replaced
+        ] + lyrics
+
+    @staticmethod
     def _coalesce_artifacts(
         artifacts: list[LibraryManagementImportArtifact],
     ) -> list[LibraryManagementImportArtifact]:
         selected: dict[tuple[str, str], LibraryManagementImportArtifact] = {}
         for artifact in artifacts:
-            key = (
-                artifact.destination_root_id,
-                unicodedata.normalize(
-                    "NFC", artifact.destination_relative_path
-                ).casefold(),
-            )
+            key = AutomaticImportManagementService._artifact_key(artifact)
             existing = selected.get(key)
             if existing is None:
                 selected[key] = artifact
@@ -838,15 +930,42 @@ class AutomaticImportManagementService:
         return list(selected.values())
 
     @staticmethod
+    def _sidecar_destination(
+        relative: PurePosixPath,
+        destination_parent: PurePosixPath,
+        track_destinations: dict[str, str],
+    ) -> str:
+        """Where a companion file lands once its track may have been renamed.
+
+        A track-scoped sidecar is bound to its audio file by exact stem - players
+        and scanners look for `<audio stem>.lrc` - so one that keeps its source
+        name while the organizer renames the track is silently orphaned. Matching
+        the stem moves it with its track instead.
+
+        Only top-level companions with a real extension follow a stem. Anything
+        nested (`scans/`, `artwork/`) is folder-scoped by virtue of living in a
+        subdirectory, and an extensionless file has no suffix to graft on - it
+        would land exactly on top of the audio file.
+        """
+        if relative.parent != PurePosixPath(".") or not relative.suffix:
+            return (destination_parent / relative).as_posix()
+        audio_destination = track_destinations.get(relative.stem)
+        if audio_destination is None:
+            return (destination_parent / relative).as_posix()
+        return PurePosixPath(audio_destination).with_suffix(relative.suffix).as_posix()
+
+    @staticmethod
     def _sidecar_artifacts(
         request: LibraryManagementImportFile,
         profile,
         destination_relative: str,
+        track_destinations: dict[str, str] | None = None,
     ) -> list[LibraryManagementImportArtifact]:  # noqa: ANN001
         if not profile.organization.move_sidecars:
             return []
         source_directory = Path(request.input_path).parent
         destination_parent = PurePosixPath(destination_relative).parent
+        destinations = track_destinations or {}
         patterns = tuple(
             value.casefold() for value in profile.organization.sidecar_patterns
         )
@@ -890,8 +1009,12 @@ class AutomaticImportManagementService:
                         kind="sidecar",
                         destination_root_id=request.destination_root_id,
                         destination_relative_path=(
-                            destination_parent / PurePosixPath(relative)
-                        ).as_posix(),
+                            AutomaticImportManagementService._sidecar_destination(
+                                PurePosixPath(relative),
+                                destination_parent,
+                                destinations,
+                            )
+                        ),
                         source_path=str(path),
                         source_fingerprint=content_hash,
                     )

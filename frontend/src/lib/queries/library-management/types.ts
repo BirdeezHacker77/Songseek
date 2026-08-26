@@ -167,6 +167,7 @@ export interface EnrichmentManagementSettings {
 		provider: 'lrclib';
 		write_plain: boolean;
 		write_synced: boolean;
+		write_sidecar: boolean;
 		preserve_existing: boolean;
 		required: boolean;
 	};

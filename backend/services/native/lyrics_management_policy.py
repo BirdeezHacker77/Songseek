@@ -69,6 +69,33 @@ def planned_lyrics_outputs(
     )
 
 
+def lyrics_sidecar_content(
+    settings: LyricsManagementSettings,
+    projection: LyricsProjection,
+) -> str | None:
+    """Text for a .lrc file beside the track, or None to write no sidecar.
+
+    Deliberately NOT gated on `synchronized_supported`: that flag describes what
+    the audio container can hold in its tags, and a sidecar is a separate file.
+    A .lrc is therefore the only way synchronized lyrics survive alongside a
+    format that cannot embed them, which is precisely when it is most useful.
+
+    Synchronized text wins when it is available, because a timestamped .lrc
+    degrades gracefully - players that cannot use the timings just show the
+    lines - whereas plain text cannot be upgraded back into a synced one.
+    """
+    if not settings.write_sidecar or projection.status != "available":
+        return None
+    candidates = (
+        (settings.write_synced, projection.synced_lyrics),
+        (settings.write_plain, projection.plain_lyrics),
+    )
+    for selected, value in candidates:
+        if selected and isinstance(value, str) and value.strip():
+            return value if value.endswith("\n") else f"{value}\n"
+    return None
+
+
 def synchronized_lyrics_supported(
     audio_format: str | None, *, wav_tag_policy: str
 ) -> bool:

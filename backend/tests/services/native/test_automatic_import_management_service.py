@@ -1,7 +1,7 @@
 import copy
 import hashlib
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -40,6 +40,7 @@ from models.library_management_planning import (
 )
 from models.library_management_artwork import ArtworkOutput, ArtworkProjection
 from models.library_management_enrichment import (
+    LyricsProjection,
     ReplayGainAnalysis,
     ReplayGainTrackResult,
 )
@@ -547,3 +548,144 @@ async def test_automatic_import_holds_before_staging_when_capacity_is_insufficie
         await service.prepare(_bundle(tmp_path, source, policy_revision))
 
     assert held.value.reason_code == INSUFFICIENT_SPACE
+
+
+def _update_profile(preferences, mutate) -> None:  # noqa: ANN001
+    current = preferences.get_library_management_settings()
+    settings = preferences.get_library_management_settings_raw()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    mutate(profile)
+    preferences.save_library_management_settings_if_current(
+        settings, expected_settings_revision=current.settings_revision
+    )
+
+
+def _enable_lyrics(preferences, **overrides) -> None:  # noqa: ANN001
+    def mutate(profile) -> None:  # noqa: ANN001
+        profile.enrichment.lyrics.enabled = True
+        for name, value in overrides.items():
+            setattr(profile.enrichment.lyrics, name, value)
+
+    _update_profile(preferences, mutate)
+
+
+def _enable_sidecar_moves(preferences) -> None:  # noqa: ANN001
+    """The shared planner fixture turns sidecar moving off; these cases need it.
+
+    Fetched lyrics deliberately do NOT depend on this setting - it governs
+    companion files carried over from the download, not files this app writes.
+    """
+
+    def mutate(profile) -> None:  # noqa: ANN001
+        profile.organization.move_sidecars = True
+
+    _update_profile(preferences, mutate)
+
+
+def _lyrics_service(**projection):  # noqa: ANN003, ANN202
+    return SimpleNamespace(
+        project=AsyncMock(
+            return_value=LyricsProjection(status="available", **projection)
+        )
+    )
+
+
+def _sidecars(prepared):  # noqa: ANN001, ANN202
+    return [
+        artifact
+        for file in prepared.files
+        for artifact in file.artifacts
+        if artifact.kind == "sidecar"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetched_lyrics_are_written_beside_the_renamed_track(
+    tmp_path: Path,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _enable_lyrics(preferences)
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(
+        tmp_path,
+        preferences,
+        store,
+        lyrics=_lyrics_service(
+            plain_lyrics="Provider plain",
+            synced_lyrics="[00:01.000]Provider synced",
+        ),
+    )
+
+    prepared = await service.prepare(_bundle(tmp_path, source, policy_revision))
+
+    audio = PurePosixPath(prepared.files[0].destination_relative_path)
+    sidecars = _sidecars(prepared)
+    assert [value.destination_relative_path for value in sidecars] == [
+        audio.with_suffix(".lrc").as_posix()
+    ]
+    assert sidecars[0].content == b"[00:01.000]Provider synced\n"
+
+
+@pytest.mark.asyncio
+async def test_a_shipped_lrc_follows_its_track_through_the_rename(
+    tmp_path: Path,
+) -> None:
+    """Lyrics are bound to audio by exact stem, so a companion that keeps its
+    source name while the organizer renames the track is silently orphaned."""
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _enable_sidecar_moves(preferences)
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(tmp_path, preferences, store)
+    bundle = _bundle(tmp_path, source, policy_revision)
+    incoming = Path(bundle.files[0].input_path)
+    incoming.with_suffix(".lrc").write_bytes(b"[00:02.000]Shipped\n")
+
+    prepared = await service.prepare(bundle)
+
+    audio = PurePosixPath(prepared.files[0].destination_relative_path)
+    assert audio.stem != incoming.stem, "fixture must actually rename the track"
+    assert [value.destination_relative_path for value in _sidecars(prepared)] == [
+        audio.with_suffix(".lrc").as_posix()
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preserve_existing", [True, False])
+async def test_preserve_existing_decides_between_shipped_and_fetched_lyrics(
+    tmp_path: Path,
+    preserve_existing: bool,
+) -> None:
+    """Both resolve to the same destination once the shipped file follows the
+    rename, so exactly one must survive or the collision guard holds the import.
+    """
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _enable_lyrics(preferences, preserve_existing=preserve_existing)
+    _enable_sidecar_moves(preferences)
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(
+        tmp_path,
+        preferences,
+        store,
+        lyrics=_lyrics_service(synced_lyrics="[00:01.000]Fetched"),
+    )
+    bundle = _bundle(tmp_path, source, policy_revision)
+    Path(bundle.files[0].input_path).with_suffix(".lrc").write_bytes(
+        b"[00:02.000]Shipped\n"
+    )
+
+    sidecars = _sidecars(await service.prepare(bundle))
+
+    assert len(sidecars) == 1
+    if preserve_existing:
+        assert sidecars[0].source_path is not None
+        assert sidecars[0].content is None
+    else:
+        assert sidecars[0].content == b"[00:01.000]Fetched\n"

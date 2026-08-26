@@ -1,6 +1,7 @@
 from api.v1.schemas.library_management import LyricsManagementSettings
 from models.library_management_enrichment import LyricsProjection
 from services.native.lyrics_management_policy import (
+    lyrics_sidecar_content,
     planned_lyrics_outputs,
     required_lyrics_outputs_available,
 )
@@ -135,3 +136,88 @@ def test_synchronized_only_profile_keeps_unsupported_field_for_capability_gate()
         {},
         synchronized_supported=False,
     ) == (("lyrics_synced", "[00:01.000]Provider lyrics"),)
+
+
+def test_sidecar_prefers_synchronized_text_and_terminates_the_final_line() -> None:
+    settings = LyricsManagementSettings(enabled=True)
+    projection = LyricsProjection(
+        status="available",
+        plain_lyrics="Provider plain",
+        synced_lyrics="[00:01.000]Provider synced",
+    )
+
+    assert (
+        lyrics_sidecar_content(settings, projection) == "[00:01.000]Provider synced\n"
+    )
+
+
+def test_sidecar_falls_back_to_plain_text_when_no_synchronized_text_exists() -> None:
+    settings = LyricsManagementSettings(enabled=True)
+    projection = LyricsProjection(status="available", plain_lyrics="Provider plain")
+
+    assert lyrics_sidecar_content(settings, projection) == "Provider plain\n"
+
+
+def test_sidecar_carries_synchronized_text_a_container_could_not_embed() -> None:
+    """A sidecar is a separate file, so container tag limits do not apply to it.
+
+    This is the case that makes sidecars worth writing at all: a WAV under a
+    riff_info policy cannot hold SYLT, and the .lrc is the only place the
+    synchronized text can survive.
+    """
+    settings = LyricsManagementSettings(enabled=True)
+    projection = LyricsProjection(
+        status="available",
+        synced_lyrics="[00:01.000]Provider synced",
+    )
+
+    assert (
+        lyrics_sidecar_content(settings, projection) == "[00:01.000]Provider synced\n"
+    )
+
+
+def test_sidecar_is_skipped_when_disabled_or_unavailable() -> None:
+    projection = LyricsProjection(
+        status="available",
+        synced_lyrics="[00:01.000]Provider synced",
+    )
+
+    assert (
+        lyrics_sidecar_content(
+            LyricsManagementSettings(enabled=True, write_sidecar=False), projection
+        )
+        is None
+    )
+    assert (
+        lyrics_sidecar_content(
+            LyricsManagementSettings(enabled=True),
+            LyricsProjection(status="not_found"),
+        )
+        is None
+    )
+
+
+def test_sidecar_respects_the_output_forms_the_profile_selected() -> None:
+    """Both forms deselected means no sidecar, even with text available."""
+    projection = LyricsProjection(
+        status="available",
+        plain_lyrics="Provider plain",
+        synced_lyrics="[00:01.000]Provider synced",
+    )
+
+    assert (
+        lyrics_sidecar_content(
+            LyricsManagementSettings(
+                enabled=True, write_synced=False, write_plain=False
+            ),
+            projection,
+        )
+        is None
+    )
+    assert (
+        lyrics_sidecar_content(
+            LyricsManagementSettings(enabled=True, write_synced=False),
+            projection,
+        )
+        == "Provider plain\n"
+    )

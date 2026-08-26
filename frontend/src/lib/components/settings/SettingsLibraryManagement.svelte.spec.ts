@@ -219,6 +219,7 @@ function baseSettings(): LibraryManagementSettingsResponse {
 						provider: 'lrclib',
 						write_plain: true,
 						write_synced: true,
+						write_sidecar: true,
 						preserve_existing: false,
 						required: false
 					},

@@ -388,6 +388,11 @@ class LyricsManagementSettings(AppStruct):
     provider: Literal["lrclib"] = "lrclib"
     write_plain: bool = True
     write_synced: bool = True
+    # A .lrc file beside the track, in addition to the embedded tags. Players
+    # that never read tags (and libraries built by tools that ship sidecars)
+    # depend on it. Only takes effect when `enabled` is set, so leaving it on
+    # changes nothing for profiles that have not opted into lyrics at all.
+    write_sidecar: bool = True
     preserve_existing: bool = False
     required: bool = False
 
@@ -571,13 +576,25 @@ def _revision_without(value: object, field: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _remove_default_lyrics_preservation(profile: dict[str, object]) -> None:
+def _remove_default_lyrics_fields(profile: dict[str, object]) -> None:
+    """Drop lyrics settings that are still at their defaults before hashing.
+
+    A profile's revision is compared against the one recorded when an
+    administrator confirmed a dry run, and any difference makes the activation
+    stale - automatic imports then hold until a new dry run is confirmed. Adding
+    a field would otherwise change every existing profile's hash and stall every
+    activated root on upgrade, so a newly introduced field has to hash as absent
+    until somebody actually changes it.
+    """
     enrichment = profile.get("enrichment")
     if not isinstance(enrichment, dict):
         return
     lyrics = enrichment.get("lyrics")
-    if isinstance(lyrics, dict) and lyrics.get("preserve_existing") is False:
-        lyrics.pop("preserve_existing")
+    if not isinstance(lyrics, dict):
+        return
+    for name, default in (("preserve_existing", False), ("write_sidecar", True)):
+        if lyrics.get(name) is default:
+            lyrics.pop(name)
 
 
 def _remove_default_multi_disc_naming(profile: dict[str, object]) -> None:
@@ -593,7 +610,7 @@ def profile_revision(profile: LibraryManagementProfile) -> str:
     if not isinstance(payload, dict):
         raise TypeError("Profile revision input must be a struct object.")
     payload.pop("revision", None)
-    _remove_default_lyrics_preservation(payload)
+    _remove_default_lyrics_fields(payload)
     _remove_default_multi_disc_naming(payload)
     return _stable_hash(payload)
 
@@ -614,7 +631,7 @@ def settings_revision(settings: LibraryManagementSettings) -> str:
     if isinstance(profiles, list):
         for profile in profiles:
             if isinstance(profile, dict):
-                _remove_default_lyrics_preservation(profile)
+                _remove_default_lyrics_fields(profile)
                 _remove_default_multi_disc_naming(profile)
     return _stable_hash(payload)
 

@@ -180,6 +180,7 @@
 		const outputs: string[] = [];
 		if (draft.enrichment.lyrics.write_synced) outputs.push('synced');
 		if (draft.enrichment.lyrics.write_plain) outputs.push('plain');
+		if (draft.enrichment.lyrics.write_sidecar) outputs.push('.lrc');
 		return outputs.length > 0 ? `Lyrics · ${outputs.join(' + ')}` : 'Lyrics · no output';
 	});
 	const replayGainSummary = $derived(
@@ -561,6 +562,19 @@
 								<span
 									><strong>Write synchronized lyrics</strong><small
 										>Preferred when safely supported; plain lyrics remain the fallback.</small
+									></span
+								>
+							</label>
+							<label class="management-master-toggle">
+								<input
+									type="checkbox"
+									class="checkbox checkbox-sm"
+									bind:checked={draft.enrichment.lyrics.write_sidecar}
+								/>
+								<span
+									><strong>Write a .lrc file beside the track</strong><small
+										>For players that read sidecars rather than tags. Carries synchronized lyrics
+										even in formats that cannot embed them.</small
 									></span
 								>
 							</label>

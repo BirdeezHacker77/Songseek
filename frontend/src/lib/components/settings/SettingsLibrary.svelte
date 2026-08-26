@@ -1,5 +1,12 @@
 <script lang="ts">
-	import { AlertTriangle, ArrowRight, CheckCircle2, FolderCog, ScanSearch } from 'lucide-svelte';
+	import {
+		AlertTriangle,
+		ArrowRight,
+		CheckCircle2,
+		FolderCog,
+		Mic2,
+		ScanSearch
+	} from 'lucide-svelte';
 	import { ApiError } from '$lib/api/client';
 	import {
 		getLibraryRestorableRootsQuery,
@@ -496,6 +503,23 @@
 				</div>
 				<a href="/library/management?tab=automation" class="btn management-btn btn-sm"
 					>Open Organize files settings <ArrowRight class="h-4 w-4" /></a
+				>
+			</section>
+
+			<section class="management-settings-portal">
+				<div class="management-write-mark"><Mic2 class="h-6 w-6" /></div>
+				<div class="min-w-0 flex-1">
+					<p class="management-kicker">Enrichment</p>
+					<h3 class="font-display text-lg font-semibold">Lyrics</h3>
+					<p class="mt-1 text-sm text-base-content/60">
+						Imports can fetch synchronized lyrics from LRCLIB, writing them into the file's tags and
+						as a <code>.lrc</code> file beside the track. Lyrics already present in your files or in
+						existing <code>.lrc</code> sidecars are read without any of this turned on. The switch lives
+						with the profile's enrichment settings.
+					</p>
+				</div>
+				<a href="/library/management?tab=automation" class="btn management-btn btn-sm"
+					>Open lyrics settings <ArrowRight class="h-4 w-4" /></a
 				>
 			</section>
 		{/if}

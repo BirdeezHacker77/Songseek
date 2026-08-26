@@ -169,6 +169,7 @@ def test_default_lyrics_preservation_keeps_pre_field_profile_revision() -> None:
     legacy_payload = msgspec.to_builtins(profile)
     legacy_payload.pop("revision")
     legacy_payload["enrichment"]["lyrics"].pop("preserve_existing")
+    legacy_payload["enrichment"]["lyrics"].pop("write_sidecar")
     legacy_revision = hashlib.sha256(
         json.dumps(
             legacy_payload,
@@ -185,11 +186,31 @@ def test_default_lyrics_preservation_keeps_pre_field_profile_revision() -> None:
     assert profile_revision(profile) != legacy_revision
 
 
+def test_default_lyrics_sidecar_keeps_pre_field_profile_revision() -> None:
+    """An added field must hash as absent until somebody actually changes it.
+
+    A revision change makes an activated root's dry run stale, so a field that
+    altered every profile hash on upgrade would stall automatic imports for every
+    activated root until an administrator re-confirmed a preview.
+    """
+    settings = build_initial_library_management_settings()
+    profile = next(
+        value for value in settings.profiles if value.id == PICARD_ORGANIZER_PROFILE_ID
+    )
+    assert profile.enrichment.lyrics.write_sidecar is True
+    unchanged = profile_revision(profile)
+
+    profile.enrichment.lyrics.write_sidecar = False
+
+    assert profile_revision(profile) != unchanged
+
+
 def test_default_lyrics_preservation_keeps_pre_field_settings_revision() -> None:
     settings = build_initial_library_management_settings()
     legacy_payload = msgspec.to_builtins(settings)
     for profile in legacy_payload["profiles"]:
         profile["enrichment"]["lyrics"].pop("preserve_existing")
+        profile["enrichment"]["lyrics"].pop("write_sidecar")
         if profile["organization"].get("multi_disc_naming_script_id") is None:
             profile["organization"].pop("multi_disc_naming_script_id")
     legacy_revision = hashlib.sha256(
@@ -217,6 +238,7 @@ def test_null_multi_disc_field_preserves_standard_only_profile_revision() -> Non
     payload.pop("revision")
     payload["organization"].pop("multi_disc_naming_script_id")
     payload["enrichment"]["lyrics"].pop("preserve_existing")
+    payload["enrichment"]["lyrics"].pop("write_sidecar")
     legacy_revision = hashlib.sha256(
         json.dumps(
             payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
