@@ -67,6 +67,6 @@
 	</div>
 
 	<div class="shrink-0">
-		<a href="/downloads" class="btn btn-ghost btn-sm text-base-content/50">Manage in Downloads</a>
+		<a href="/requests" class="btn btn-ghost btn-sm text-base-content/50">Manage in Requests</a>
 	</div>
 </div>

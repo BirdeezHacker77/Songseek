@@ -53,7 +53,6 @@
 		House,
 		Compass,
 		Menu,
-		Download,
 		PanelLeft,
 		TriangleAlert,
 		Info,
@@ -63,7 +62,6 @@
 		ListMusic,
 		ArrowUpCircle,
 		LogOut,
-		ShieldCheck,
 		Heart,
 		LibraryBig,
 		Cog
@@ -482,20 +480,6 @@
 
 				<li>
 					<a
-						href="/downloads"
-						class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-						data-tip="Downloads"
-					>
-						<div class="relative">
-							<Download class="h-6 w-6" />
-							<DownloadsNavBadge />
-						</div>
-						<span class="is-drawer-close:hidden">Downloads</span>
-					</a>
-				</li>
-
-				<li>
-					<a
 						href="/following"
 						class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
 						class:menu-active={isNavActive('/following')}
@@ -529,22 +513,24 @@
 
 				<SidebarServices />
 
-				{#if downloadClientConfigured}
-					<div class="divider my-0"></div>
-				{/if}
+				<div class="divider my-0"></div>
 
-				{#if downloadClientConfigured}
-					<li>
-						<a
-							href="/requests"
-							class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-							data-tip="Requests"
-						>
+				<li>
+					<a
+						href="/requests"
+						class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
+						data-tip="Requests"
+					>
+						<div class="relative">
 							<Inbox class="h-6 w-6" />
-							<span class="is-drawer-close:hidden">Requests</span>
-						</a>
-					</li>
-				{/if}
+							<DownloadsNavBadge />
+							{#if authStore.isAdmin}
+								<PendingApprovalNavBadge />
+							{/if}
+						</div>
+						<span class="is-drawer-close:hidden">Requests</span>
+					</a>
+				</li>
 
 				{#if authStore.isAdmin}
 					<div class="divider my-0"></div>
@@ -571,19 +557,6 @@
 								</span>
 							</div>
 							<span class="is-drawer-close:hidden">Library Management</span>
-						</a>
-					</li>
-					<li>
-						<a
-							href="/requests?tab=approvals"
-							class="is-drawer-close:tooltip is-drawer-close:tooltip-right"
-							data-tip="Approvals"
-						>
-							<div class="relative">
-								<ShieldCheck class="h-6 w-6" />
-								<PendingApprovalNavBadge />
-							</div>
-							<span class="is-drawer-close:hidden">Approvals</span>
 						</a>
 					</li>
 				{/if}

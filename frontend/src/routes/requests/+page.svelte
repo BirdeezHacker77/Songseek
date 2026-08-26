@@ -67,15 +67,37 @@
 		requestUpgradeAlbum
 	} from '$lib/queries/downloads/UpgradeQueries.svelte';
 	import { QUALITY_TIERS } from '$lib/components/settings/qualityTiers';
+	import DownloadQueue from '$lib/components/downloads/DownloadQueue.svelte';
+	import FreeMusicQueue from '$lib/components/downloads/FreeMusicQueue.svelte';
+	import DiscoveryBatchList from '$lib/components/discover/DiscoveryBatchList.svelte';
+	import DropImportJobList from '$lib/components/import/DropImportJobList.svelte';
+	import DropImportZone from '$lib/components/import/DropImportZone.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import { getIntegrationStatusQuery } from '$lib/queries/HomeIntegrationStatusQuery.svelte';
 
-	type RequestsTab = 'active' | 'history' | 'wanted' | 'approvals' | 'auto-download' | 'upgrades';
-	let activeTab = $state<RequestsTab>('active');
+	// Four tabs, not the eight a flat merge of Downloads and Requests would give.
+	// Activity answers "what is happening now", Wanted "what do I still want",
+	// Approvals "what needs my call", Automation "what runs without me".
+	type RequestsTab = 'activity' | 'wanted' | 'approvals' | 'automation';
+	let activeTab = $state<RequestsTab>('activity');
+
+	// Imports and History are the bulky, on-demand halves of Activity, so they
+	// stay collapsed and their contents are only rendered while open - a closed
+	// <details> still mounts its children, which would fire their queries.
+	let importsOpen = $state(false);
+	let historyOpen = $state(false);
+
+	const integrationStatus = getIntegrationStatusQuery();
+	const downloadClientReady = $derived(integrationStatus.data?.download_client ?? false);
+	const integrationLoaded = $derived(!integrationStatus.isLoading);
+	const canImport = $derived(authStore.isTrusted);
+	let showAllImports = $state(false);
 
 	// Wanted watches (availability re-search). TanStack per current convention;
 	// fetched on the Wanted tab AND on History (whose failed rows show a
 	// still-hunting/watchlist chip), refreshed by the wanted_* SSE events.
 	const wantedQuery = getWantedWatchesQuery(
-		() => activeTab === 'wanted' || activeTab === 'history'
+		() => activeTab === 'wanted' || (activeTab === 'activity' && historyOpen)
 	);
 	const wantedItems = $derived(wantedQuery.data?.items ?? []);
 	const wantedRetrying = $derived(wantedQuery.data?.retrying ?? []);
@@ -116,7 +138,7 @@
 
 	// Cutoff-unmet worklist (admin/trusted curators, CollectionManagement D7/D18).
 	const cutoffUnmetQuery = getCutoffUnmetQuery(
-		() => authStore.isTrusted && activeTab === 'upgrades'
+		() => authStore.isTrusted && activeTab === 'automation'
 	);
 	const upgradeItems = $derived(cutoffUnmetQuery.data?.items ?? []);
 	const upgradeAlbum = requestUpgradeAlbum();
@@ -149,7 +171,7 @@
 
 	// Auto-download standing approvals (TanStack); only fetched for admins on this tab.
 	const autoApprovalsQuery = getAutoDownloadApprovalsQuery(
-		() => authStore.isAdmin && activeTab === 'auto-download'
+		() => authStore.isAdmin && activeTab === 'automation'
 	);
 	const autoApprovals = $derived(autoApprovalsQuery.data?.items ?? []);
 	const approveAuto = createApproveAutoDownloadMutation();
@@ -157,7 +179,7 @@
 
 	// Bulk "Lidarr Import" approval batches share the auto-download tab (LidarrImport D3).
 	const batchApprovalsQuery = getAutoDownloadApprovalBatchesQuery(
-		() => authStore.isAdmin && activeTab === 'auto-download'
+		() => authStore.isAdmin && activeTab === 'automation'
 	);
 	const batchApprovals = $derived(batchApprovalsQuery.data?.batches ?? []);
 	const approveBatch = createApproveAutoDownloadBatchMutation();
@@ -165,7 +187,7 @@
 
 	// Weekly Mix auto-request standing approvals share the auto-download tab.
 	const mixApprovalsQuery = getPersonalMixApprovalsQuery(
-		() => authStore.isAdmin && activeTab === 'auto-download'
+		() => authStore.isAdmin && activeTab === 'automation'
 	);
 	const mixApprovals = $derived(mixApprovalsQuery.data?.items ?? []);
 	const autoApprovalCount = $derived(
@@ -173,6 +195,7 @@
 			(batchApprovalsQuery.data?.count ?? 0) +
 			(mixApprovalsQuery.data?.count ?? 0)
 	);
+	const automationCount = $derived(autoApprovalCount + upgradeItems.length);
 	const approveMix = createApprovePersonalMixMutation();
 	const rejectMix = createRejectPersonalMixMutation();
 
@@ -325,7 +348,7 @@
 	function handleVisibility() {
 		if (document.hidden) {
 			stopPolling();
-		} else if (activeTab === 'active') {
+		} else if (activeTab === 'activity') {
 			startPolling();
 		}
 	}
@@ -392,24 +415,38 @@
 
 	function switchTab(tab: RequestsTab) {
 		activeTab = tab;
-		if (tab === 'active') {
-			abortHistoryLoad();
+		if (tab === 'activity') {
 			abortApprovalsLoad();
 			startPolling();
-		} else if (tab === 'history') {
-			stopPolling();
-			abortApprovalsLoad();
-			void loadHistory();
+			if (historyOpen) void loadHistory();
+			else abortHistoryLoad();
 		} else if (tab === 'approvals') {
 			stopPolling();
 			abortHistoryLoad();
 			void loadApprovals();
 		} else {
-			// auto-download: the TanStack query fetches itself once the tab is active
+			// wanted / automation: TanStack queries fetch themselves once active
 			stopPolling();
 			abortHistoryLoad();
 			abortApprovalsLoad();
 		}
+	}
+
+	function toggleHistory(open: boolean) {
+		historyOpen = open;
+		if (open) void loadHistory();
+		else abortHistoryLoad();
+	}
+
+	/** Accepts the tab names this page used before Downloads was folded in, so
+	 *  existing links and bookmarks keep landing somewhere sensible. */
+	function tabFromParam(value: string | null): RequestsTab {
+		if (value === 'approvals' && authStore.isAdmin) return 'approvals';
+		if (value === 'wanted') return 'wanted';
+		if (value === 'automation' || value === 'auto-download' || value === 'upgrades') {
+			return 'automation';
+		}
+		return 'activity';
 	}
 
 	async function handleCancel(mbid: string) {
@@ -482,12 +519,16 @@
 	onMount(() => {
 		document.addEventListener('visibilitychange', handleVisibility);
 		const tabParam = page.url.searchParams.get('tab');
-		if (tabParam === 'approvals' && authStore.isAdmin) {
-			switchTab('approvals');
-		} else if (tabParam === 'wanted') {
-			switchTab('wanted');
+		// Deep links that used to address a whole page now address a section of
+		// Activity, so open the section they meant.
+		if (tabParam === 'import') importsOpen = true;
+		if (tabParam === 'history') historyOpen = true;
+		const target = tabFromParam(tabParam);
+		if (target !== 'activity') {
+			switchTab(target);
 		} else {
 			startPolling();
+			if (historyOpen) void loadHistory();
 			if (authStore.isAdmin) void loadApprovals();
 		}
 	});
@@ -500,14 +541,7 @@
 			tabSyncReady = true;
 			return;
 		}
-		const target: 'active' | 'history' | 'wanted' | 'approvals' =
-			tabParam === 'approvals' && authStore.isAdmin
-				? 'approvals'
-				: tabParam === 'history'
-					? 'history'
-					: tabParam === 'wanted'
-						? 'wanted'
-						: 'active';
+		const target = tabFromParam(tabParam);
 		if (untrack(() => activeTab) !== target) {
 			switchTab(target);
 		}
@@ -555,38 +589,21 @@
 		<button
 			role="tab"
 			class="tab-btn"
-			class:tab-btn-active={activeTab === 'active'}
-			aria-selected={activeTab === 'active'}
-			onclick={() => switchTab('active')}
+			class:tab-btn-active={activeTab === 'activity'}
+			aria-selected={activeTab === 'activity'}
+			onclick={() => switchTab('activity')}
 		>
 			<Download class="h-4 w-4" />
-			Active
+			Activity
 			{#if activeCount > 0}
 				<span
-					class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-info/15 text-info text-xs font-medium tabular-nums"
+					class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-base-content/8 text-base-content/50 text-xs font-medium tabular-nums"
 				>
 					{activeCount}
 				</span>
 			{/if}
-			{#if isPolling && activeTab === 'active'}
+			{#if isPolling && activeTab === 'activity'}
 				<span class="polling-dot" aria-hidden="true"></span>
-			{/if}
-		</button>
-		<button
-			role="tab"
-			class="tab-btn"
-			class:tab-btn-active={activeTab === 'history'}
-			aria-selected={activeTab === 'history'}
-			onclick={() => switchTab('history')}
-		>
-			<History class="h-4 w-4" />
-			History
-			{#if historyTotal > 0}
-				<span
-					class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-base-content/8 text-base-content/50 text-xs font-medium tabular-nums"
-				>
-					{historyTotal}
-				</span>
 			{/if}
 		</button>
 		<button
@@ -596,7 +613,7 @@
 			aria-selected={activeTab === 'wanted'}
 			onclick={() => switchTab('wanted')}
 		>
-			<Radar class="h-4 w-4" />
+			<Heart class="h-4 w-4" />
 			Wanted
 			{#if wantedActiveCount > 0}
 				<span
@@ -618,54 +635,35 @@
 				Approvals
 				{#if approvalCount > 0}
 					<span
-						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-warning/15 text-warning text-xs font-medium tabular-nums"
+						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-base-content/8 text-base-content/50 text-xs font-medium tabular-nums"
 					>
 						{approvalCount}
 					</span>
 				{/if}
 			</button>
 		{/if}
-		{#if authStore.isAdmin}
+		{#if authStore.isAdmin || authStore.isTrusted}
 			<button
 				role="tab"
 				class="tab-btn"
-				class:tab-btn-active={activeTab === 'auto-download'}
-				aria-selected={activeTab === 'auto-download'}
-				onclick={() => switchTab('auto-download')}
+				class:tab-btn-active={activeTab === 'automation'}
+				aria-selected={activeTab === 'automation'}
+				onclick={() => switchTab('automation')}
 			>
-				<Heart class="h-4 w-4" />
-				Auto-downloads
-				{#if autoApprovalCount > 0}
-					<span
-						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-warning/15 text-warning text-xs font-medium tabular-nums"
-					>
-						{autoApprovalCount}
-					</span>
-				{/if}
-			</button>
-		{/if}
-		{#if authStore.isTrusted}
-			<button
-				role="tab"
-				class="tab-btn"
-				class:tab-btn-active={activeTab === 'upgrades'}
-				aria-selected={activeTab === 'upgrades'}
-				onclick={() => switchTab('upgrades')}
-			>
-				<TrendingUp class="h-4 w-4" />
-				Upgrades
-				{#if upgradeItems.length > 0}
+				<Sparkles class="h-4 w-4" />
+				Automation
+				{#if automationCount > 0}
 					<span
 						class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-base-content/8 text-base-content/50 text-xs font-medium tabular-nums"
 					>
-						{upgradeItems.length}
+						{automationCount}
 					</span>
 				{/if}
 			</button>
 		{/if}
 	</div>
 
-	{#if activeTab === 'active'}
+	{#if activeTab === 'activity'}
 		<div in:fade={{ duration: 150 }} aria-live="polite">
 			{#if activeError}
 				<div class="alert alert-warning mb-4">
@@ -721,115 +719,164 @@
 				</div>
 			{/if}
 		</div>
-	{:else if activeTab === 'history'}
-		<div in:fade={{ duration: 150 }}>
-			<div class="flex flex-wrap items-center gap-2 mb-4">
-				<select
-					class="select select-bordered select-sm text-xs"
-					aria-label="Filter by status"
-					onchange={handleFilterChange}
-				>
-					<option value="">All statuses</option>
-					<option value="imported">Imported</option>
-					<option value="incomplete">Incomplete</option>
-					<option value="failed">Failed</option>
-					<option value="importFailed">Import Failed</option>
-					<option value="importBlocked">Import Blocked</option>
-					<option value="cancelled">Cancelled</option>
-					{#if authStore.isAdmin}
-						<option value="reimportable">Can reimport</option>
-					{/if}
-				</select>
 
-				<select
-					class="select select-bordered select-sm text-xs"
-					aria-label="Sort order"
-					onchange={handleSortChange}
-				>
-					<option value="">Newest first</option>
-					<option value="oldest">Oldest first</option>
-					<option value="status">By status</option>
-				</select>
-
-				<div class="flex-1"></div>
-
-				{#if historyTotalPages > 1}
-					<Pagination
-						current={historyPage}
-						total={historyTotalPages}
-						onchange={handleHistoryPageChange}
-					/>
-				{/if}
-			</div>
-
-			{#if historyError}
-				<div class="alert alert-error mb-4">
-					<span>{historyError}</span>
-					<button class="btn btn-sm" onclick={loadHistory}>Retry</button>
+		<section class="mt-8">
+			<h2 class="text-sm font-semibold text-base-content/60 mb-3">Transfers</h2>
+			{#if !integrationLoaded}
+				<div class="space-y-3">
+					<div class="skeleton h-20 w-full rounded-2xl"></div>
+					<div class="skeleton h-20 w-full rounded-2xl"></div>
 				</div>
-			{/if}
-
-			{#if historyLoading && historyItems.length === 0}
-				<div class="flex flex-col gap-2.5">
-					{#each Array(5) as _, i (`history-loading-${i}`)}
-						<div
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
-							style="animation-delay: {i * 80}ms"
-						>
-							<div class="w-14 h-14 sm:w-18 sm:h-18 bg-base-300 rounded-lg"></div>
-							<div class="flex-1">
-								<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
-								<div class="h-3 bg-base-300 rounded w-28"></div>
-							</div>
-							<div class="flex flex-col items-end gap-2">
-								<div class="h-5 bg-base-300 rounded-full w-20"></div>
-								<div class="h-3 bg-base-300 rounded w-28"></div>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{:else if historyItems.length === 0}
-				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
-					<div
-						class="w-16 h-16 rounded-full bg-base-content/3 flex items-center justify-center mb-4"
-					>
-						<Clock class="h-8 w-8 text-base-content/15" />
-					</div>
-					<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">No history yet</h2>
-					<p class="text-base-content/30 text-sm max-w-xs">
-						Completed and failed requests will appear here.
-					</p>
-				</div>
+			{:else if !downloadClientReady}
+				<EmptyState
+					icon={Download}
+					title="Download client not configured"
+					description={authStore.isAdmin
+						? 'Connect a download client to request albums.'
+						: 'Contact your admin to configure the download client.'}
+					ctaLabel={authStore.isAdmin ? 'Configure Download Client' : undefined}
+					ctaHref={authStore.isAdmin ? '/settings?tab=download-client' : undefined}
+				/>
 			{:else}
-				<div class="flex flex-col gap-2.5">
-					{#each historyItems as item (item.musicbrainz_id)}
-						<RequestCard
-							{item}
-							mode="history"
-							watchState={['failed', 'incomplete', 'cancelled'].includes(item.status)
-								? wantedStates.get(item.musicbrainz_id.toLowerCase())
-								: undefined}
-							onretry={authStore.isAdmin || item.user_id === authStore.user?.id
-								? handleRetry
-								: undefined}
-							onclear={handleClear}
-							onremoved={handleRemoved}
-							onreimported={loadHistory}
-						/>
-					{/each}
-				</div>
-
-				{#if historyTotalPages > 1}
-					<div class="flex justify-center mt-6">
-						<Pagination
-							current={historyPage}
-							total={historyTotalPages}
-							onchange={handleHistoryPageChange}
-						/>
-					</div>
-				{/if}
+				<FreeMusicQueue showAll={authStore.isAdmin} />
+				<DownloadQueue />
+				<DiscoveryBatchList />
 			{/if}
-		</div>
+		</section>
+
+		{#if canImport}
+			<details class="activity-section" bind:open={importsOpen}>
+				<summary class="activity-summary">Imports</summary>
+				{#if importsOpen}
+					<DropImportZone className="mb-6" />
+					{#if authStore.isAdmin}
+						<label class="mb-3 flex items-center justify-end gap-2 text-xs text-base-content/60">
+							<input type="checkbox" class="toggle toggle-xs" bind:checked={showAllImports} />
+							Show everyone's imports
+						</label>
+					{/if}
+					<DropImportJobList showAll={showAllImports} />
+				{/if}
+			</details>
+		{/if}
+
+		<details
+			class="activity-section"
+			open={historyOpen}
+			ontoggle={(event) => toggleHistory(event.currentTarget.open)}
+		>
+			<summary class="activity-summary"><History class="h-4 w-4" />History</summary>
+			{#if historyOpen}
+				<div in:fade={{ duration: 150 }}>
+					<div class="flex flex-wrap items-center gap-2 mb-4">
+						<select
+							class="select select-bordered select-sm text-xs"
+							aria-label="Filter by status"
+							onchange={handleFilterChange}
+						>
+							<option value="">All statuses</option>
+							<option value="imported">Imported</option>
+							<option value="incomplete">Incomplete</option>
+							<option value="failed">Failed</option>
+							<option value="importFailed">Import Failed</option>
+							<option value="importBlocked">Import Blocked</option>
+							<option value="cancelled">Cancelled</option>
+							{#if authStore.isAdmin}
+								<option value="reimportable">Can reimport</option>
+							{/if}
+						</select>
+
+						<select
+							class="select select-bordered select-sm text-xs"
+							aria-label="Sort order"
+							onchange={handleSortChange}
+						>
+							<option value="">Newest first</option>
+							<option value="oldest">Oldest first</option>
+							<option value="status">By status</option>
+						</select>
+
+						<div class="flex-1"></div>
+
+						{#if historyTotalPages > 1}
+							<Pagination
+								current={historyPage}
+								total={historyTotalPages}
+								onchange={handleHistoryPageChange}
+							/>
+						{/if}
+					</div>
+
+					{#if historyError}
+						<div class="alert alert-error mb-4">
+							<span>{historyError}</span>
+							<button class="btn btn-sm" onclick={loadHistory}>Retry</button>
+						</div>
+					{/if}
+
+					{#if historyLoading && historyItems.length === 0}
+						<div class="flex flex-col gap-2.5">
+							{#each Array(5) as _, i (`history-loading-${i}`)}
+								<div
+									class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
+									style="animation-delay: {i * 80}ms"
+								>
+									<div class="w-14 h-14 sm:w-18 sm:h-18 bg-base-300 rounded-lg"></div>
+									<div class="flex-1">
+										<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
+										<div class="h-3 bg-base-300 rounded w-28"></div>
+									</div>
+									<div class="flex flex-col items-end gap-2">
+										<div class="h-5 bg-base-300 rounded-full w-20"></div>
+										<div class="h-3 bg-base-300 rounded w-28"></div>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{:else if historyItems.length === 0}
+						<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
+							<div
+								class="w-16 h-16 rounded-full bg-base-content/3 flex items-center justify-center mb-4"
+							>
+								<Clock class="h-8 w-8 text-base-content/15" />
+							</div>
+							<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">No history yet</h2>
+							<p class="text-base-content/30 text-sm max-w-xs">
+								Completed and failed requests will appear here.
+							</p>
+						</div>
+					{:else}
+						<div class="flex flex-col gap-2.5">
+							{#each historyItems as item (item.musicbrainz_id)}
+								<RequestCard
+									{item}
+									mode="history"
+									watchState={['failed', 'incomplete', 'cancelled'].includes(item.status)
+										? wantedStates.get(item.musicbrainz_id.toLowerCase())
+										: undefined}
+									onretry={authStore.isAdmin || item.user_id === authStore.user?.id
+										? handleRetry
+										: undefined}
+									onclear={handleClear}
+									onremoved={handleRemoved}
+									onreimported={loadHistory}
+								/>
+							{/each}
+						</div>
+
+						{#if historyTotalPages > 1}
+							<div class="flex justify-center mt-6">
+								<Pagination
+									current={historyPage}
+									total={historyTotalPages}
+									onchange={handleHistoryPageChange}
+								/>
+							</div>
+						{/if}
+					{/if}
+				</div>
+			{/if}
+		</details>
 	{:else if activeTab === 'wanted'}
 		<div in:fade={{ duration: 150 }}>
 			{#if wantedQuery.isError}
@@ -1004,334 +1051,381 @@
 				</div>
 			{/if}
 		</div>
-	{:else if activeTab === 'upgrades' && authStore.isTrusted}
-		<div in:fade={{ duration: 150 }}>
-			{#if cutoffUnmetQuery.isError}
-				<div class="alert alert-warning mb-4">
-					<TriangleAlert class="h-5 w-5" />
-					<span>Could not load the upgrade worklist.</span>
-					<button class="btn btn-sm" onclick={() => void cutoffUnmetQuery.refetch()}>Retry</button>
-				</div>
-			{:else if cutoffUnmetQuery.isPending}
-				<div class="flex flex-col gap-2.5">
-					{#each Array(3) as _, i (`upgrade-loading-${i}`)}
-						<div
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
-							style="animation-delay: {i * 100}ms"
+	{:else if activeTab === 'automation'}
+		{#if authStore.isAdmin}
+			<div in:fade={{ duration: 150 }}>
+				{#if autoApprovalsQuery.isError || mixApprovalsQuery.isError || batchApprovalsQuery.isError}
+					<div class="alert alert-warning mb-4">
+						<TriangleAlert class="h-5 w-5" />
+						<span>Could not load auto-download approvals.</span>
+						<button
+							class="btn btn-sm"
+							onclick={() => {
+								void autoApprovalsQuery.refetch();
+								void batchApprovalsQuery.refetch();
+								void mixApprovalsQuery.refetch();
+							}}>Retry</button
 						>
-							<div class="w-14 h-14 sm:w-16 sm:h-16 bg-base-300 rounded-lg"></div>
-							<div class="flex-1">
-								<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
-								<div class="h-3 bg-base-300 rounded w-28"></div>
-							</div>
-							<div class="h-8 bg-base-300 rounded-btn w-32"></div>
-						</div>
-					{/each}
-				</div>
-			{:else if !cutoffUnmetQuery.data?.upgrade_allowed}
-				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
-					<div
-						class="w-16 h-16 rounded-full bg-base-content/3 flex items-center justify-center mb-4"
-					>
-						<TrendingUp class="h-8 w-8 text-base-content/15" />
 					</div>
-					<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">Upgrades are off</h2>
-					<p class="text-base-content/30 text-sm max-w-xs">
-						Turn on "Allow automatic upgrades" in Settings → Download Clients to list albums below
-						your quality cutoff.
-					</p>
-					{#if authStore.isAdmin}
-						<a href="/settings?tab=download-client" class="btn btn-sm btn-primary mt-4">
-							Open download settings
-						</a>
-					{/if}
-				</div>
-			{:else if upgradeItems.length === 0}
-				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
-					<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
-						<CheckCircle class="h-8 w-8 text-success/30" />
-					</div>
-					<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">
-						Everything meets your cutoff
-					</h2>
-					<p class="text-base-content/30 text-sm max-w-xs">
-						No album is below {tierLabel(cutoffUnmetQuery.data.cutoff)}. Albums that fall short will
-						appear here.
-					</p>
-				</div>
-			{:else}
-				<p class="text-xs text-base-content/40 mb-3">
-					Albums whose worst track is below your cutoff ({tierLabel(cutoffUnmetQuery.data.cutoff)}).
-					"Find a better copy" only replaces a file when the new one is better quality; replaced
-					files go to the recycle bin.
-				</p>
-				<div class="flex flex-col gap-2.5">
-					{#each upgradeItems as item, i (item.release_group_mbid)}
-						{@const queued = upgradeQueued.has(item.release_group_mbid)}
-						<div
-							in:fly={{ y: 12, duration: 200, delay: i * 30 }}
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
-						>
+				{:else if autoApprovalsQuery.isPending || mixApprovalsQuery.isPending || batchApprovalsQuery.isPending}
+					<div class="flex flex-col gap-2.5">
+						{#each Array(3) as _, i (`auto-approval-loading-${i}`)}
 							<div
-								class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300"
+								class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
+								style="animation-delay: {i * 100}ms"
 							>
-								<AlbumImage
-									mbid={item.release_group_mbid}
-									customUrl={null}
-									alt={item.album_title ?? 'Album'}
-									size="sm"
-									rounded="lg"
-									className="w-full h-full"
-								/>
+								<div class="w-14 h-14 sm:w-16 sm:h-16 bg-base-300 rounded-lg"></div>
+								<div class="flex-1">
+									<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
+									<div class="h-3 bg-base-300 rounded w-28"></div>
+								</div>
+								<div class="flex gap-2">
+									<div class="h-8 bg-base-300 rounded-btn w-20"></div>
+									<div class="h-8 bg-base-300 rounded-btn w-20"></div>
+								</div>
 							</div>
-							<div class="flex-1 min-w-0">
-								<a
-									href="/album/{item.release_group_mbid}"
-									class="block font-semibold text-sm truncate hover:text-accent hover:underline"
+						{/each}
+					</div>
+				{:else if autoApprovals.length === 0 && batchApprovals.length === 0 && mixApprovals.length === 0}
+					<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
+						<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
+							<Heart class="h-8 w-8 text-success/30" />
+						</div>
+						<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">No pending approvals</h2>
+						<p class="text-base-content/30 text-sm max-w-xs">
+							When a user turns on artist auto-download or Weekly Mix auto-requests, it appears here
+							for your review.
+						</p>
+					</div>
+				{:else}
+					<div class="flex flex-col gap-2.5">
+						{#each autoApprovals as item (item.user_id + item.artist_mbid)}
+							<div
+								in:fly={{ y: 12, duration: 200 }}
+								class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
+							>
+								<div
+									class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300"
 								>
-									{item.album_title ?? 'Unknown album'}
-								</a>
-								<p class="text-base-content/60 text-xs truncate">
-									{item.artist_name ?? 'Unknown artist'}{item.year ? ` • ${item.year}` : ''}
-								</p>
-								<p class="text-base-content/40 text-xs mt-0.5">
-									<span class="text-warning/80">{tierLabel(item.current_tier)}</span>
-									<span class="text-base-content/25">
-										→ {tierLabel(cutoffUnmetQuery.data.cutoff)}</span
+									<ArtistImage
+										mbid={item.artist_mbid}
+										alt={item.artist_name}
+										className="w-full h-full object-cover"
+									/>
+								</div>
+								<div class="flex-1 min-w-0">
+									<a
+										href="/artist/{item.artist_mbid}"
+										class="block font-semibold text-sm truncate hover:text-accent hover:underline"
+										title={item.artist_name}>{item.artist_name}</a
 									>
-									<span class="text-base-content/25"> • {item.track_count} tracks</span>
-								</p>
-							</div>
-							<div class="shrink-0">
-								<button
-									class="btn btn-sm gap-1.5 {queued ? 'btn-ghost' : 'btn-primary btn-outline'}"
-									disabled={queued || upgradeAlbum.isPending}
-									onclick={() => void handleUpgrade(item)}
-								>
-									{#if queued}
+									<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
+										<span>{item.user_name ?? 'A user'}</span>
+										<span class="text-base-content/20">•</span>
+										<span>requested {approvalTimeAgo(item.requested_at)}</span>
+									</div>
+								</div>
+								<div class="flex gap-2 shrink-0">
+									<button
+										class="btn btn-success btn-sm gap-1"
+										disabled={approveAuto.isPending || rejectAuto.isPending}
+										onclick={() =>
+											approveAuto.mutate({
+												userId: item.user_id,
+												mbid: item.artist_mbid,
+												artistName: item.artist_name
+											})}
+									>
 										<Check class="h-3.5 w-3.5" />
-										Queued
-									{:else}
-										<TrendingUp class="h-3.5 w-3.5" />
-										Find a better copy
+										Approve
+									</button>
+									<button
+										class="btn btn-error btn-sm btn-outline gap-1"
+										disabled={approveAuto.isPending || rejectAuto.isPending}
+										onclick={() =>
+											rejectAuto.mutate({
+												userId: item.user_id,
+												mbid: item.artist_mbid,
+												artistName: item.artist_name
+											})}
+									>
+										<X class="h-3.5 w-3.5" />
+										Reject
+									</button>
+								</div>
+							</div>
+						{/each}
+						{#each batchApprovals as batch (batch.batch_id)}
+							<div
+								in:fly={{ y: 12, duration: 200 }}
+								class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
+							>
+								<div
+									class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg bg-base-300 flex items-center justify-center"
+								>
+									<DownloadCloud class="h-6 w-6 text-accent/60" />
+								</div>
+								<div class="flex-1 min-w-0">
+									<span class="block font-semibold text-sm">
+										{batch.user_name ?? 'A user'} wants auto-download on {batch.artist_count} imported
+										{batch.artist_count === 1 ? 'artist' : 'artists'}
+									</span>
+									<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
+										<span>from Lidarr import</span>
+										<span class="text-base-content/20">•</span>
+										<span>requested {approvalTimeAgo(batch.requested_at)}</span>
+									</div>
+									{#if batch.sample_names.length > 0}
+										<p class="mt-0.5 text-xs text-base-content/50 truncate">
+											{batch.sample_names.join(', ')}{batch.artist_count > batch.sample_names.length
+												? `, +${batch.artist_count - batch.sample_names.length} more`
+												: ''}
+										</p>
 									{/if}
-								</button>
+								</div>
+								<div class="flex gap-2 shrink-0">
+									<button
+										class="btn btn-success btn-sm gap-1"
+										disabled={approveBatch.isPending || rejectBatch.isPending}
+										onclick={() =>
+											approveBatch.mutate({
+												batchId: batch.batch_id,
+												userName: batch.user_name ?? 'A user',
+												artistCount: batch.artist_count
+											})}
+									>
+										<Check class="h-3.5 w-3.5" />
+										Approve
+									</button>
+									<button
+										class="btn btn-error btn-sm btn-outline gap-1"
+										disabled={approveBatch.isPending || rejectBatch.isPending}
+										onclick={() =>
+											rejectBatch.mutate({
+												batchId: batch.batch_id,
+												userName: batch.user_name ?? 'A user',
+												artistCount: batch.artist_count
+											})}
+									>
+										<X class="h-3.5 w-3.5" />
+										Reject
+									</button>
+								</div>
 							</div>
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</div>
-	{:else if activeTab === 'auto-download' && authStore.isAdmin}
-		<div in:fade={{ duration: 150 }}>
-			{#if autoApprovalsQuery.isError || mixApprovalsQuery.isError || batchApprovalsQuery.isError}
-				<div class="alert alert-warning mb-4">
-					<TriangleAlert class="h-5 w-5" />
-					<span>Could not load auto-download approvals.</span>
-					<button
-						class="btn btn-sm"
-						onclick={() => {
-							void autoApprovalsQuery.refetch();
-							void batchApprovalsQuery.refetch();
-							void mixApprovalsQuery.refetch();
-						}}>Retry</button
-					>
-				</div>
-			{:else if autoApprovalsQuery.isPending || mixApprovalsQuery.isPending || batchApprovalsQuery.isPending}
-				<div class="flex flex-col gap-2.5">
-					{#each Array(3) as _, i (`auto-approval-loading-${i}`)}
-						<div
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
-							style="animation-delay: {i * 100}ms"
-						>
-							<div class="w-14 h-14 sm:w-16 sm:h-16 bg-base-300 rounded-lg"></div>
-							<div class="flex-1">
-								<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
-								<div class="h-3 bg-base-300 rounded w-28"></div>
+						{/each}
+						{#each mixApprovals as item (item.user_id)}
+							<div
+								in:fly={{ y: 12, duration: 200 }}
+								class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
+							>
+								<div
+									class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg bg-base-300 flex items-center justify-center"
+								>
+									<Sparkles class="h-6 w-6 text-accent/60" />
+								</div>
+								<div class="flex-1 min-w-0">
+									<span class="block font-semibold text-sm truncate">Weekly Mix auto-requests</span>
+									<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
+										<span>{item.user_name ?? 'A user'}</span>
+										<span class="text-base-content/20">•</span>
+										<span>requested {approvalTimeAgo(item.requested_at)}</span>
+									</div>
+								</div>
+								<div class="flex gap-2 shrink-0">
+									<button
+										class="btn btn-success btn-sm gap-1"
+										disabled={approveMix.isPending || rejectMix.isPending}
+										onclick={() =>
+											approveMix.mutate({ userId: item.user_id, userName: item.user_name })}
+									>
+										<Check class="h-3.5 w-3.5" />
+										Approve
+									</button>
+									<button
+										class="btn btn-error btn-sm btn-outline gap-1"
+										disabled={approveMix.isPending || rejectMix.isPending}
+										onclick={() =>
+											rejectMix.mutate({ userId: item.user_id, userName: item.user_name })}
+									>
+										<X class="h-3.5 w-3.5" />
+										Reject
+									</button>
+								</div>
 							</div>
-							<div class="flex gap-2">
-								<div class="h-8 bg-base-300 rounded-btn w-20"></div>
-								<div class="h-8 bg-base-300 rounded-btn w-20"></div>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{:else if autoApprovals.length === 0 && batchApprovals.length === 0 && mixApprovals.length === 0}
-				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
-					<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
-						<Heart class="h-8 w-8 text-success/30" />
+						{/each}
 					</div>
-					<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">No pending approvals</h2>
-					<p class="text-base-content/30 text-sm max-w-xs">
-						When a user turns on artist auto-download or Weekly Mix auto-requests, it appears here
-						for your review.
+				{/if}
+			</div>
+		{/if}
+		{#if authStore.isTrusted}
+			<div in:fade={{ duration: 150 }}>
+				{#if cutoffUnmetQuery.isError}
+					<div class="alert alert-warning mb-4">
+						<TriangleAlert class="h-5 w-5" />
+						<span>Could not load the upgrade worklist.</span>
+						<button class="btn btn-sm" onclick={() => void cutoffUnmetQuery.refetch()}>Retry</button
+						>
+					</div>
+				{:else if cutoffUnmetQuery.isPending}
+					<div class="flex flex-col gap-2.5">
+						{#each Array(3) as _, i (`upgrade-loading-${i}`)}
+							<div
+								class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box animate-pulse"
+								style="animation-delay: {i * 100}ms"
+							>
+								<div class="w-14 h-14 sm:w-16 sm:h-16 bg-base-300 rounded-lg"></div>
+								<div class="flex-1">
+									<div class="h-4 bg-base-300 rounded w-44 mb-2"></div>
+									<div class="h-3 bg-base-300 rounded w-28"></div>
+								</div>
+								<div class="h-8 bg-base-300 rounded-btn w-32"></div>
+							</div>
+						{/each}
+					</div>
+				{:else if !cutoffUnmetQuery.data?.upgrade_allowed}
+					<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
+						<div
+							class="w-16 h-16 rounded-full bg-base-content/3 flex items-center justify-center mb-4"
+						>
+							<TrendingUp class="h-8 w-8 text-base-content/15" />
+						</div>
+						<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">Upgrades are off</h2>
+						<p class="text-base-content/30 text-sm max-w-xs">
+							Turn on "Allow automatic upgrades" in Settings → Download Clients to list albums below
+							your quality cutoff.
+						</p>
+						{#if authStore.isAdmin}
+							<a href="/settings?tab=download-client" class="btn btn-sm btn-primary mt-4">
+								Open download settings
+							</a>
+						{/if}
+					</div>
+				{:else if upgradeItems.length === 0}
+					<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
+						<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
+							<CheckCircle class="h-8 w-8 text-success/30" />
+						</div>
+						<h2 class="text-lg font-semibold mb-1.5 text-base-content/50">
+							Everything meets your cutoff
+						</h2>
+						<p class="text-base-content/30 text-sm max-w-xs">
+							No album is below {tierLabel(cutoffUnmetQuery.data.cutoff)}. Albums that fall short
+							will appear here.
+						</p>
+					</div>
+				{:else}
+					<p class="text-xs text-base-content/40 mb-3">
+						Albums whose worst track is below your cutoff ({tierLabel(
+							cutoffUnmetQuery.data.cutoff
+						)}). "Find a better copy" only replaces a file when the new one is better quality;
+						replaced files go to the recycle bin.
 					</p>
-				</div>
-			{:else}
-				<div class="flex flex-col gap-2.5">
-					{#each autoApprovals as item (item.user_id + item.artist_mbid)}
-						<div
-							in:fly={{ y: 12, duration: 200 }}
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
-						>
+					<div class="flex flex-col gap-2.5">
+						{#each upgradeItems as item, i (item.release_group_mbid)}
+							{@const queued = upgradeQueued.has(item.release_group_mbid)}
 							<div
-								class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300"
+								in:fly={{ y: 12, duration: 200, delay: i * 30 }}
+								class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
 							>
-								<ArtistImage
-									mbid={item.artist_mbid}
-									alt={item.artist_name}
-									className="w-full h-full object-cover"
-								/>
-							</div>
-							<div class="flex-1 min-w-0">
-								<a
-									href="/artist/{item.artist_mbid}"
-									class="block font-semibold text-sm truncate hover:text-accent hover:underline"
-									title={item.artist_name}>{item.artist_name}</a
+								<div
+									class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden bg-base-300"
 								>
-								<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
-									<span>{item.user_name ?? 'A user'}</span>
-									<span class="text-base-content/20">•</span>
-									<span>requested {approvalTimeAgo(item.requested_at)}</span>
+									<AlbumImage
+										mbid={item.release_group_mbid}
+										customUrl={null}
+										alt={item.album_title ?? 'Album'}
+										size="sm"
+										rounded="lg"
+										className="w-full h-full"
+									/>
 								</div>
-							</div>
-							<div class="flex gap-2 shrink-0">
-								<button
-									class="btn btn-success btn-sm gap-1"
-									disabled={approveAuto.isPending || rejectAuto.isPending}
-									onclick={() =>
-										approveAuto.mutate({
-											userId: item.user_id,
-											mbid: item.artist_mbid,
-											artistName: item.artist_name
-										})}
-								>
-									<Check class="h-3.5 w-3.5" />
-									Approve
-								</button>
-								<button
-									class="btn btn-error btn-sm btn-outline gap-1"
-									disabled={approveAuto.isPending || rejectAuto.isPending}
-									onclick={() =>
-										rejectAuto.mutate({
-											userId: item.user_id,
-											mbid: item.artist_mbid,
-											artistName: item.artist_name
-										})}
-								>
-									<X class="h-3.5 w-3.5" />
-									Reject
-								</button>
-							</div>
-						</div>
-					{/each}
-					{#each batchApprovals as batch (batch.batch_id)}
-						<div
-							in:fly={{ y: 12, duration: 200 }}
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
-						>
-							<div
-								class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg bg-base-300 flex items-center justify-center"
-							>
-								<DownloadCloud class="h-6 w-6 text-accent/60" />
-							</div>
-							<div class="flex-1 min-w-0">
-								<span class="block font-semibold text-sm">
-									{batch.user_name ?? 'A user'} wants auto-download on {batch.artist_count} imported
-									{batch.artist_count === 1 ? 'artist' : 'artists'}
-								</span>
-								<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
-									<span>from Lidarr import</span>
-									<span class="text-base-content/20">•</span>
-									<span>requested {approvalTimeAgo(batch.requested_at)}</span>
-								</div>
-								{#if batch.sample_names.length > 0}
-									<p class="mt-0.5 text-xs text-base-content/50 truncate">
-										{batch.sample_names.join(', ')}{batch.artist_count > batch.sample_names.length
-											? `, +${batch.artist_count - batch.sample_names.length} more`
-											: ''}
+								<div class="flex-1 min-w-0">
+									<a
+										href="/album/{item.release_group_mbid}"
+										class="block font-semibold text-sm truncate hover:text-accent hover:underline"
+									>
+										{item.album_title ?? 'Unknown album'}
+									</a>
+									<p class="text-base-content/60 text-xs truncate">
+										{item.artist_name ?? 'Unknown artist'}{item.year ? ` • ${item.year}` : ''}
 									</p>
-								{/if}
-							</div>
-							<div class="flex gap-2 shrink-0">
-								<button
-									class="btn btn-success btn-sm gap-1"
-									disabled={approveBatch.isPending || rejectBatch.isPending}
-									onclick={() =>
-										approveBatch.mutate({
-											batchId: batch.batch_id,
-											userName: batch.user_name ?? 'A user',
-											artistCount: batch.artist_count
-										})}
-								>
-									<Check class="h-3.5 w-3.5" />
-									Approve
-								</button>
-								<button
-									class="btn btn-error btn-sm btn-outline gap-1"
-									disabled={approveBatch.isPending || rejectBatch.isPending}
-									onclick={() =>
-										rejectBatch.mutate({
-											batchId: batch.batch_id,
-											userName: batch.user_name ?? 'A user',
-											artistCount: batch.artist_count
-										})}
-								>
-									<X class="h-3.5 w-3.5" />
-									Reject
-								</button>
-							</div>
-						</div>
-					{/each}
-					{#each mixApprovals as item (item.user_id)}
-						<div
-							in:fly={{ y: 12, duration: 200 }}
-							class="flex items-center gap-3 sm:gap-4 p-3 sm:p-4 bg-base-200 rounded-box"
-						>
-							<div
-								class="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg bg-base-300 flex items-center justify-center"
-							>
-								<Sparkles class="h-6 w-6 text-accent/60" />
-							</div>
-							<div class="flex-1 min-w-0">
-								<span class="block font-semibold text-sm truncate">Weekly Mix auto-requests</span>
-								<div class="flex items-center gap-1.5 flex-wrap text-xs text-base-content/40">
-									<span>{item.user_name ?? 'A user'}</span>
-									<span class="text-base-content/20">•</span>
-									<span>requested {approvalTimeAgo(item.requested_at)}</span>
+									<p class="text-base-content/40 text-xs mt-0.5">
+										<span class="text-warning/80">{tierLabel(item.current_tier)}</span>
+										<span class="text-base-content/25">
+											→ {tierLabel(cutoffUnmetQuery.data.cutoff)}</span
+										>
+										<span class="text-base-content/25"> • {item.track_count} tracks</span>
+									</p>
+								</div>
+								<div class="shrink-0">
+									<button
+										class="btn btn-sm gap-1.5 {queued ? 'btn-ghost' : 'btn-primary btn-outline'}"
+										disabled={queued || upgradeAlbum.isPending}
+										onclick={() => void handleUpgrade(item)}
+									>
+										{#if queued}
+											<Check class="h-3.5 w-3.5" />
+											Queued
+										{:else}
+											<TrendingUp class="h-3.5 w-3.5" />
+											Find a better copy
+										{/if}
+									</button>
 								</div>
 							</div>
-							<div class="flex gap-2 shrink-0">
-								<button
-									class="btn btn-success btn-sm gap-1"
-									disabled={approveMix.isPending || rejectMix.isPending}
-									onclick={() =>
-										approveMix.mutate({ userId: item.user_id, userName: item.user_name })}
-								>
-									<Check class="h-3.5 w-3.5" />
-									Approve
-								</button>
-								<button
-									class="btn btn-error btn-sm btn-outline gap-1"
-									disabled={approveMix.isPending || rejectMix.isPending}
-									onclick={() =>
-										rejectMix.mutate({ userId: item.user_id, userName: item.user_name })}
-								>
-									<X class="h-3.5 w-3.5" />
-									Reject
-								</button>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 </div>
 
 <Toast bind:show={toastShow} message={toastMessage} type={toastType} />
 
 <style>
+	/* Activity folds four surfaces into one tab. The first two are always
+	   visible because they answer "what is happening right now"; Imports and
+	   History are on-demand, so they collapse. */
+	.activity-section {
+		margin-top: 2rem;
+		border-top: 1px solid oklch(from var(--color-base-content) l c h / 0.06);
+		padding-top: 1rem;
+	}
+
+	.activity-summary {
+		cursor: pointer;
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: oklch(from var(--color-base-content) l c h / 0.6);
+		list-style: none;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	.activity-summary::before {
+		content: '';
+		width: 0;
+		height: 0;
+		border-left: 5px solid currentColor;
+		border-top: 4px solid transparent;
+		border-bottom: 4px solid transparent;
+		transition: transform 0.15s ease;
+	}
+
+	.activity-section[open] > .activity-summary::before {
+		transform: rotate(90deg);
+	}
+
+	.activity-summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.activity-section[open] > .activity-summary {
+		margin-bottom: 1rem;
+	}
+
 	.tab-btn {
 		display: inline-flex;
 		align-items: center;

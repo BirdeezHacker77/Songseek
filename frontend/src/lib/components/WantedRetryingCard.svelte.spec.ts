@@ -41,7 +41,7 @@ describe('WantedRetryingCard.svelte', () => {
 
 	it('links to the downloads queue instead of offering watch actions', async () => {
 		renderCard();
-		await expect.element(page.getByText('Manage in Downloads')).toBeVisible();
+		await expect.element(page.getByText('Manage in Requests')).toBeVisible();
 		expect(page.getByText('Stop').elements()).toHaveLength(0);
 		expect(page.getByText('Check now').elements()).toHaveLength(0);
 	});
