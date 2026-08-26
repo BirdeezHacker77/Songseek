@@ -76,8 +76,8 @@
 		<div class="mt-2 border-t border-base-content/10 pt-4">
 			<p class="text-sm font-medium">Support development</p>
 			<p class="mt-1 text-xs text-base-content/50">
-				SongSeek is free to use. If you'd like to help with development, you can donate
-				directly through Ko-fi or GitHub Sponsors.
+				SongSeek is free to use. If you'd like to help with development, you can donate directly
+				through Ko-fi or GitHub Sponsors.
 			</p>
 			<div class="mt-3 flex flex-wrap gap-2">
 				<a

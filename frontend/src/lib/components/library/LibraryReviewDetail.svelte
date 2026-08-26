@@ -541,8 +541,8 @@
 				</p>
 			</div>
 		{:else if confirmation === 'exclude'}<p class="mt-3 text-sm text-base-content/70">
-				This album will be hidden from SongSeek and connected music clients. Files remain on
-				disk and the decision can be reversed.
+				This album will be hidden from SongSeek and connected music clients. Files remain on disk
+				and the decision can be reversed.
 			</p>{:else}<p class="mt-3 text-sm text-base-content/70">
 				The current files will be checked again in a tracked background job. Existing playback stays
 				available.

@@ -653,8 +653,8 @@
 									: 'Find the exact edition'}
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-base-content/60">
-								SongSeek compares album, artist, and per-track evidence. The job continues on
-								the server if you close this dialog.
+								SongSeek compares album, artist, and per-track evidence. The job continues on the
+								server if you close this dialog.
 							</p>
 						</div>
 						<div class="identification-start-actions">

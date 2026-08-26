@@ -77,8 +77,7 @@
 		if (hasError) return "We couldn't load playlists from this server. Your library is unaffected.";
 		if (accountMode === 'shared') return 'Link your account to see your playlists.';
 		if (totalCount === 0) return `${accountLabel} is connected, but no playlists are available.`;
-		if (allImported)
-			return `Your ${sourceLabel} playlists are now private copies in SongSeek.`;
+		if (allImported) return `Your ${sourceLabel} playlists are now private copies in SongSeek.`;
 		if (importedCount === 0) return 'Choose the playlists you want to import.';
 		return `${importedCount} of ${totalCount} imported so far.`;
 	});

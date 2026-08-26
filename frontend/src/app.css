@@ -3147,12 +3147,11 @@ details[open] > summary .management-editor-chevron {
 	.management-audit-inspector {
 		position: sticky;
 		top: calc(
-			var(--songseek-topbar-height, 4rem) + var(--songseek-library-activity-height, 0px) +
-				1rem
+			var(--songseek-topbar-height, 4rem) + var(--songseek-library-activity-height, 0px) + 1rem
 		);
 		max-height: calc(
-			100dvh - var(--songseek-topbar-height, 4rem) -
-				var(--songseek-library-activity-height, 0px) - 2rem
+			100dvh - var(--songseek-topbar-height, 4rem) - var(--songseek-library-activity-height, 0px) -
+				2rem
 		);
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -3163,8 +3162,7 @@ details[open] > summary .management-editor-chevron {
 
 	.management-audit-layout[data-reserve-sticky-footer='true'] .management-audit-inspector {
 		max-height: calc(
-			100dvh - var(--songseek-topbar-height, 4rem) -
-				var(--songseek-library-activity-height, 0px) -
+			100dvh - var(--songseek-topbar-height, 4rem) - var(--songseek-library-activity-height, 0px) -
 				var(--management-sticky-footer-height, 0px) - 2.75rem
 		);
 	}

@@ -50,10 +50,7 @@
 		const container = shell.parentElement;
 		if (!container) return;
 		const updateOffset = () => {
-			container.style.setProperty(
-				'--songseek-library-activity-height',
-				`${shell.offsetHeight}px`
-			);
+			container.style.setProperty('--songseek-library-activity-height', `${shell.offsetHeight}px`);
 		};
 		const observer = new ResizeObserver(updateOffset);
 		observer.observe(shell);

@@ -211,8 +211,7 @@
 				<div>
 					<h3 class="font-bold">Linked to MusicBrainz</h3>
 					<p class="mt-1 text-sm text-base-content/65">
-						This local album keeps its SongSeek identity and now has a verified MusicBrainz
-						match.
+						This local album keeps its SongSeek identity and now has a verified MusicBrainz match.
 					</p>
 					{#if contribution.result_release_mbid}
 						<a
@@ -234,8 +233,8 @@
 				<div class="min-w-0">
 					<h3 class="font-bold">MusicBrainz release returned</h3>
 					<p class="mt-1 text-sm text-base-content/65">
-						SongSeek is waiting for the release to appear in the MusicBrainz API. It will
-						compare the release with the current local album before attaching anything.
+						SongSeek is waiting for the release to appear in the MusicBrainz API. It will compare
+						the release with the current local album before attaching anything.
 					</p>
 					{#if contribution.result_release_mbid}
 						<a
@@ -294,8 +293,8 @@
 				<div>
 					<h3 class="font-bold">Search before you add</h3>
 					<p class="mt-1 max-w-2xl text-sm text-base-content/60">
-						SongSeek checks Discogs relationships, release groups, barcodes and similar
-						releases. An exact Discogs match blocks a duplicate submission.
+						SongSeek checks Discogs relationships, release groups, barcodes and similar releases. An
+						exact Discogs match blocks a duplicate submission.
 					</p>
 				</div>
 				<button
@@ -360,8 +359,8 @@
 						<div>
 							<h3 class="font-bold">Discogs points to several MusicBrainz releases</h3>
 							<p class="mt-1 text-sm text-base-content/65">
-								SongSeek cannot safely choose one. Review the relationships upstream, then run
-								the check again.
+								SongSeek cannot safely choose one. Review the relationships upstream, then run the
+								check again.
 							</p>
 						</div>
 					</div>
@@ -466,8 +465,8 @@
 						<div>
 							<h3 class="font-bold">Ready for your final review</h3>
 							<p class="mt-1 max-w-2xl text-sm text-base-content/60">
-								You will sign in, review every field and submit on MusicBrainz. SongSeek does
-								not receive your MusicBrainz password.
+								You will sign in, review every field and submit on MusicBrainz. SongSeek does not
+								receive your MusicBrainz password.
 							</p>
 							{#if groupCandidates.length === 1}
 								<p class="mt-2 text-sm font-semibold text-primary">

@@ -264,8 +264,8 @@
 							{contribution.local_snapshot.title || 'Untitled local album'}
 						</h1>
 						<p class="mt-2 max-w-2xl text-sm text-base-content/60">
-							Check what SongSeek read from your files. Your corrections are saved to this
-							draft only and won't change the album or its files.
+							Check what SongSeek read from your files. Your corrections are saved to this draft
+							only and won't change the album or its files.
 						</p>
 					</div>
 					<div class="grid gap-px bg-base-content/10 sm:grid-cols-3">

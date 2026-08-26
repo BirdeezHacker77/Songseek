@@ -73,9 +73,7 @@
 				? 'Retry identification'
 				: 'Apply policy changes'
 	);
-	const storageKey = $derived(
-		`songseek:identification-retry:${authStore.user?.id ?? 'anonymous'}`
-	);
+	const storageKey = $derived(`songseek:identification-retry:${authStore.user?.id ?? 'anonymous'}`);
 	const retrySelection = $derived({
 		review_ids: [],
 		expected_revisions: {},

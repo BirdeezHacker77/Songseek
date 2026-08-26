@@ -194,9 +194,7 @@ describe('SettingsLibrary target policy UI', () => {
 		await expect.element(page.getByText('Scanning & identification')).toBeVisible();
 		await expect
 			.element(
-				page.getByText(
-					'Reads files and updates SongSeek. It does not change your music files.'
-				)
+				page.getByText('Reads files and updates SongSeek. It does not change your music files.')
 			)
 			.toBeVisible();
 		await expect.element(page.getByRole('heading', { name: 'Archive' })).toBeVisible();

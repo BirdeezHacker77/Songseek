@@ -316,9 +316,7 @@ describe('AlbumIdentificationPanel', () => {
 			oneOffLocalMetadata: true,
 			releaseMbid: null
 		});
-		expect(sessionStorage.getItem('songseek:album-identification:admin-1:album-1')).toBe(
-			'job-1'
-		);
+		expect(sessionStorage.getItem('songseek:album-identification:admin-1:album-1')).toBe('job-1');
 		await page.getByRole('button', { name: 'Close', exact: true }).click();
 		await expect.element(opener).toHaveFocus();
 	});
@@ -548,9 +546,7 @@ describe('AlbumIdentificationPanel', () => {
 			oneOffLocalMetadata: true,
 			releaseMbid: null
 		});
-		expect(sessionStorage.getItem('songseek:album-identification:admin-1:album-1')).toBe(
-			'job-2'
-		);
+		expect(sessionStorage.getItem('songseek:album-identification:admin-1:album-1')).toBe('job-2');
 	});
 
 	it('can discard a ready evidence check', async () => {

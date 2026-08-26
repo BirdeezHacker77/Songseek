@@ -671,8 +671,8 @@
 							class="alert alert-warning items-start"
 						>
 							<ShieldAlert class="mt-0.5 h-5 w-5" /><span
-								>Restore returns files to how they were before SongSeek first managed them. It
-								is separate from Undo; restored files stay unmanaged until you enable them again.</span
+								>Restore returns files to how they were before SongSeek first managed them. It is
+								separate from Undo; restored files stay unmanaged until you enable them again.</span
 							>
 						</div>{/if}
 					<p class="text-sm text-base-content/55">

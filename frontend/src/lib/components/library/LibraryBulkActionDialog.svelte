@@ -40,9 +40,7 @@
 	);
 	let dialogHeading: HTMLHeadingElement;
 	let opener: HTMLButtonElement | null = null;
-	const storageKey = $derived(
-		`songseek:library-bulk-job:${authStore.user?.id ?? 'anonymous'}`
-	);
+	const storageKey = $derived(`songseek:library-bulk-job:${authStore.user?.id ?? 'anonymous'}`);
 
 	$effect(() => {
 		if (typeof sessionStorage === 'undefined') return;

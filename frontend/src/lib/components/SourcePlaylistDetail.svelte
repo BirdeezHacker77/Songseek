@@ -121,9 +121,7 @@
 					{:else}
 						<Download class="w-4 h-4" />
 					{/if}
-					{importResult?.already_imported
-						? 'Already in SongSeek'
-						: 'Import into SongSeek'}
+					{importResult?.already_imported ? 'Already in SongSeek' : 'Import into SongSeek'}
 				</button>
 				{#if importResult && !importResult.already_imported}
 					<p class="text-sm text-success">

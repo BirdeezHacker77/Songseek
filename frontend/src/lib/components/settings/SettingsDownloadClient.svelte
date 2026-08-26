@@ -209,9 +209,9 @@
 		</section>
 
 		<p class="text-xs leading-relaxed text-base-content/60">
-			SongSeek only orchestrates your own slskd instance over its local HTTP API; it never
-			joins or distributes on the Soulseek network. You supply, run, and are responsible for slskd
-			and its shared folders.
+			SongSeek only orchestrates your own slskd instance over its local HTTP API; it never joins or
+			distributes on the Soulseek network. You supply, run, and are responsible for slskd and its
+			shared folders.
 		</p>
 
 		<div class="alert alert-warning items-start text-sm">
@@ -267,8 +267,8 @@
 					<Info class="size-5 shrink-0" aria-hidden="true" />
 					<div class="space-y-1">
 						<p>
-							Your downloads and library use separate container mount boundaries. SongSeek will
-							copy each file into the library and remove the source after the copy succeeds. This is
+							Your downloads and library use separate container mount boundaries. SongSeek will copy
+							each file into the library and remove the source after the copy succeeds. This is
 							slower and temporarily needs room for both copies.
 						</p>
 						<p class="text-base-content/70">
@@ -281,16 +281,16 @@
 				<div class="alert alert-info items-start text-sm">
 					<Info class="size-5 shrink-0" aria-hidden="true" />
 					<p>
-						The downloads path is writable, but SongSeek couldn't determine whether a fast move
-						is available. Imports will try the move first and copy when needed.
+						The downloads path is writable, but SongSeek couldn't determine whether a fast move is
+						available. Imports will try the move first and copy when needed.
 					</p>
 				</div>
 			{:else if mount?.ok}
 				<div class="alert alert-info items-start text-sm">
 					<Info class="size-5 shrink-0" aria-hidden="true" />
 					<p>
-						The downloads path is ready. Configure a library root before SongSeek can check
-						whether fast moves are available.
+						The downloads path is ready. Configure a library root before SongSeek can check whether
+						fast moves are available.
 					</p>
 				</div>
 			{:else if mount}
@@ -298,8 +298,7 @@
 					<TriangleAlert class="size-5 shrink-0" aria-hidden="true" />
 					<div class="space-y-1">
 						<p>
-							SongSeek can't reach slskd's downloads folder, so finished downloads won't
-							import.
+							SongSeek can't reach slskd's downloads folder, so finished downloads won't import.
 							{MOUNT_REASONS[mount.reason] ?? mount.reason}
 						</p>
 						<details class="text-xs">

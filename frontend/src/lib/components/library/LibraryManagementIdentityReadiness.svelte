@@ -583,9 +583,8 @@
 		</h2>
 		{#if confirmAction === 'apply'}
 			<p class="mt-3 text-sm text-base-content/65">
-				This writes only verified MusicBrainz identities to SongSeek's catalog. It does not
-				change tags, paths, or audio. Releases may become eligible for a future organization
-				preview.
+				This writes only verified MusicBrainz identities to SongSeek's catalog. It does not change
+				tags, paths, or audio. Releases may become eligible for a future organization preview.
 			</p>
 			<p class="mt-2 text-sm text-base-content/65">{applySealSummary}</p>
 		{:else}

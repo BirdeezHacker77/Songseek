@@ -566,10 +566,7 @@ describe('LibraryManagementPreviewPage', () => {
 				]
 			}
 		};
-		sessionStorage.setItem(
-			'songseek:library-management:preview-token:preview-1',
-			'private-token'
-		);
+		sessionStorage.setItem('songseek:library-management:preview-token:preview-1', 'private-token');
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
 
 		await expect.element(page.getByText('Read-only plan · no files changed')).toBeVisible();
@@ -615,10 +612,7 @@ describe('LibraryManagementPreviewPage', () => {
 	});
 
 	it('uses the new token when navigation reuses the page for another preview', async () => {
-		sessionStorage.setItem(
-			'songseek:library-management:preview-token:preview-1',
-			'source-token'
-		);
+		sessionStorage.setItem('songseek:library-management:preview-token:preview-1', 'source-token');
 		sessionStorage.setItem(
 			'songseek:library-management:preview-token:resolution-1',
 			'resolution-token'
@@ -880,10 +874,7 @@ describe('LibraryManagementPreviewPage', () => {
 			isLoading: false,
 			isError: false
 		};
-		sessionStorage.setItem(
-			'songseek:library-management:preview-token:preview-1',
-			'private-token'
-		);
+		sessionStorage.setItem('songseek:library-management:preview-token:preview-1', 'private-token');
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
 		await expect.element(page.getByText('This preview cannot be applied.')).toBeVisible();
 		await expect
@@ -892,10 +883,7 @@ describe('LibraryManagementPreviewPage', () => {
 	});
 
 	it('confirms discard, forgets the apply token, and returns to the control room', async () => {
-		sessionStorage.setItem(
-			'songseek:library-management:preview-token:preview-1',
-			'private-token'
-		);
+		sessionStorage.setItem('songseek:library-management:preview-token:preview-1', 'private-token');
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
 
 		await page.getByRole('button', { name: 'Discard preview...' }).click();
@@ -1007,10 +995,7 @@ describe('LibraryManagementPreviewPage', () => {
 		}
 	])('uses consequence-specific confirmation copy for $mode', async (example) => {
 		h.preview = { data: detail({ mode: example.mode }), isLoading: false, isError: false };
-		sessionStorage.setItem(
-			'songseek:library-management:preview-token:preview-1',
-			'private-token'
-		);
+		sessionStorage.setItem('songseek:library-management:preview-token:preview-1', 'private-token');
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
 
 		await page.getByRole('button', { name: example.button }).click();
@@ -1028,10 +1013,7 @@ describe('LibraryManagementPreviewPage', () => {
 			isLoading: false,
 			isError: false
 		};
-		sessionStorage.setItem(
-			'songseek:library-management:preview-token:preview-1',
-			'private-token'
-		);
+		sessionStorage.setItem('songseek:library-management:preview-token:preview-1', 'private-token');
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
 
 		await expect.element(page.getByText('Activation dry run')).toBeVisible();

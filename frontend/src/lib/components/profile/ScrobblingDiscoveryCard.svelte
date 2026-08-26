@@ -405,9 +405,9 @@
 						<div>
 							<span class="text-sm font-medium">Let Navidrome handle Last.fm and ListenBrainz</span>
 							<p class="text-xs text-base-content/40">
-								Keep this on while Navidrome sends plays to those accounts. To use SongSeek
-								instead, first disable external scrobbles for the SongSeek player in Navidrome.
-								Listening history is recorded either way.
+								Keep this on while Navidrome sends plays to those accounts. To use SongSeek instead,
+								first disable external scrobbles for the SongSeek player in Navidrome. Listening
+								history is recorded either way.
 							</p>
 						</div>
 						<input

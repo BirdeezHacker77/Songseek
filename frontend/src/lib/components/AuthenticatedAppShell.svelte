@@ -377,9 +377,7 @@
 	<input id="main-drawer" type="checkbox" class="drawer-toggle" />
 
 	<div class="drawer-content flex min-w-0 flex-col isolate">
-		<div
-			class="songseek-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
-		>
+		<div class="songseek-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50">
 			<div class="navbar-start w-auto">
 				<a href="/" class="btn btn-ghost px-2 max-xs:hidden sm:px-4" aria-label="Home">
 					<img src="/logo_wide.png" alt="SongSeek" class="h-8 hidden sm:block" />

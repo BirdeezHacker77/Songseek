@@ -33,8 +33,7 @@
 		local_metadata:
 			'Use file tags and embedded IDs. Do not search external metadata automatically.',
 		automatic: 'Index files first, then try to identify albums in the background.',
-		excluded:
-			'Keep files on disk but hide this path from SongSeek and connected music clients.'
+		excluded: 'Keep files on disk but hide this path from SongSeek and connected music clients.'
 	};
 
 	function updateRoot(
