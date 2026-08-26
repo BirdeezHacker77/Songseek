@@ -1421,7 +1421,7 @@ class DownloadService:
 
         if task is None:
             await reject(
-                "The original acquisition task is unavailable, so DroppedNeedle cannot "
+                "The original acquisition task is unavailable, so SongSeek cannot "
                 "prove this held unit's exact edition safely."
             )
 

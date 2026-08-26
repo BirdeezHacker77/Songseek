@@ -84,7 +84,7 @@ describe('ScrobblingDiscoveryCard', () => {
 		});
 		await expect.element(toggle).toBeChecked();
 		await expect
-			.element(page.getByText(/first disable external scrobbles for the DroppedNeedle player/))
+			.element(page.getByText(/first disable external scrobbles for the SongSeek player/))
 			.toBeInTheDocument();
 		await toggle.click();
 		expect(h.updatePrefs).toHaveBeenCalledWith({

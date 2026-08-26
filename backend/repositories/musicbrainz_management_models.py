@@ -2,7 +2,7 @@
 
 These structs mirror the verified third-party JSON surface recorded in
 ``musicbrainz_MANAGEMENT_API_NOTES.md``.  They deliberately remain repository-local:
-services project them into immutable DroppedNeedle domain documents before use.
+services project them into immutable SongSeek domain documents before use.
 """
 
 from __future__ import annotations

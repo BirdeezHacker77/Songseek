@@ -2,27 +2,27 @@
 # AI review system files are self-hosted and should be reviewed by a human.
 
 # CI/CD and infrastructure
-.github/workflows/*.yml                              @HabiRabbu
-Dockerfile                                           @HabiRabbu
-docker-compose.yml                                   @HabiRabbu
-docker-compose.*.yml                                 @HabiRabbu
-entrypoint.sh                                        @HabiRabbu
+.github/workflows/*.yml                              @BirdeezHacker77
+Dockerfile                                           @BirdeezHacker77
+docker-compose.yml                                   @BirdeezHacker77
+docker-compose.*.yml                                 @BirdeezHacker77
+entrypoint.sh                                        @BirdeezHacker77
 
 # Security-sensitive backend paths
-backend/middleware.py                                @HabiRabbu
-backend/core/config.py                               @HabiRabbu
-backend/core/exceptions.py                           @HabiRabbu
-backend/core/exception_handlers.py                   @HabiRabbu
-backend/infrastructure/crypto.py                     @HabiRabbu
-backend/infrastructure/persistence/auth_store.py     @HabiRabbu
-backend/repositories/plex_repository.py              @HabiRabbu
-backend/services/auth_service.py                     @HabiRabbu
-backend/services/preferences_service.py              @HabiRabbu
-backend/services/*_user_auth_service.py              @HabiRabbu
-backend/api/v1/routes/auth.py                        @HabiRabbu
-frontend/src/lib/stores/authStore.svelte.ts          @HabiRabbu
-frontend/src/lib/components/settings/SettingsSecurity.svelte @HabiRabbu
+backend/middleware.py                                @BirdeezHacker77
+backend/core/config.py                               @BirdeezHacker77
+backend/core/exceptions.py                           @BirdeezHacker77
+backend/core/exception_handlers.py                   @BirdeezHacker77
+backend/infrastructure/crypto.py                     @BirdeezHacker77
+backend/infrastructure/persistence/auth_store.py     @BirdeezHacker77
+backend/repositories/plex_repository.py              @BirdeezHacker77
+backend/services/auth_service.py                     @BirdeezHacker77
+backend/services/preferences_service.py              @BirdeezHacker77
+backend/services/*_user_auth_service.py              @BirdeezHacker77
+backend/api/v1/routes/auth.py                        @BirdeezHacker77
+frontend/src/lib/stores/authStore.svelte.ts          @BirdeezHacker77
+frontend/src/lib/components/settings/SettingsSecurity.svelte @BirdeezHacker77
 
 # Review system self-review
-.github/scripts/ai_review.py                         @HabiRabbu
-.github/review_guidelines.md                         @HabiRabbu
+.github/scripts/ai_review.py                         @BirdeezHacker77
+.github/review_guidelines.md                         @BirdeezHacker77

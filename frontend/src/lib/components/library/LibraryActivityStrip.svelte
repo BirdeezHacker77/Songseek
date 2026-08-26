@@ -51,7 +51,7 @@
 		if (!container) return;
 		const updateOffset = () => {
 			container.style.setProperty(
-				'--droppedneedle-library-activity-height',
+				'--songseek-library-activity-height',
 				`${shell.offsetHeight}px`
 			);
 		};
@@ -60,7 +60,7 @@
 		updateOffset();
 		return () => {
 			observer.disconnect();
-			container.style.removeProperty('--droppedneedle-library-activity-height');
+			container.style.removeProperty('--songseek-library-activity-height');
 		};
 	});
 
@@ -111,7 +111,7 @@
 		item: LibraryWorkItem
 	): string | null {
 		return currentUserId && item.failure_event_id
-			? `droppedneedle:library-failure:${currentUserId}:${item.failure_event_id}`
+			? `songseek:library-failure:${currentUserId}:${item.failure_event_id}`
 			: null;
 	}
 

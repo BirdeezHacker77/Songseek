@@ -2,11 +2,11 @@
 ``DownloadClientProtocol`` impl over ``SabnzbdClient``.
 
 enqueue = fetch the release NZB → validate → ``addfile`` → ``TaskHandle{job_name,
-nzo_id}`` (job_name = ``droppedneedle-{task_id}`` is the PRE-enqueue key). get_status
+nzo_id}`` (job_name = ``songseek-{task_id}`` is the PRE-enqueue key). get_status
 walks queue→history; **only the true ``Downloading`` state sets
 ``has_active_transfer``** (so Grabbing/Queued/Paused/post-processing don't trip the
 orchestrator's stall/queued watchdogs - ``05-…`` §Poll). list_completed_files remaps
-``storage`` (SABnzbd namespace) onto the DroppedNeedle downloads mount and enumerates
+``storage`` (SABnzbd namespace) onto the SongSeek downloads mount and enumerates
 the audio files (the folder-based import source, D18). Completed materialization is
 inspected separately from abort/history removal so local cleanup remains durable.
 
@@ -85,7 +85,7 @@ class SabnzbdDownloadClient:
     async def enqueue(self, request: EnqueueRequest) -> TaskHandle:
         if not request.nzb_url:
             raise SabnzbdApiError("enqueue requires an nzb_url for the usenet source")
-        job_name = request.job_name or f"droppedneedle-{request.task_id}"
+        job_name = request.job_name or f"songseek-{request.task_id}"
         nzb_bytes = await self._client.fetch_nzb(request.nzb_url)
         response = await self._client.add_file(
             job_name,
@@ -279,7 +279,7 @@ class SabnzbdDownloadClient:
         return matches[0] if matches else None
 
     async def downloads_mount_healthy(self) -> bool:
-        """Whether DroppedNeedle's downloads MOUNT itself is usable. False ONLY when the
+        """Whether SongSeek's downloads MOUNT itself is usable. False ONLY when the
         configured mount root is missing or unreadable (a real environment fault - failing
         over or blocklisting can't fix it). A healthy mount whose per-job folder is merely
         empty/absent is a RELEASE problem (garbage / incomplete NZB), NOT a mount fault, so
@@ -314,7 +314,7 @@ class SabnzbdDownloadClient:
         return value
 
     async def _local_storage(self, storage: str) -> Path:
-        """Remap SABnzbd's ``storage`` (its namespace) onto the DroppedNeedle mount by
+        """Remap SABnzbd's ``storage`` (its namespace) onto the SongSeek mount by
         stripping the SABnzbd ``complete_dir`` prefix; fall back to the job-folder
         basename when the prefix doesn't match."""
         complete_dir = await self._complete_dir()

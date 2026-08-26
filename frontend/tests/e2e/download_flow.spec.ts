@@ -5,15 +5,15 @@ import { expect, test } from '@playwright/test';
  * (mock) slskd, request an album, see it in the download queue, then see the imported
  * file in the library.
  *
- * This runs against a live DroppedNeedle stack, not in `make ci`. Provide credentials and
+ * This runs against a live SongSeek stack, not in `make ci`. Provide credentials and
  * a request target via env (see the constants below). Selectors are role/label based to
  * stay resilient; adjust them if the settings/album markup changes.
  */
-const ADMIN_USER = process.env.DROPPEDNEEDLE_E2E_ADMIN_USER ?? 'admin';
-const ADMIN_PASS = process.env.DROPPEDNEEDLE_E2E_ADMIN_PASS ?? 'changeme';
-const SLSKD_URL = process.env.DROPPEDNEEDLE_E2E_SLSKD_URL ?? 'http://slskd:5030';
-const SLSKD_KEY = process.env.DROPPEDNEEDLE_E2E_SLSKD_KEY ?? 'test-key';
-const ALBUM_MBID = process.env.DROPPEDNEEDLE_E2E_ALBUM_MBID ?? '';
+const ADMIN_USER = process.env.SONGSEEK_E2E_ADMIN_USER ?? 'admin';
+const ADMIN_PASS = process.env.SONGSEEK_E2E_ADMIN_PASS ?? 'changeme';
+const SLSKD_URL = process.env.SONGSEEK_E2E_SLSKD_URL ?? 'http://slskd:5030';
+const SLSKD_KEY = process.env.SONGSEEK_E2E_SLSKD_KEY ?? 'test-key';
+const ALBUM_MBID = process.env.SONGSEEK_E2E_ALBUM_MBID ?? '';
 
 test.describe('native download flow', () => {
 	test('admin configures slskd, requests an album, and watches it import', async ({ page }) => {
@@ -32,7 +32,7 @@ test.describe('native download flow', () => {
 		await expect(page.getByText(/saved|connected|success/i).first()).toBeVisible();
 
 		// 3. Request an album (needs a real MBID to exercise the pipeline end to end).
-		test.skip(ALBUM_MBID === '', 'Set DROPPEDNEEDLE_E2E_ALBUM_MBID to request a real album');
+		test.skip(ALBUM_MBID === '', 'Set SONGSEEK_E2E_ALBUM_MBID to request a real album');
 		await page.goto(`/album/${ALBUM_MBID}`);
 		await page
 			.getByRole('button', { name: /request|download/i })

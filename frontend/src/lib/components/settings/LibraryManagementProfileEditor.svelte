@@ -372,7 +372,7 @@
 					{draft.name}
 				</h2>
 				<p class="mt-1 text-sm text-base-content/55">
-					Controls what DroppedNeedle may write, rename, and move. Editing never enables a root.
+					Controls what SongSeek may write, rename, and move. Editing never enables a root.
 				</p>
 			</div>
 			<button
@@ -1763,7 +1763,7 @@
 							<div class="management-master-toggle">
 								<Check class="h-4 w-4 shrink-0 text-success" />
 								<span
-									><strong>DroppedNeedle catalog updates immediately</strong><small
+									><strong>SongSeek catalog updates immediately</strong><small
 										>Committed tags and paths are updated as part of every successful operation.</small
 									></span
 								>

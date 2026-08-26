@@ -147,7 +147,7 @@ class NavidromeRepository:
             "t": token,
             "s": salt,
             "v": "1.16.1",
-            "c": "droppedneedle",
+            "c": "songseek",
             "f": "json",
         }
 

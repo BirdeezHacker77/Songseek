@@ -1,8 +1,8 @@
 import type { NowPlaying, QueueItem, QueueOrigin, SourceType } from '$lib/player/types';
 import { playbackToast } from '$lib/stores/playbackToast.svelte';
 
-const VOLUME_STORAGE_KEY = 'droppedneedle_player_volume';
-const SESSION_STORAGE_KEY = 'droppedneedle_player_session';
+const VOLUME_STORAGE_KEY = 'songseek_player_volume';
+const SESSION_STORAGE_KEY = 'songseek_player_session';
 
 export type StoredSession = {
 	nowPlaying: NowPlaying;

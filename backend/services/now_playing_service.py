@@ -108,7 +108,7 @@ class NowPlayingService:
         duration_ms: int | None,
         track_file_id: str | None = None,
     ) -> None:
-        """Upsert a DroppedNeedle-origin session (native player or inbound compat)."""
+        """Upsert a SongSeek-origin session (native player or inbound compat)."""
         if user_id is not None and user_id not in self._visibility:
             await self._load_visibility(user_id)
         async with self._lock:
@@ -209,7 +209,7 @@ class NowPlayingService:
 
     def _project(self, entry: _Entry) -> NowPlayingSnapshotEntry | None:
         if entry.user_id is None:
-            # upstream-server sessions aren't DroppedNeedle accounts: no privacy setting
+            # upstream-server sessions aren't SongSeek accounts: no privacy setting
             visibility = VISIBILITY_FULL
         else:
             # fail closed: if we couldn't load this user's setting (e.g. a transient

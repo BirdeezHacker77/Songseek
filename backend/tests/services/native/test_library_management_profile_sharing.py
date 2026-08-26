@@ -78,17 +78,17 @@ def test_export_is_deterministic_and_file_and_code_round_trip(tmp_path: Path) ->
 
     assert first == second
     assert first.filename == "picard-style-organizer.dnprofile"
-    assert first.mime_type == "application/vnd.droppedneedle.profile+json"
+    assert first.mime_type == "application/vnd.songseek.profile+json"
     assert first.share_code.startswith(PROFILE_SHARE_CODE_PREFIX)
     assert parse_profile_bundle(first.document).bundle_hash == first.bundle_hash
     assert parse_profile_bundle(first.share_code).bundle_hash == first.bundle_hash
     document = json.loads(first.document)
-    assert document["format"] == "droppedneedle-library-profile"
+    assert document["format"] == "songseek-library-profile"
     assert document["version"] == 1
     assert set(document["payload"]["profile"]).isdisjoint(
         {"id", "revision", "preset_origin", "preset_version"}
     )
-    assert "refresh_droppedneedle" not in document["payload"]["profile"]["notification"]
+    assert "refresh_songseek" not in document["payload"]["profile"]["notification"]
 
 
 def test_bundle_preserves_unicode_and_all_referenced_scripts(tmp_path: Path) -> None:
@@ -193,7 +193,7 @@ def test_bundle_rejects_excessive_json_nesting() -> None:
     document = (
         '{"checksum":"sha256:'
         + digest
-        + '","format":"droppedneedle-library-profile","payload":'
+        + '","format":"songseek-library-profile","payload":'
         + payload
         + ',"version":1}'
     )

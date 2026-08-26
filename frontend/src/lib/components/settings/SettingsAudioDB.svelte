@@ -62,7 +62,7 @@
 		</label>
 		<p class="label text-base-content/50">
 			When enabled, your browser loads images directly from TheAudioDB's CDN (faster). Disable to
-			route all images through DroppedNeedle (more private).
+			route all images through SongSeek (more private).
 		</p>
 	</fieldset>
 

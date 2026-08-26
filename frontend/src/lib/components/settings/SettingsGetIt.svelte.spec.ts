@@ -44,7 +44,7 @@ describe('SettingsGetIt', () => {
 			.toHaveAttribute('href', 'https://ko-fi.com/M4M41URGJO');
 		await expect
 			.element(page.getByRole('link', { name: 'GitHub Sponsors' }))
-			.toHaveAttribute('href', 'https://github.com/sponsors/HabiRabbu');
+			.toHaveAttribute('href', 'https://github.com/sponsors/BirdeezHacker77');
 		await expect.element(page.getByRole('checkbox')).not.toBeInTheDocument();
 	});
 });

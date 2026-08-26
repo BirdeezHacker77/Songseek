@@ -164,7 +164,7 @@
 					button: `Undo this operation for ${applyFileLabel}`,
 					kicker: 'Undo confirmation',
 					title: 'Undo this operation from this exact preview?',
-					detail: `DroppedNeedle will restore this operation's before-state for ${applyFileLabel}. Later edits are preserved and this does not restore the broader original baseline.`,
+					detail: `SongSeek will restore this operation's before-state for ${applyFileLabel}. Later edits are preserved and this does not restore the broader original baseline.`,
 					confirmButton: 'Undo operation'
 				};
 			case 'baseline_restore':
@@ -175,7 +175,7 @@
 					button: `Restore original state for ${applyFileLabel}`,
 					kicker: 'Original baseline confirmation',
 					title: 'Restore these original baselines?',
-					detail: `DroppedNeedle will restore ${applyFileLabel} to their earliest saved state from before it first managed them. This is broader than Undo and leaves those files unmanaged.`,
+					detail: `SongSeek will restore ${applyFileLabel} to their earliest saved state from before it first managed them. This is broader than Undo and leaves those files unmanaged.`,
 					confirmButton: 'Restore original state'
 				};
 			case 'duplicate_resolution':
@@ -186,7 +186,7 @@
 					button: `Apply collision resolution for ${applyFileLabel}`,
 					kicker: 'Collision-resolution confirmation',
 					title: 'Apply this exact collision resolution?',
-					detail: `DroppedNeedle will carry out the explicitly previewed collision resolution for ${applyFileLabel}. No destination is overwritten and no duplicate is deleted automatically.`,
+					detail: `SongSeek will carry out the explicitly previewed collision resolution for ${applyFileLabel}. No destination is overwritten and no duplicate is deleted automatically.`,
 					confirmButton: 'Apply collision resolution'
 				};
 			default:
@@ -196,7 +196,7 @@
 					button: `Write tags and organize ${applyFileLabel}`,
 					kicker: 'Write confirmation',
 					title: 'Apply this exact preview?',
-					detail: `DroppedNeedle will write tags and organize ${preview?.summary.eligible_count ?? 0} eligible files plus ${preview?.summary.warning_count ?? 0} files with warnings. No destination is overwritten automatically.`,
+					detail: `SongSeek will write tags and organize ${preview?.summary.eligible_count ?? 0} eligible files plus ${preview?.summary.warning_count ?? 0} files with warnings. No destination is overwritten automatically.`,
 					confirmButton: 'Apply exact preview'
 				};
 		}
@@ -439,7 +439,7 @@
 	}
 </script>
 
-<svelte:head><title>Organization preview · DroppedNeedle</title></svelte:head>
+<svelte:head><title>Organization preview · SongSeek</title></svelte:head>
 
 {#snippet previewInspector(ordinal: number)}
 	{@const item = items.find((candidate) => candidate.ordinal === ordinal)}
@@ -557,8 +557,8 @@
 				<div class="alert alert-info">
 					<span class="loading loading-spinner loading-sm"></span><span
 						>Planning is still read-only. {preview.summary.item_count > 0
-							? `${preview.summary.item_count.toLocaleString()} files are planned so far; the total is discovered as DroppedNeedle works.`
-							: 'DroppedNeedle is discovering the files in this scope.'}</span
+							? `${preview.summary.item_count.toLocaleString()} files are planned so far; the total is discovered as SongSeek works.`
+							: 'SongSeek is discovering the files in this scope.'}</span
 					>
 				</div>
 			{:else if preview.state !== 'ready'}
@@ -917,7 +917,7 @@
 					Choose a collision resolution
 				</h2>
 				<p class="mt-1 text-sm text-base-content/55">
-					No option is preselected. DroppedNeedle rechecks both files before it offers another Apply
+					No option is preselected. SongSeek rechecks both files before it offers another Apply
 					action.
 				</p>
 			</div>

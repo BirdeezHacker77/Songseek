@@ -6,7 +6,7 @@
 	import { Headphones, LockKeyhole, SlidersHorizontal, Waypoints, X } from 'lucide-svelte';
 
 	const CONNECT_APPS_HREF = '/profile#connect-apps';
-	const BANNER_KEY = 'droppedneedle_connect_apps_banner_dismissed';
+	const BANNER_KEY = 'songseek_connect_apps_banner_dismissed';
 
 	let bannerDismissed = $state(true); // assume dismissed until we read storage (no SSR flash)
 	const musicBrainzCallbackFailed = $derived(
@@ -27,7 +27,7 @@
 	}
 </script>
 
-<svelte:head><title>Library · DroppedNeedle</title></svelte:head>
+<svelte:head><title>Library · SongSeek</title></svelte:head>
 
 <div class="min-h-[calc(100vh-200px)]">
 	<PageHeader subtitle="Your scanned music library">

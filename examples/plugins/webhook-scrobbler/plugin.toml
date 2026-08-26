@@ -6,7 +6,7 @@ api_version = 0
 entrypoint = "plugin:WebhookScrobbler"
 capabilities = ["scrobbler"]
 description = "POSTs every accepted play to a webhook URL you configure - wire it to Home Assistant, n8n, a Discord webhook, anything."
-author = "DroppedNeedle examples"
+author = "SongSeek examples"
 
 [[settings]]
 key = "webhook_url"

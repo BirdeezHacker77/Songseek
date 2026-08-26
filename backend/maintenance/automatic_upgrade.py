@@ -33,8 +33,8 @@ MIGRATION_ID = "automatic-feedback-fixes-v1"
 _PUBLISH_VERIFY_ATTEMPTS = 10
 _PUBLISH_VERIFY_INTERVAL_SECONDS = 0.25
 _MARKER = "legacy_catalog_import_complete"
-_SOURCE_REVISION_PATH = Path("/app/.droppedneedle-source-revision")
-_ADMISSION_TOKEN_ENV = "DROPPEDNEEDLE_TARGET_ADMISSION_TOKEN"
+_SOURCE_REVISION_PATH = Path("/app/.songseek-source-revision")
+_ADMISSION_TOKEN_ENV = "SONGSEEK_TARGET_ADMISSION_TOKEN"
 _FAILURE_EVIDENCE_FILE = "automatic-upgrade-failure-evidence.json"
 _ADMISSION_HEARTBEAT_INTERVAL_SECONDS = 5.0
 _ADMISSION_PROGRESS_LOG_INTERVAL_SECONDS = 60.0
@@ -68,7 +68,7 @@ class _UpgradeHealthHandler(BaseHTTPRequestHandler):
             body = b'{"status":"upgrading"}'
             self.send_response(200)
         else:
-            body = b'{"error":"DroppedNeedle is upgrading its library"}'
+            body = b'{"error":"SongSeek is upgrading its library"}'
             self.send_response(503)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -208,7 +208,7 @@ def _current_signature(database: Path, config: Path) -> dict[str, str | None]:
 
 
 def _image_version() -> str:
-    configured = os.getenv("DROPPEDNEEDLE_SOURCE_REVISION", "").strip()
+    configured = os.getenv("SONGSEEK_SOURCE_REVISION", "").strip()
     if configured and configured != "unknown":
         return configured
     try:
@@ -500,7 +500,7 @@ def _restore_interrupted_upgrade(settings: Settings, state_path: Path) -> None:
             restore_upgrade_backup(settings, backup)
         except (OSError, sqlite3.Error, AutomaticUpgradeError) as error:
             raise AutomaticUpgradeError(
-                "DroppedNeedle found an interrupted library upgrade but could not "
+                "SongSeek found an interrupted library upgrade but could not "
                 "restore its safety backup. Do not start another image against this "
                 "database."
             ) from error
@@ -726,7 +726,7 @@ def run_automatic_copy_upgrade(
         raise AutomaticUpgradeError(
             "This installation was upgraded previously, but its target library "
             "database is now missing or incomplete. Restore a verified backup before "
-            "starting DroppedNeedle."
+            "starting SongSeek."
         )
     _restore_interrupted_upgrade(settings, state_path)
     if _database_has_marker(database):
@@ -761,7 +761,7 @@ def run_automatic_copy_upgrade(
         raise AutomaticUpgradeError(" ".join(parts))
 
     print(
-        "[upgrade] Preparing the library for this DroppedNeedle version. "
+        "[upgrade] Preparing the library for this SongSeek version. "
         "Very large libraries may take several hours. Keep the container running; "
         "progress will be logged.",
         flush=True,
@@ -785,7 +785,7 @@ def run_automatic_copy_upgrade(
         if backup is not None:
             shutil.rmtree(backup.directory, ignore_errors=True)
         raise AutomaticUpgradeError(
-            "DroppedNeedle could not create the safety backup. Check that the config "
+            "SongSeek could not create the safety backup. Check that the config "
             "and cache volumes are writable and have enough free space. No data was changed."
         ) from error
 
@@ -864,7 +864,7 @@ def run_automatic_copy_upgrade(
     _remove_working_copy(backup)
     if require_target_admission:
         print(
-            "[upgrade] Checked library upgrade installed. Verifying DroppedNeedle startup.",
+            "[upgrade] Checked library upgrade installed. Verifying SongSeek startup.",
             flush=True,
         )
     else:
@@ -1170,7 +1170,7 @@ def run_target_supervisor(
         except (OSError, sqlite3.Error, AutomaticUpgradeError):
             logger.critical("automatic_upgrade.target_start_restore_failed")
         print(
-            "[upgrade] ERROR: DroppedNeedle could not start after the library upgrade.",
+            "[upgrade] ERROR: SongSeek could not start after the library upgrade.",
             flush=True,
         )
         return 1
@@ -1213,13 +1213,13 @@ def run_target_supervisor(
             last_stage = stage
             last_progress_log = now
             print(
-                f"[upgrade] DroppedNeedle startup: {stage.replace('_', ' ')}.",
+                f"[upgrade] SongSeek startup: {stage.replace('_', ' ')}.",
                 flush=True,
             )
         elif now - last_progress_log >= _ADMISSION_PROGRESS_LOG_INTERVAL_SECONDS:
             last_progress_log = now
             print(
-                "[upgrade] DroppedNeedle startup is still working: "
+                "[upgrade] SongSeek startup is still working: "
                 f"{stage.replace('_', ' ')} "
                 f"({time.monotonic() - startup_started:,.0f}s elapsed).",
                 flush=True,
@@ -1279,8 +1279,8 @@ def run_target_supervisor(
                 returncode=process.returncode,
             )
             print(
-                "[upgrade] ERROR: The library upgrade was installed, but DroppedNeedle "
-                "could not continue startup. Restart DroppedNeedle. If the problem "
+                "[upgrade] ERROR: The library upgrade was installed, but SongSeek "
+                "could not continue startup. Restart SongSeek. If the problem "
                 "repeats, install a newer image.",
                 flush=True,
             )
@@ -1297,7 +1297,7 @@ def run_target_supervisor(
                     if progress_path is not None:
                         progress_path.unlink(missing_ok=True)
                     print(
-                        "[upgrade] Library upgrade complete. DroppedNeedle is ready.",
+                        "[upgrade] Library upgrade complete. SongSeek is ready.",
                         flush=True,
                     )
                     break
@@ -1323,16 +1323,16 @@ def run_target_supervisor(
                     if hard_timeout:
                         print(
                             "[upgrade] ERROR: The library upgrade was installed, but "
-                            "DroppedNeedle startup exceeded the safety time limit during "
-                            f"{last_stage.replace('_', ' ')}. Restart DroppedNeedle. If "
+                            "SongSeek startup exceeded the safety time limit during "
+                            f"{last_stage.replace('_', ' ')}. Restart SongSeek. If "
                             "the problem repeats, install a newer image.",
                             flush=True,
                         )
                     else:
                         print(
                             "[upgrade] ERROR: The library upgrade was installed, but "
-                            "DroppedNeedle stopped making startup progress during "
-                            f"{last_stage.replace('_', ' ')}. Restart DroppedNeedle. If "
+                            "SongSeek stopped making startup progress during "
+                            f"{last_stage.replace('_', ' ')}. Restart SongSeek. If "
                             "the problem repeats, install a newer image.",
                             flush=True,
                         )
@@ -1349,7 +1349,7 @@ def run_target_supervisor(
                 returncode=exit_code,
             )
             print(
-                "[upgrade] ERROR: DroppedNeedle exited before it was ready "
+                "[upgrade] ERROR: SongSeek exited before it was ready "
                 f"during {last_stage.replace('_', ' ')} (exit code {exit_code}).",
                 flush=True,
             )
@@ -1379,7 +1379,7 @@ def run_target_supervisor(
             return 1
         if forwarded_signal is None:
             print(
-                "[upgrade] ERROR: DroppedNeedle startup failed during "
+                "[upgrade] ERROR: SongSeek startup failed during "
                 f"{last_stage.replace('_', ' ')} ({admission_error}) after "
                 f"{time.monotonic() - startup_started:,.0f}s. The previous database "
                 "and settings were restored.",
@@ -1455,7 +1455,7 @@ def main() -> int:
         if remove_generated_config_on_failure:
             settings.config_file_path.unlink(missing_ok=True)
         print(
-            "[upgrade] ERROR: DroppedNeedle could not open its temporary health check "
+            "[upgrade] ERROR: SongSeek could not open its temporary health check "
             "while upgrading.",
             flush=True,
         )

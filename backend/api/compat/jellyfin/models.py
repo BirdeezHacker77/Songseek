@@ -9,7 +9,7 @@ import msgspec
 
 # Deterministic so it survives restarts without prefs; clients key persistent
 # state by it (reference s2.3).
-SERVER_ID = hashlib.sha256(b"droppedneedle-jellyfin-server").hexdigest()[:32]
+SERVER_ID = hashlib.sha256(b"songseek-jellyfin-server").hexdigest()[:32]
 
 
 class AuthenticateRequest(msgspec.Struct, kw_only=True):

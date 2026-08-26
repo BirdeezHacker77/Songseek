@@ -1,6 +1,6 @@
 """Admin import of users from Jellyfin/Plex (Phase 6, D5).
 
-Enumerates accounts from the shared media server and pre-provisions DroppedNeedle
+Enumerates accounts from the shared media server and pre-provisions SongSeek
 accounts: each import creates an auth_users row (role="user") plus a pre-linked
 auth_providers row (provider_data=None - a login identity, not a credential
 store). On the user's first SSO login the existing _find_or_create_user matches

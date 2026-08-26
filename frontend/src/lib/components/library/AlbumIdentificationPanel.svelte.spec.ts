@@ -316,7 +316,7 @@ describe('AlbumIdentificationPanel', () => {
 			oneOffLocalMetadata: true,
 			releaseMbid: null
 		});
-		expect(sessionStorage.getItem('droppedneedle:album-identification:admin-1:album-1')).toBe(
+		expect(sessionStorage.getItem('songseek:album-identification:admin-1:album-1')).toBe(
 			'job-1'
 		);
 		await page.getByRole('button', { name: 'Close', exact: true }).click();
@@ -386,7 +386,7 @@ describe('AlbumIdentificationPanel', () => {
 	});
 
 	it('recovers a saved job, projects candidates, and sends the current revision', async () => {
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': candidateJob };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -410,7 +410,7 @@ describe('AlbumIdentificationPanel', () => {
 		accepted.state = 'succeeded';
 		accepted.terminal_code = 'IDENTIFIED';
 		accepted.selected_reidentification_candidate_key = 'rg-1:release-1';
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': accepted };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -433,7 +433,7 @@ describe('AlbumIdentificationPanel', () => {
 			completed_count: 1,
 			terminal_code: 'NO_EXTERNAL_RESULT'
 		});
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': noCandidates };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -474,7 +474,7 @@ describe('AlbumIdentificationPanel', () => {
 		alternate.evidence.album_artist_name = 'Another Artist';
 		alternate.evidence.score = 0.72;
 		multipleCandidates.reidentification_candidates.push(alternate);
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': multipleCandidates };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -509,7 +509,7 @@ describe('AlbumIdentificationPanel', () => {
 			recording_mbid: `recording-${index + 1}`,
 			release_track_mbid: `release-track-${index + 1}`
 		}));
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': tagConflict };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -531,7 +531,7 @@ describe('AlbumIdentificationPanel', () => {
 	});
 
 	it('can supersede a ready candidate report with a fresh check', async () => {
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': candidateJob };
 		h.start.mockResolvedValue(job({ id: 'job-2', state: 'queued' }));
 		render(AlbumIdentificationPanel, {
@@ -548,13 +548,13 @@ describe('AlbumIdentificationPanel', () => {
 			oneOffLocalMetadata: true,
 			releaseMbid: null
 		});
-		expect(sessionStorage.getItem('droppedneedle:album-identification:admin-1:album-1')).toBe(
+		expect(sessionStorage.getItem('songseek:album-identification:admin-1:album-1')).toBe(
 			'job-2'
 		);
 	});
 
 	it('can discard a ready evidence check', async () => {
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': candidateJob };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -567,7 +567,7 @@ describe('AlbumIdentificationPanel', () => {
 	});
 
 	it('controls the persisted job without a fixed-delay refresh', async () => {
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': job() };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -619,7 +619,7 @@ describe('AlbumIdentificationPanel', () => {
 			}
 		];
 		unsafe.reidentification_candidates[0].evidence.unmatched_expected_tracks = ['Missing Song'];
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': unsafe };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -649,7 +649,7 @@ describe('AlbumIdentificationPanel', () => {
 		contradictory.reidentification_candidates[0].evidence.album_title_classification =
 			'contradictory';
 		contradictory.reidentification_candidates[0].evidence.track_evidence = [];
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': contradictory };
 		render(AlbumIdentificationPanel, {
 			props: { album }
@@ -679,7 +679,7 @@ describe('AlbumIdentificationPanel', () => {
 		};
 		h.conversionData = conversionPreflightStatus;
 		sessionStorage.setItem(
-			'droppedneedle:edition-conversion-preflight:admin-1:conversion-1',
+			'songseek:edition-conversion-preflight:admin-1:conversion-1',
 			'sealed-token'
 		);
 		render(AlbumIdentificationPanel, {
@@ -695,7 +695,7 @@ describe('AlbumIdentificationPanel', () => {
 			expectedRevision: 3
 		});
 		expect(
-			sessionStorage.getItem('droppedneedle:edition-conversion-preflight:admin-1:conversion-1')
+			sessionStorage.getItem('songseek:edition-conversion-preflight:admin-1:conversion-1')
 		).toBeNull();
 	});
 
@@ -704,7 +704,7 @@ describe('AlbumIdentificationPanel', () => {
 		unsafe.reidentification_candidates[0].automatic_safe = false;
 		unsafe.reidentification_candidates[0].evidence.album_title_classification = 'contradictory';
 		h.selectError = new ApiError(409, 'Backend detail', 'STALE_REVISION');
-		sessionStorage.setItem('droppedneedle:album-identification:admin-1:album-1', 'job-1');
+		sessionStorage.setItem('songseek:album-identification:admin-1:album-1', 'job-1');
 		h.jobs = { 'job-1': unsafe };
 		render(AlbumIdentificationPanel, {
 			props: { album }

@@ -1,15 +1,15 @@
-# DroppedNeedle example compose.
+# SongSeek example compose.
 #
-# DroppedNeedle downloads through your OWN slskd (Soulseek) and/or SABnzbd (Usenet); it
+# SongSeek downloads through your OWN slskd (Soulseek) and/or SABnzbd (Usenet); it
 # doesn't run either for you. Start them yourself, then connect them under
 # Settings > Download Client. A commented-out slskd sidecar is at the bottom.
 # Full walkthrough: the Setup section of the README.
 
 services:
-  droppedneedle:
-    image: droppedneedle/droppedneedle:latest
+  songseek:
+    image: birdeezhacker77/songseek:latest
     # :dev is built from main on every push and may break.
-    container_name: droppedneedle
+    container_name: songseek
     environment:
       - PUID=1000            # your host user/group; run `id` to find them (Unraid: usually 99/100)
       - PGID=1000            # ignored if you start the container with Docker --user
@@ -42,10 +42,10 @@ services:
       start_period: 10m
       retries: 3
 
-# Optional: run slskd alongside DroppedNeedle (you manage slskd and its shares).
+# Optional: run slskd alongside SongSeek (you manage slskd and its shares).
 #  slskd:
 #    image: slskd/slskd:0.25.1   # pinned; requires >= 0.25.0
-#    container_name: droppedneedle-slskd
+#    container_name: songseek-slskd
 #    restart: unless-stopped
 #    ports:
 #      - "5030:5030"

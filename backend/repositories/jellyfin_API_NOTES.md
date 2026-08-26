@@ -1,6 +1,6 @@
 # Jellyfin management refresh API notes
 
-Live verification performed on 2026-07-22 against the configured DroppedNeedle
+Live verification performed on 2026-07-22 against the configured SongSeek
 development Jellyfin server, version 10.11.11. Credentials and the server URL are
 intentionally omitted.
 
@@ -14,9 +14,9 @@ The server's own `/api-docs/openapi.json` documents:
   `Deleted`.
 
 The configured server's `/Library/VirtualFolders` response contained three media
-folders. None of their locations exactly matched a DroppedNeedle native library
+folders. None of their locations exactly matched a SongSeek native library
 root. Targeted path notifications would therefore rely on an unverified path
-translation and are unsafe. DroppedNeedle uses the verified global
+translation and are unsafe. SongSeek uses the verified global
 `POST /Library/Refresh` route instead.
 
 A live authenticated call to `POST /Library/Refresh` returned `204` with an empty

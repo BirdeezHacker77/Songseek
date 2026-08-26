@@ -27,7 +27,7 @@ from tests.benchmarks.feedback_fixes_maintenance_rehearsal import (
 
 
 _REPOSITORY_ROOT = Path(__file__).parents[3]
-_PRODUCTION_CONTAINER = "droppedneedle"
+_PRODUCTION_CONTAINER = "songseek"
 
 
 def _command(
@@ -67,7 +67,7 @@ def _docker_object(target: str) -> dict[str, Any]:
 
 
 def _legacy_source_image(source_image_id: str, run_id: str) -> tuple[str, str]:
-    reference = f"droppedneedle-feedback-fixes-cli-{run_id}:source"
+    reference = f"songseek-feedback-fixes-cli-{run_id}:source"
     seed_container = f"feedback-fixes-cli-{run_id}-source-image"
     _command(["docker", "create", "--name", seed_container, source_image_id])
     try:
@@ -223,7 +223,7 @@ def _compose_text(
 ) -> str:
     return f"""services:
   {service_name}:
-    image: ${{DROPPEDNEEDLE_IMAGE:-{target_reference}}}
+    image: ${{SONGSEEK_IMAGE:-{target_reference}}}
     build:
       context: {_REPOSITORY_ROOT}
       dockerfile: Dockerfile
@@ -279,8 +279,8 @@ def run(output: Path) -> dict[str, Any]:
     project = f"feedback-fixes-cli-{run_id}"
     service = "scratch"
     container = f"feedback-fixes-cli-{run_id}"
-    target_reference = f"droppedneedle-feedback-fixes-cli-{run_id}:target"
-    image_prefix = f"droppedneedle-feedback-fixes-cli-{run_id}"
+    target_reference = f"songseek-feedback-fixes-cli-{run_id}:target"
+    image_prefix = f"songseek-feedback-fixes-cli-{run_id}"
     transcript: list[dict[str, Any]] = []
     cleanup_references: set[str] = {target_reference}
     source_image_id = ""
@@ -312,7 +312,7 @@ def run(output: Path) -> dict[str, Any]:
             )
             cleanup_references.add(source_reference)
             setup_environment = os.environ.copy()
-            setup_environment["DROPPEDNEEDLE_IMAGE"] = source_image_id
+            setup_environment["SONGSEEK_IMAGE"] = source_image_id
             _command(
                 [*compose, "up", "-d", "--no-build", service],
                 environment=setup_environment,

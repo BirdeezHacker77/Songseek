@@ -1,17 +1,24 @@
 name: Dev Image
 
+# Manual-only until Docker Hub credentials exist for this fork. Pushing to
+# birdeezhacker77/songseek needs repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
+# (Docker Hub -> Account Settings -> Personal access tokens, Read & Write).
+# Add those, then restore the `push:` trigger below to publish :dev on every commit.
+#
+# on:
+#   push:
+#     branches: [main]
+#     paths:
+#       - 'backend/**'
+#       - 'frontend/**'
+#       - 'Dockerfile'
+#       - 'entrypoint.sh'
+#       - 'backend/requirements.txt'
+#       - 'frontend/package.json'
+#       - 'frontend/pnpm-lock.yaml'
+#       - '.github/workflows/dev-image.yml'
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'backend/**'
-      - 'frontend/**'
-      - 'Dockerfile'
-      - 'entrypoint.sh'
-      - 'backend/requirements.txt'
-      - 'frontend/package.json'
-      - 'frontend/pnpm-lock.yaml'
-      - '.github/workflows/dev-image.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -112,11 +119,11 @@ jobs:
         run: |
           {
             echo "TAGS<<EOF"
-            echo "ghcr.io/droppedneedle/droppedneedle:dev"
-            echo "ghcr.io/droppedneedle/droppedneedle:dev-$SHORT_SHA"
+            echo "ghcr.io/birdeezhacker77/songseek:dev"
+            echo "ghcr.io/birdeezhacker77/songseek:dev-$SHORT_SHA"
             if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
-              echo "droppedneedle/droppedneedle:dev"
-              echo "droppedneedle/droppedneedle:dev-$SHORT_SHA"
+              echo "birdeezhacker77/songseek:dev"
+              echo "birdeezhacker77/songseek:dev-$SHORT_SHA"
             fi
             echo "EOF"
           } >> "$GITHUB_ENV"

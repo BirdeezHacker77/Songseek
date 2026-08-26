@@ -12,7 +12,7 @@ Verified against `https://lrclib.net` on 2026-07-22.
   recording. Library Management therefore never promotes a search result
   automatically; only `/api/get` can feed automatic or manual-run projections.
 - The successful response did not advertise a numeric rate-limit header, and the
-  public documentation did not publish a numeric request allowance. DroppedNeedle
+  public documentation did not publish a numeric request allowance. SongSeek
   applies a conservative one-request-per-second local ceiling and honors HTTP 429
   `Retry-After` without presenting that ceiling as provider policy.
 
@@ -23,5 +23,5 @@ shape, nullable fields, and length-independent behavior are what the adapter tes
 Reverified on 2026-08-05 for *Boom. Done.* by Anthony Green. Exact `/api/get` calls
 for `I Don’t Want to Die Tonight` (197 seconds) and `Don’t Dance` (133 seconds)
 returned the same artist, album, and durations, but LRCLIB normalized the typographic
-apostrophe in each title to ASCII `'`. DroppedNeedle treats those apostrophe forms as
+apostrophe in each title to ASCII `'`. SongSeek treats those apostrophe forms as
 the same exact signature; it does not relax any other text or duration gate.

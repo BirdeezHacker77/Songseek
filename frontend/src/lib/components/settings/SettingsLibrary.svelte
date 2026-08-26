@@ -236,7 +236,7 @@
 	<div>
 		<h2 class="text-xl font-bold">Library</h2>
 		<p class="text-sm text-base-content/60">
-			Choose how DroppedNeedle observes your library and, separately, whether it may change it.
+			Choose how SongSeek observes your library and, separately, whether it may change it.
 		</p>
 	</div>
 
@@ -267,7 +267,7 @@
 				<p class="library-scanning-kicker">Read-only catalog work</p>
 				<h2 class="font-display text-xl font-semibold">Scanning &amp; identification</h2>
 				<p class="mt-1 text-sm text-base-content/65">
-					Reads files and updates DroppedNeedle. It does not change your music files.
+					Reads files and updates SongSeek. It does not change your music files.
 				</p>
 			</div>
 		</header>
@@ -462,7 +462,7 @@
 				<section class="space-y-2">
 					<h3 class="font-semibold">Automatic scanning</h3>
 					<p class="text-xs text-base-content/60">
-						How often DroppedNeedle scans your library for new and changed files.
+						How often SongSeek scans your library for new and changed files.
 					</p>
 					<LibraryScanScheduleControl />
 				</section>
@@ -566,7 +566,7 @@
 				committed catalog changes remain safe if the job is paused or stopped.
 			</p>
 			{#if applyPreview.data.content_will_become_unavailable}<div class="alert alert-warning mt-3">
-					<AlertTriangle class="h-4 w-4" /> Music under Excluded scopes will become unavailable to DroppedNeedle
+					<AlertTriangle class="h-4 w-4" /> Music under Excluded scopes will become unavailable to SongSeek
 					and connected clients.
 				</div>{/if}{/if}
 		<div class="modal-action">

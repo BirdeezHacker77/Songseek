@@ -74,7 +74,7 @@
 				: 'Apply policy changes'
 	);
 	const storageKey = $derived(
-		`droppedneedle:identification-retry:${authStore.user?.id ?? 'anonymous'}`
+		`songseek:identification-retry:${authStore.user?.id ?? 'anonymous'}`
 	);
 	const retrySelection = $derived({
 		review_ids: [],
@@ -306,7 +306,7 @@
 					>
 				{:else if retryIsTransport}
 					<span
-						>DroppedNeedle could not reach the server, so the retry did not start. You can try again
+						>SongSeek could not reach the server, so the retry did not start. You can try again
 						without closing this dialog.</span
 					>
 				{:else}

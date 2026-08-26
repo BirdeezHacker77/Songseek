@@ -137,7 +137,7 @@ class NavidromePlaylistDetail(AppStruct):
 
 
 class NavidromeImportResult(AppStruct):
-    droppedneedle_playlist_id: str = ""
+    songseek_playlist_id: str = ""
     tracks_imported: int = 0
     tracks_failed: int = 0
     already_imported: bool = False

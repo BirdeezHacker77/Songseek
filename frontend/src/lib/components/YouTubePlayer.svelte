@@ -15,7 +15,7 @@
 -->
 <div
 	data-testid="youtube-player"
-	class="droppedneedle-yt-popout fixed right-3 z-[60] overflow-hidden rounded-lg shadow-lg ring-1 ring-base-content/10 sm:right-4"
+	class="songseek-yt-popout fixed right-3 z-[60] overflow-hidden rounded-lg shadow-lg ring-1 ring-base-content/10 sm:right-4"
 	style="min-width: 200px; min-height: 200px;"
 >
 	<div id={elementId} data-testid="youtube-player-mount" class="h-full w-full"></div>

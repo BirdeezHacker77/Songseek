@@ -1,9 +1,19 @@
 name: Release
 
+# Manual-only until Docker Hub credentials exist for this fork. Publishing needs repo
+# secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN; GHCR uses the built-in GITHUB_TOKEN.
+# Add those, then restore the tag trigger below to cut a release by pushing a v* tag.
+#
+# on:
+#   push:
+#     tags:
+#       - "v*"
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build, e.g. v1.2.3"
+        required: true
 
 permissions:
   contents: read
@@ -37,7 +47,11 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        env:
+          # workflow_dispatch supplies the tag directly; a restored tag trigger
+          # leaves it empty and GITHUB_REF carries refs/tags/<tag> instead.
+          INPUT_TAG: ${{ inputs.tag }}
+        run: echo "tag=${INPUT_TAG:-${GITHUB_REF#refs/tags/}}" >> "$GITHUB_OUTPUT"
 
       - name: Get build date
         id: date
@@ -88,7 +102,11 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        env:
+          # workflow_dispatch supplies the tag directly; a restored tag trigger
+          # leaves it empty and GITHUB_REF carries refs/tags/<tag> instead.
+          INPUT_TAG: ${{ inputs.tag }}
+        run: echo "tag=${INPUT_TAG:-${GITHUB_REF#refs/tags/}}" >> "$GITHUB_OUTPUT"
 
       - name: Get build date
         id: date
@@ -102,12 +120,12 @@ jobs:
             echo "TAGS<<EOF"
             if [[ "$TAG" == *-* ]]; then
               # pre-release (beta): quiet, obscure name only, Docker Hub
-              echo "droppedneedle/dn-beta:$TAG"
-              echo "droppedneedle/dn-beta:beta"
+              echo "songseek/dn-beta:$TAG"
+              echo "songseek/dn-beta:beta"
             else
               # stable: org namespace on ghcr + Docker Hub
-              echo "ghcr.io/droppedneedle/droppedneedle:$TAG"
-              echo "droppedneedle/droppedneedle:$TAG"
+              echo "ghcr.io/birdeezhacker77/songseek:$TAG"
+              echo "birdeezhacker77/songseek:$TAG"
             fi
             echo "EOF"
           } >> "$GITHUB_ENV"
@@ -133,43 +151,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           docker buildx imagetools create \
-            -t "ghcr.io/droppedneedle/droppedneedle:latest" \
-            -t "droppedneedle/droppedneedle:latest" \
-            "droppedneedle/droppedneedle:${TAG}"
+            -t "ghcr.io/birdeezhacker77/songseek:latest" \
+            -t "birdeezhacker77/songseek:latest" \
+            "birdeezhacker77/songseek:${TAG}"
 
-      # forced-upgrade path for pre-transfer installs: mirror $TAG + :latest onto the
-      # old habirabbu names on both registries. GITHUB_TOKEN can't write habirabbu's
-      # ghcr namespace post-transfer, so this needs its own secrets:
-      #   LEGACY_GHCR_TOKEN                                   HabiRabbu PAT, write:packages
-      #   LEGACY_DOCKERHUB_USERNAME / LEGACY_DOCKERHUB_TOKEN  habirabbu Docker Hub token
-      # each half skips when its secret is unset
-      - name: Legacy habirabbu tags (stable releases only)
-        if: ${{ !contains(steps.version.outputs.tag, '-') }}
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}
-          LEGACY_DOCKERHUB_USERNAME: ${{ secrets.LEGACY_DOCKERHUB_USERNAME }}
-          LEGACY_DOCKERHUB_TOKEN: ${{ secrets.LEGACY_DOCKERHUB_TOKEN }}
-        run: |
-          if [ -n "$LEGACY_GHCR_TOKEN" ]; then
-            echo "$LEGACY_GHCR_TOKEN" | docker login ghcr.io -u HabiRabbu --password-stdin
-            docker buildx imagetools create \
-              -t "ghcr.io/habirabbu/droppedneedle:$TAG" \
-              -t "ghcr.io/habirabbu/droppedneedle:latest" \
-              -t "ghcr.io/habirabbu/musicseerr:$TAG" \
-              -t "ghcr.io/habirabbu/musicseerr:latest" \
-              "ghcr.io/droppedneedle/droppedneedle:$TAG"
-          else
-            echo "LEGACY_GHCR_TOKEN unset - skipping ghcr.io/habirabbu/* tags"
-          fi
-          if [ -n "$LEGACY_DOCKERHUB_USERNAME" ] && [ -n "$LEGACY_DOCKERHUB_TOKEN" ]; then
-            echo "$LEGACY_DOCKERHUB_TOKEN" | docker login -u "$LEGACY_DOCKERHUB_USERNAME" --password-stdin
-            docker buildx imagetools create \
-              -t "habirabbu/droppedneedle:$TAG" \
-              -t "habirabbu/droppedneedle:latest" \
-              -t "habirabbu/musicseerr:$TAG" \
-              -t "habirabbu/musicseerr:latest" \
-              "droppedneedle/droppedneedle:$TAG"
-          else
-            echo "LEGACY_DOCKERHUB_* unset - skipping habirabbu/* tags"
-          fi

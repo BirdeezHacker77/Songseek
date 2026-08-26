@@ -34,7 +34,7 @@
 			'Use file tags and embedded IDs. Do not search external metadata automatically.',
 		automatic: 'Index files first, then try to identify albums in the background.',
 		excluded:
-			'Keep files on disk but hide this path from DroppedNeedle and connected music clients.'
+			'Keep files on disk but hide this path from SongSeek and connected music clients.'
 	};
 
 	function updateRoot(
@@ -291,7 +291,7 @@
 						Add library root
 					</h2>
 					<p class="mt-1 text-sm text-base-content/60">
-						Choose the folder DroppedNeedle should index and how new albums should be identified.
+						Choose the folder SongSeek should index and how new albums should be identified.
 					</p>
 				</div>
 			</div>
@@ -326,7 +326,7 @@
 						aria-describedby="new-library-root-path-help"
 					/>
 					<span id="new-library-root-path-help" class="text-xs text-base-content/50">
-						Use the path as DroppedNeedle sees it inside the container.
+						Use the path as SongSeek sees it inside the container.
 					</span>
 				</div>
 				<div class="grid gap-2">

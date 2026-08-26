@@ -342,7 +342,7 @@ def _build(
 
 @pytest.mark.asyncio
 async def test_usenet_fallback_album_imports_via_folder_match(tmp_path: Path):
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     _place_track(completed, "01 Airbag.flac", title="Airbag", track=1)
     _place_track(
         completed, "02 Paranoid Android.flac", title="Paranoid Android", track=2
@@ -370,14 +370,14 @@ async def test_usenet_fallback_album_imports_via_folder_match(tmp_path: Path):
     flacs = list(library.rglob("*.flac"))
     assert len(flacs) == 2  # both tracks matched by duration + filename and imported
     assert len(sab.discarded) == 1
-    assert not any(completed.parent.glob("droppedneedle-*"))
+    assert not any(completed.parent.glob("songseek-*"))
 
 
 @pytest.mark.asyncio
 async def test_usenet_per_track_imports_exactly_one(tmp_path: Path):
     # D4: a per-track request on Usenet grabs the album NZB but imports ONLY the one
     # requested track; the siblings are discarded.
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     _place_track(completed, "01 Airbag.flac", title="Airbag", track=1)
     _place_track(
         completed, "02 Paranoid Android.flac", title="Paranoid Android", track=2
@@ -411,7 +411,7 @@ async def test_usenet_per_track_imports_exactly_one(tmp_path: Path):
     flacs = list(library.rglob("*.flac"))
     assert len(flacs) == 1  # exactly one track imported (the requested one)
     assert flacs[0].name.endswith("Paranoid Android.flac")
-    assert not any(completed.parent.glob("droppedneedle-*"))
+    assert not any(completed.parent.glob("songseek-*"))
 
 
 @pytest.mark.asyncio
@@ -420,7 +420,7 @@ async def test_usenet_failed_job_quarantines_release_identity(tmp_path: Path):
 
     from models.download_identity import usenet_identity
 
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)
     tracks = [_track(1, "Airbag", 300)]
     # An OLD release (well past the propagation window) that SABnzbd reports Failed.
@@ -452,7 +452,7 @@ async def test_usenet_failed_job_quarantines_release_identity(tmp_path: Path):
 async def test_usenet_young_failed_release_not_blocklisted(tmp_path: Path):
     import time
 
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)
     tracks = [_track(1, "Airbag", 300)]
     # A release younger than usenet_min_release_age (default 30 min) -> propagation guard
@@ -482,7 +482,7 @@ async def test_usenet_young_failed_release_not_blocklisted(tmp_path: Path):
 async def test_usenet_disk_full_failure_not_blocklisted(tmp_path: Path):
     import time
 
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)
     tracks = [_track(1, "Airbag", 300)]
     # A disk-full unpack failure is a transient LOCAL fault - the release must NOT be
@@ -520,7 +520,7 @@ async def test_usenet_completed_but_incomplete_album_is_blocklisted(tmp_path: Pa
     # this dead release (Lidarr's failed-import handling). Use a YOUNG release to prove the
     # propagation age guard does NOT spare it: the files ARE present, so the shortfall is
     # confirmed under-delivery, not propagation (review M1).
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     _place_track(completed, "01 Airbag.flac", title="Airbag", track=1)  # only 1 of 2
     tracks = [_track(1, "Airbag", 300), _track(2, "Paranoid Android", 300)]
     store, manager, orch, sab, library = _build(
@@ -558,7 +558,7 @@ async def test_usenet_empty_completed_young_is_not_blocklisted(tmp_path: Path):
     # SABnzbd Completed but the folder is EMPTY (no files enumerated) on a YOUNG release.
     # That's ambiguous - propagation / a transient empty - so do NOT permanently blocklist
     # (asymmetry: never kill a possibly-good release). It fails, to be auto-retried.
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)  # exists but empty
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(
@@ -589,7 +589,7 @@ async def test_usenet_empty_completed_old_is_blocklisted(tmp_path: Path):
 
     # SABnzbd Completed, folder EMPTY, mount healthy, OLD release: a genuine garbage NZB
     # (well past propagation) -> blocklist + fail over (Lidarr's Redownload Failed).
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(
@@ -625,7 +625,7 @@ async def test_usenet_import_fault_does_not_blocklist(tmp_path: Path):
     # SABnzbd delivered the files (enumerated > 0) but writing them into the library failed
     # locally (perms / cross-mount-copy reject - the TrueNAS-ACL fault). That's OUR fault,
     # not the release's - it must NOT be blocklisted (review H3).
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     _place_track(completed, "01 Airbag.flac", title="Airbag", track=1)
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(
@@ -665,7 +665,7 @@ async def test_usenet_sabnzbd_local_fault_stops_without_blocklist_or_delete(
 
     # A SABnzbd "Failed moving ..." (a local disk/move fault, not in the old 2-word
     # whitelist) must NOT blocklist, NOT fail over, and NOT delete data (review M2 + H1).
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(
@@ -700,7 +700,7 @@ async def test_usenet_unreachable_mount_does_not_blocklist_or_delete(tmp_path: P
     # The downloads MOUNT ROOT is unreachable (a genuine environment fault). That must NOT
     # blocklist the release, NOT fail over, and crucially NOT delete the SABnzbd data
     # (cancel/del_files would erase a download we simply couldn't read - review H1).
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)  # exists but EMPTY -> 0 files enumerated
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(
@@ -735,7 +735,7 @@ async def test_usenet_completed_files_appear_after_settle(tmp_path: Path):
     # SABnzbd reports Completed a beat before the unpacked files are visible on our mount.
     # The importer must re-poll (settle) and import them, NOT misread the empty first
     # enumeration as a garbage NZB / mount fault and blocklist+delete a good download.
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     _place_track(completed, "01 Airbag.flac", title="Airbag", track=1)
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(
@@ -770,7 +770,7 @@ async def test_usenet_interrupted_poll_does_not_blocklist(tmp_path: Path, monkey
     # A job that never materialises a transfer (e.g. a globally-paused SABnzbd) is an
     # INTERRUPTED poll, not a terminal SABnzbd outcome - it must not blocklist the release.
     monkeypatch.setattr(orch_mod, "_TRANSFER_MATERIALIZE_SECONDS", 0.0)
-    completed = tmp_path / "complete" / "droppedneedle-job"
+    completed = tmp_path / "complete" / "songseek-job"
     completed.mkdir(parents=True)
     tracks = [_track(1, "Airbag", 300)]
     store, manager, orch, sab, library = _build(

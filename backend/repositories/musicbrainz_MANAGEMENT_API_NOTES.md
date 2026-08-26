@@ -1,7 +1,7 @@
 # MusicBrainz Library Management API notes
 
 Verified against the live production JSON API on 2026-07-21. The response `Date`
-header was `Tue, 21 Jul 2026`; requests used DroppedNeedle's descriptive user agent.
+header was `Tue, 21 Jul 2026`; requests used SongSeek's descriptive user agent.
 
 ## Canonical release lookup
 

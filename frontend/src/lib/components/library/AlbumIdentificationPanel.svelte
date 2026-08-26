@@ -73,11 +73,11 @@
 	let conversionPreflightToken = $state<string | null>(null);
 	let openedAutomatically = $state(false);
 	const storageKey = $derived(
-		`droppedneedle:album-identification:${authStore.user?.id ?? 'anonymous'}:${album.id}`
+		`songseek:album-identification:${authStore.user?.id ?? 'anonymous'}:${album.id}`
 	);
 	const conversionStorageKey = $derived(
 		conversionJobId
-			? `droppedneedle:edition-conversion-preflight:${authStore.user?.id ?? 'anonymous'}:${conversionJobId}`
+			? `songseek:edition-conversion-preflight:${authStore.user?.id ?? 'anonymous'}:${conversionJobId}`
 			: null
 	);
 	const attentionDescriptionId = $derived(`reidentify-attention-${album.id}`);
@@ -324,7 +324,7 @@
 		if (result.preflight_token) {
 			try {
 				sessionStorage.setItem(
-					`droppedneedle:edition-conversion-preflight:${authStore.user?.id ?? 'anonymous'}:${result.job_id}`,
+					`songseek:edition-conversion-preflight:${authStore.user?.id ?? 'anonymous'}:${result.job_id}`,
 					result.preflight_token
 				);
 			} catch {
@@ -653,7 +653,7 @@
 									: 'Find the exact edition'}
 							</h3>
 							<p class="mt-2 text-sm leading-6 text-base-content/60">
-								DroppedNeedle compares album, artist, and per-track evidence. The job continues on
+								SongSeek compares album, artist, and per-track evidence. The job continues on
 								the server if you close this dialog.
 							</p>
 						</div>
@@ -772,7 +772,7 @@
 								Identity attached
 							</h3>
 							<p>
-								This exact edition and its per-track map are now DroppedNeedle's durable catalog
+								This exact edition and its per-track map are now SongSeek's durable catalog
 								identity. Future scans preserve the decision until an administrator resets it.
 							</p>
 						</div>

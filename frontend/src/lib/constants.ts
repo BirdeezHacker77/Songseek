@@ -7,36 +7,36 @@ export const KM_PER_MILE = 1.609;
 
 const CACHE_KEY_GROUPS = {
 	core: {
-		RECENTLY_ADDED: 'droppedneedle_recently_added',
-		HOME_CACHE: 'droppedneedle_home_cache',
-		DISCOVER_QUEUE: 'droppedneedle_discover_queue',
-		SEARCH: 'droppedneedle_search_cache'
+		RECENTLY_ADDED: 'songseek_recently_added',
+		HOME_CACHE: 'songseek_home_cache',
+		DISCOVER_QUEUE: 'songseek_discover_queue',
+		SEARCH: 'songseek_search_cache'
 	},
 	library: {
-		LOCAL_FILES_SIDEBAR: 'droppedneedle_local_files_sidebar',
-		JELLYFIN_SIDEBAR: 'droppedneedle_jellyfin_sidebar',
-		JELLYFIN_ALBUMS_LIST: 'droppedneedle_jellyfin_albums_list',
-		NAVIDROME_SIDEBAR: 'droppedneedle_navidrome_sidebar',
-		NAVIDROME_ALBUMS_LIST: 'droppedneedle_navidrome_albums_list',
-		NAVIDROME_FOLDER_SCOPE: 'droppedneedle_navidrome_folder_scope',
-		PLEX_SIDEBAR: 'droppedneedle_plex_sidebar',
-		PLEX_ALBUMS_LIST: 'droppedneedle_plex_albums_list',
-		LOCAL_FILES_ALBUMS_LIST: 'droppedneedle_local_files_albums_list'
+		LOCAL_FILES_SIDEBAR: 'songseek_local_files_sidebar',
+		JELLYFIN_SIDEBAR: 'songseek_jellyfin_sidebar',
+		JELLYFIN_ALBUMS_LIST: 'songseek_jellyfin_albums_list',
+		NAVIDROME_SIDEBAR: 'songseek_navidrome_sidebar',
+		NAVIDROME_ALBUMS_LIST: 'songseek_navidrome_albums_list',
+		NAVIDROME_FOLDER_SCOPE: 'songseek_navidrome_folder_scope',
+		PLEX_SIDEBAR: 'songseek_plex_sidebar',
+		PLEX_ALBUMS_LIST: 'songseek_plex_albums_list',
+		LOCAL_FILES_ALBUMS_LIST: 'songseek_local_files_albums_list'
 	},
 	detail: {
-		ALBUM_BASIC_CACHE: 'droppedneedle_album_basic_cache',
-		ALBUM_TRACKS_CACHE: 'droppedneedle_album_tracks_cache',
-		ALBUM_DISCOVERY_CACHE: 'droppedneedle_album_discovery_cache',
-		ALBUM_LASTFM_CACHE: 'droppedneedle_album_lastfm_cache',
-		ALBUM_YOUTUBE_CACHE: 'droppedneedle_album_youtube_cache',
-		ALBUM_SOURCE_MATCH_CACHE: 'droppedneedle_album_source_match_cache',
-		ARTIST_BASIC_CACHE: 'droppedneedle_artist_basic_cache',
-		ARTIST_EXTENDED_CACHE: 'droppedneedle_artist_extended_cache',
-		ARTIST_LASTFM_CACHE: 'droppedneedle_artist_lastfm_cache'
+		ALBUM_BASIC_CACHE: 'songseek_album_basic_cache',
+		ALBUM_TRACKS_CACHE: 'songseek_album_tracks_cache',
+		ALBUM_DISCOVERY_CACHE: 'songseek_album_discovery_cache',
+		ALBUM_LASTFM_CACHE: 'songseek_album_lastfm_cache',
+		ALBUM_YOUTUBE_CACHE: 'songseek_album_youtube_cache',
+		ALBUM_SOURCE_MATCH_CACHE: 'songseek_album_source_match_cache',
+		ARTIST_BASIC_CACHE: 'songseek_artist_basic_cache',
+		ARTIST_EXTENDED_CACHE: 'songseek_artist_extended_cache',
+		ARTIST_LASTFM_CACHE: 'songseek_artist_lastfm_cache'
 	},
 	charts: {
-		TIME_RANGE_OVERVIEW_CACHE: 'droppedneedle_time_range_overview_cache',
-		GENRE_DETAIL_CACHE: 'droppedneedle_genre_detail_cache'
+		TIME_RANGE_OVERVIEW_CACHE: 'songseek_time_range_overview_cache',
+		GENRE_DETAIL_CACHE: 'songseek_genre_detail_cache'
 	}
 } as const;
 
@@ -48,12 +48,12 @@ export const CACHE_KEYS = {
 } as const;
 
 export const PAGE_SOURCE_KEYS = {
-	home: 'droppedneedle_source_home',
-	discover: 'droppedneedle_source_discover',
-	artist: 'droppedneedle_source_artist',
-	trending: 'droppedneedle_source_trending',
-	popular: 'droppedneedle_source_popular',
-	yourTop: 'droppedneedle_source_your_top'
+	home: 'songseek_source_home',
+	discover: 'songseek_source_discover',
+	artist: 'songseek_source_artist',
+	trending: 'songseek_source_trending',
+	popular: 'songseek_source_popular',
+	yourTop: 'songseek_source_your_top'
 } as const;
 
 const CACHE_TTL_GROUPS = {

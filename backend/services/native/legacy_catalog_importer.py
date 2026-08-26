@@ -68,7 +68,7 @@ REFERENCE_KINDS = (
     "native_artist_alias",
     "artwork_reference",
 )
-LOCAL_PLAYLIST_SOURCES = {"local", "droppedneedle-local", "howler"}
+LOCAL_PLAYLIST_SOURCES = {"local", "songseek-local", "howler"}
 MAX_EMBEDDED_ART_READS_PER_REHEARSAL = 500
 
 

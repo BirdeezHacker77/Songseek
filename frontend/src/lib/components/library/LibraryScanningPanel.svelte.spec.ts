@@ -527,7 +527,7 @@ describe('LibraryScanningPanel', () => {
 	});
 
 	it('releases a finished retry so another one can be started', async () => {
-		sessionStorage.setItem('droppedneedle:identification-retry:admin-1', 'job-1');
+		sessionStorage.setItem('songseek:identification-retry:admin-1', 'job-1');
 		h.operation = {
 			data: {
 				id: 'job-1',
@@ -542,7 +542,7 @@ describe('LibraryScanningPanel', () => {
 		render(LibraryScanningPanel);
 		await page.getByRole('button', { name: 'Retry identification...' }).click();
 		await expect.element(page.getByText('Identification retry succeeded')).toBeVisible();
-		expect(sessionStorage.getItem('droppedneedle:identification-retry:admin-1')).toBeNull();
+		expect(sessionStorage.getItem('songseek:identification-retry:admin-1')).toBeNull();
 		await page.getByRole('button', { name: 'Start another retry' }).click();
 		await expect.element(page.getByRole('button', { name: 'Preview retry' })).toBeVisible();
 	});

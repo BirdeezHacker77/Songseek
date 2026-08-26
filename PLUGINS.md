@@ -1,10 +1,10 @@
-# DroppedNeedle Plugin API
+# SongSeek Plugin API
 
 > **Status: EXPERIMENTAL** (`api_version = 0`). The surface may change between
 > releases until `api_version = 1`. Pin your plugin to the api_version it was
 > written for; the host refuses manifests it doesn't speak.
 
-DroppedNeedle loads plugins from the `plugins/` directory in its data folder,
+SongSeek loads plugins from the `plugins/` directory in its data folder,
 alongside `config/` and `cache/` - one folder per plugin. Under Docker that is
 `/app/plugins`, which is not mounted by default: add the volume, or every plugin
 you install disappears when the container is recreated. Nothing is bundled, and
@@ -14,7 +14,7 @@ author.
 ## Trust model - read this first
 
 A plugin is Python running **in-process with the full privileges of your
-DroppedNeedle server**. There is no sandbox. Two rules follow:
+SongSeek server**. There is no sandbox. Two rules follow:
 
 1. Only install plugins whose code you have read or whose author you trust.
 2. Dropping a folder into the plugins directory runs **no code**. A plugin is
@@ -108,19 +108,19 @@ plugins cannot influence ordering. You have a 10-second budget per album.
 
 ### There is no capability that downloads music
 
-DroppedNeedle offers no plugin capability that acquires content, and never calls
+SongSeek offers no plugin capability that acquires content, and never calls
 plugin code to acquire. This is deliberate and it will not change. A capability
-that searched a source and fetched its files would mean DroppedNeedle's own
-interface presenting the results and DroppedNeedle's own process performing the
+that searched a source and fetched its files would mean SongSeek's own
+interface presenting the results and SongSeek's own process performing the
 download, which is not something a plugin boundary makes somebody else's problem.
 It would also route audio into your library with no licence attached, past the
 checks the built-in Free Music client applies to everything it downloads.
 
-If you want DroppedNeedle to pull from a source of your own, you do not need a
+If you want SongSeek to pull from a source of your own, you do not need a
 plugin. Use the REST API from your own program: `GET /api/v1/requests` tells you
 what people have asked for, and `POST /api/v1/import/uploads` hands files to the
 same import pipeline everything else uses. Both are authenticated, both exist for
-their own reasons, and DroppedNeedle never calls out to you. Or fork it; the
+their own reasons, and SongSeek never calls out to you. Or fork it; the
 licence says you may.
 
 ### Reserved capability ids
@@ -131,7 +131,7 @@ stay forward-compatible with the api_versions that wire them up.
 
 ## Rules of the house
 
-- You are responsible for what your plugin accesses. DroppedNeedle ships no
+- You are responsible for what your plugin accesses. SongSeek ships no
   sources, endorses no plugins, and maintains none beyond the examples above.
 - Respect the upstream services you talk to: their terms, their rate limits.
 - A plugin that needs credentials should declare them as `secret` settings
@@ -145,7 +145,7 @@ Either way, the plugin lands disabled.
 
 In Settings > Plugins, paste a public repository URL: `https://github.com/owner/repo`,
 or `https://github.com/owner/repo/tree/some-branch` to pin a branch. Without a
-branch, DroppedNeedle tries `main` and falls back to `master`. The repository root
+branch, SongSeek tries `main` and falls back to `master`. The repository root
 must contain `plugin.toml`. This stores code; it does not run it.
 
 ### By hand

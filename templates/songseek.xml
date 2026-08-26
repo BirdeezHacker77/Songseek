@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Container version="2">
-    <Name>droppedneedle</Name>
-    <Repository>droppedneedle/droppedneedle:latest</Repository>
-    <Registry>https://hub.docker.com/r/droppedneedle/droppedneedle</Registry>
+    <Name>songseek</Name>
+    <Repository>birdeezhacker77/songseek:latest</Repository>
+    <Registry>https://hub.docker.com/r/birdeezhacker77/songseek</Registry>
     <Network>bridge</Network>
     <Privileged>false</Privileged>
-    <Support>https://github.com/DroppedNeedle/DroppedNeedle/issues</Support>
-    <Project>https://github.com/DroppedNeedle/DroppedNeedle</Project>
-    <Overview>DroppedNeedle is a self-hosted, multi-user music request and discovery app with a native library engine (scan, tag, fingerprint, organise) and multi-source acquisition from Soulseek (via a slskd instance) and Usenet (via SABnzbd with native Newznab indexers). Search the full MusicBrainz catalogue, request albums and individual tracks, discover new music from your listening history, and scrobble to ListenBrainz and Last.fm. It can also emulate Subsonic- and Jellyfin-compatible server APIs so external client apps can stream your library. No Lidarr required.</Overview>
+    <Support>https://github.com/BirdeezHacker77/Songseek/issues</Support>
+    <Project>https://github.com/BirdeezHacker77/Songseek</Project>
+    <Overview>SongSeek is a self-hosted, multi-user music request and discovery app with a native library engine (scan, tag, fingerprint, organise) and multi-source acquisition from Soulseek (via a slskd instance) and Usenet (via SABnzbd with native Newznab indexers). Search the full MusicBrainz catalogue, request albums and individual tracks, discover new music from your listening history, and scrobble to ListenBrainz and Last.fm. It can also emulate Subsonic- and Jellyfin-compatible server APIs so external client apps can stream your library. No Lidarr required.</Overview>
     <Category>MediaApp:Music MediaServer:Music</Category>
     <WebUI>http://[IP]:[PORT:8688]</WebUI>
-    <TemplateURL>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/templates/droppedneedle.xml</TemplateURL>
-    <Icon>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/logo_icon.png</Icon>
+    <TemplateURL>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/templates/songseek.xml</TemplateURL>
+    <Icon>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/Images/logo_icon.png</Icon>
     <Requires>Runs standalone. To acquire music, connect a slskd (Soulseek) and/or SABnzbd (Usenet) instance in Settings &gt; Download Client. Streaming to external Subsonic/Jellyfin client apps and scrobbling are optional.</Requires>
     <ExtraSearchTerms>music request discovery soulseek slskd usenet sabnzbd newznab subsonic jellyfin navidrome musicbrainz listenbrainz lastfm scrobble</ExtraSearchTerms>
-    <Screenshot>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/Home.webp</Screenshot>
-    <Screenshot>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/Discover.webp</Screenshot>
-    <Screenshot>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/Library.webp</Screenshot>
-    <Screenshot>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/Settings.webp</Screenshot>
-    <Config Name="WebUI Port" Target="8688" Default="8688" Mode="tcp" Description="Port the DroppedNeedle web interface listens on." Type="Port" Display="always" Required="true" Mask="false">8688</Config>
-    <Config Name="Config" Target="/app/config" Default="/mnt/user/appdata/droppedneedle/config" Mode="rw" Description="Persistent application configuration and database." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/droppedneedle/config</Config>
-    <Config Name="Cache" Target="/app/cache" Default="/mnt/user/appdata/droppedneedle/cache" Mode="rw" Description="Cover art and metadata cache." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/droppedneedle/cache</Config>
+    <Screenshot>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/Images/Home.webp</Screenshot>
+    <Screenshot>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/Images/Discover.webp</Screenshot>
+    <Screenshot>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/Images/Library.webp</Screenshot>
+    <Screenshot>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/Images/Settings.webp</Screenshot>
+    <Config Name="WebUI Port" Target="8688" Default="8688" Mode="tcp" Description="Port the SongSeek web interface listens on." Type="Port" Display="always" Required="true" Mask="false">8688</Config>
+    <Config Name="Config" Target="/app/config" Default="/mnt/user/appdata/songseek/config" Mode="rw" Description="Persistent application configuration and database." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/songseek/config</Config>
+    <Config Name="Cache" Target="/app/cache" Default="/mnt/user/appdata/songseek/cache" Mode="rw" Description="Cover art and metadata cache." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/songseek/cache</Config>
     <Config Name="Music Library" Target="/music" Default="/mnt/user/Music" Mode="rw" Description="Your music library root. Imported downloads land here, so it is read-write. Keep it on the same filesystem as the downloads mounts below for fast atomic-rename imports." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/Music</Config>
     <Config Name="slskd Downloads" Target="/slskd-downloads" Default="" Mode="rw" Description="slskd's COMPLETED-downloads directory (its Options &gt; Directories &gt; downloads path, often a .../complete folder). Must be the exact folder, not a parent. Keep it on the same filesystem as /music. Leave empty if you do not use Soulseek." Type="Path" Display="always" Required="false" Mask="false"></Config>
     <Config Name="slskd Downloads Path" Target="SLSKD_DOWNLOADS_PATH" Default="/slskd-downloads" Mode="" Description="Container path where the slskd Downloads mount above appears. Must match that mount's container path (/slskd-downloads); imports fail if it does not. Leave as-is unless you change the mount." Type="Variable" Display="advanced" Required="false" Mask="false">/slskd-downloads</Config>

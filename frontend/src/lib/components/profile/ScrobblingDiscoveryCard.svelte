@@ -351,7 +351,7 @@
 				</div>
 				{#if lfmPendingToken && !lfm}
 					<p class="mt-2 px-1 text-xs text-base-content/60 animate-fade-in-up">
-						Approve DroppedNeedle in the Last.fm window that opened, then choose Finish.
+						Approve SongSeek in the Last.fm window that opened, then choose Finish.
 					</p>
 				{/if}
 				{#if lfmError}
@@ -405,8 +405,8 @@
 						<div>
 							<span class="text-sm font-medium">Let Navidrome handle Last.fm and ListenBrainz</span>
 							<p class="text-xs text-base-content/40">
-								Keep this on while Navidrome sends plays to those accounts. To use DroppedNeedle
-								instead, first disable external scrobbles for the DroppedNeedle player in Navidrome.
+								Keep this on while Navidrome sends plays to those accounts. To use SongSeek
+								instead, first disable external scrobbles for the SongSeek player in Navidrome.
 								Listening history is recorded either way.
 							</p>
 						</div>

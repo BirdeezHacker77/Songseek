@@ -229,7 +229,7 @@
 	const dimmed = $derived(isPlaying && deckFocus.inView && !reducedMotion);
 </script>
 
-<svelte:head><title>Listening Room &middot; DroppedNeedle</title></svelte:head>
+<svelte:head><title>Listening Room &middot; SongSeek</title></svelte:head>
 
 <div
 	class="listening-room relative isolate h-[calc(100dvh-3.5rem)] overflow-y-auto overscroll-contain {reducedMotion

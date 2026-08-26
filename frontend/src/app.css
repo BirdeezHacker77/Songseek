@@ -3147,12 +3147,12 @@ details[open] > summary .management-editor-chevron {
 	.management-audit-inspector {
 		position: sticky;
 		top: calc(
-			var(--droppedneedle-topbar-height, 4rem) + var(--droppedneedle-library-activity-height, 0px) +
+			var(--songseek-topbar-height, 4rem) + var(--songseek-library-activity-height, 0px) +
 				1rem
 		);
 		max-height: calc(
-			100dvh - var(--droppedneedle-topbar-height, 4rem) -
-				var(--droppedneedle-library-activity-height, 0px) - 2rem
+			100dvh - var(--songseek-topbar-height, 4rem) -
+				var(--songseek-library-activity-height, 0px) - 2rem
 		);
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -3163,8 +3163,8 @@ details[open] > summary .management-editor-chevron {
 
 	.management-audit-layout[data-reserve-sticky-footer='true'] .management-audit-inspector {
 		max-height: calc(
-			100dvh - var(--droppedneedle-topbar-height, 4rem) -
-				var(--droppedneedle-library-activity-height, 0px) -
+			100dvh - var(--songseek-topbar-height, 4rem) -
+				var(--songseek-library-activity-height, 0px) -
 				var(--management-sticky-footer-height, 0px) - 2.75rem
 		);
 	}
@@ -3282,7 +3282,7 @@ details[open] > summary .management-editor-chevron {
 
 .library-activity-shell {
 	position: sticky;
-	top: var(--droppedneedle-topbar-height, 4rem);
+	top: var(--songseek-topbar-height, 4rem);
 	z-index: 45;
 	border-block: 1px solid color-mix(in oklab, var(--color-library-index) 24%, transparent);
 	background: linear-gradient(
@@ -3872,7 +3872,7 @@ textarea {
 	touch-action: manipulation;
 }
 
-.droppedneedle-app-shell {
+.songseek-app-shell {
 	position: relative;
 	isolation: isolate;
 	max-width: 100vw;
@@ -3884,7 +3884,7 @@ textarea {
 }
 
 /* ultra-faint global grain so every surface shares the same film stock */
-.droppedneedle-app-shell::after {
+.songseek-app-shell::after {
 	content: '';
 	position: absolute;
 	inset: 0;
@@ -3896,12 +3896,12 @@ textarea {
 	mix-blend-mode: overlay;
 }
 
-.droppedneedle-topbar {
+.songseek-topbar {
 	min-height: calc(4rem + var(--ms-safe-top));
 	padding-top: var(--ms-safe-top);
 }
 
-.droppedneedle-main-content {
+.songseek-main-content {
 	display: flex;
 	flex-direction: column;
 	/* fill at least the viewport below the topbar so a short page's footer still anchors to the bottom */
@@ -3912,39 +3912,39 @@ textarea {
 	padding-bottom: calc(var(--ms-bottom-nav-offset) + var(--ms-page-bottom-gap));
 }
 
-.droppedneedle-main-content > * {
+.songseek-main-content > * {
 	min-width: 0;
 }
 
-.droppedneedle-main-content :where(p, li, code, pre) {
+.songseek-main-content :where(p, li, code, pre) {
 	max-width: 100%;
 	overflow-wrap: anywhere;
 }
 
-.droppedneedle-main-content :where(img, video, canvas, svg) {
+.songseek-main-content :where(img, video, canvas, svg) {
 	max-width: 100%;
 }
 
 /* app headings + modal titles use the display face */
-.droppedneedle-main-content :is(h1, h2),
+.songseek-main-content :is(h1, h2),
 .modal-box :is(h1, h2, h3) {
 	font-family: var(--font-display);
 }
 
 /* structural labels go uppercase; content names keep their case via .hero-title */
-.droppedneedle-main-content :is(h1, h2):not(.hero-title),
+.songseek-main-content :is(h1, h2):not(.hero-title),
 .modal-box :is(h1, h2, h3):not(.hero-title) {
 	text-transform: uppercase;
 	letter-spacing: 0.02em;
 }
 
-.droppedneedle-main-content.droppedneedle-player-visible {
+.songseek-main-content.songseek-player-visible {
 	padding-bottom: calc(
 		var(--ms-bottom-nav-offset) + var(--ms-player-height) + var(--ms-page-bottom-gap)
 	);
 }
 
-.droppedneedle-bottom-nav {
+.songseek-bottom-nav {
 	position: fixed;
 	right: 0;
 	bottom: 0;
@@ -3961,7 +3961,7 @@ textarea {
 	box-shadow: 0 -10px 28px rgb(0 0 0 / 0.34);
 }
 
-.droppedneedle-bottom-nav__item {
+.songseek-bottom-nav__item {
 	position: relative;
 	display: inline-flex;
 	min-width: 0;
@@ -3977,17 +3977,17 @@ textarea {
 	text-align: center;
 }
 
-.droppedneedle-bottom-nav__item svg {
+.songseek-bottom-nav__item svg {
 	width: 1.35rem;
 	height: 1.35rem;
 }
 
-.droppedneedle-bottom-nav__item.active {
+.songseek-bottom-nav__item.active {
 	color: oklch(from var(--color-accent) l c h);
 	background: oklch(from var(--color-accent) l c h / 0.11);
 }
 
-.droppedneedle-bottom-nav__badge {
+.songseek-bottom-nav__badge {
 	position: absolute;
 	top: 0.35rem;
 	right: max(0.6rem, 20%);
@@ -4002,43 +4002,43 @@ textarea {
 	line-height: 1rem;
 }
 
-.droppedneedle-player-bar {
+.songseek-player-bar {
 	bottom: var(--ms-bottom-nav-offset);
 	height: var(--ms-player-height);
 }
 
-.droppedneedle-player-inner {
+.songseek-player-inner {
 	height: 100%;
 }
 
-.droppedneedle-playback-toast {
+.songseek-playback-toast {
 	bottom: calc(var(--ms-bottom-nav-offset) + 0.75rem);
 	width: min(calc(100vw - 1rem), 28rem);
 }
 
-.droppedneedle-playback-toast.droppedneedle-playback-toast--player {
+.songseek-playback-toast.songseek-playback-toast--player {
 	bottom: calc(var(--ms-bottom-nav-offset) + var(--ms-player-height) + 0.75rem);
 }
 
 /* Pops out above the bar so the bar keeps its height. YouTube's Developer Policies demand a
    200x200 viewport and forbid hiding the player, so never collapse or breakpoint-hide this.
    The floor is repeated inline on the element, so it survives this stylesheet changing. */
-.droppedneedle-yt-popout {
+.songseek-yt-popout {
 	bottom: calc(var(--ms-bottom-nav-offset) + var(--ms-player-height) + 0.75rem);
 	width: clamp(200px, calc(100vw - 1.5rem), 356px);
 	height: 200px;
-	animation: droppedneedle-yt-popout-in 200ms ease-out;
+	animation: songseek-yt-popout-in 200ms ease-out;
 }
 
 /* YT.Player replaces the mount div with an iframe carrying its own width/height attributes.
    Force it to fill the compliant box regardless of what those attributes say. */
-.droppedneedle-yt-popout > iframe {
+.songseek-yt-popout > iframe {
 	display: block;
 	width: 100%;
 	height: 100%;
 }
 
-@keyframes droppedneedle-yt-popout-in {
+@keyframes songseek-yt-popout-in {
 	from {
 		opacity: 0;
 		transform: translateY(0.5rem) scale(0.96);
@@ -4055,11 +4055,11 @@ textarea {
 		--ms-player-height: 5.25rem;
 	}
 
-	.droppedneedle-bottom-nav {
+	.songseek-bottom-nav {
 		padding-inline: 0.35rem;
 	}
 
-	.droppedneedle-bottom-nav__item {
+	.songseek-bottom-nav__item {
 		font-size: 0.625rem;
 		min-height: 3.25rem;
 	}
@@ -4072,33 +4072,33 @@ textarea {
 		--ms-player-height: 5.625rem;
 	}
 
-	/* the base `.droppedneedle-bottom-nav` rule is unlayered, so it outranks Tailwind's utilities layer and `md:hidden` can't hide it; hide it here instead */
-	.droppedneedle-bottom-nav {
+	/* the base `.songseek-bottom-nav` rule is unlayered, so it outranks Tailwind's utilities layer and `md:hidden` can't hide it; hide it here instead */
+	.songseek-bottom-nav {
 		display: none;
 	}
 
-	.droppedneedle-topbar {
+	.songseek-topbar {
 		min-height: 4rem;
 		padding-top: 0;
 	}
 
-	.droppedneedle-main-content {
+	.songseek-main-content {
 		padding-bottom: 0;
 	}
 
-	.droppedneedle-main-content.droppedneedle-player-visible {
+	.songseek-main-content.songseek-player-visible {
 		padding-bottom: 6rem;
 	}
 
-	.droppedneedle-player-bar {
+	.songseek-player-bar {
 		bottom: 0;
 	}
 
-	.droppedneedle-playback-toast {
+	.songseek-playback-toast {
 		bottom: 1rem;
 	}
 
-	.droppedneedle-playback-toast.droppedneedle-playback-toast--player {
+	.songseek-playback-toast.songseek-playback-toast--player {
 		bottom: 6.5rem;
 	}
 }
@@ -4301,7 +4301,7 @@ textarea {
 		opacity: 0 !important;
 	}
 	/* pop-out appears without animating; stop the motion, never hide it */
-	.droppedneedle-yt-popout {
+	.songseek-yt-popout {
 		animation: none !important;
 	}
 	.scroll-reveal {

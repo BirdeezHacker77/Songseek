@@ -1,4 +1,4 @@
-"""Guardrail 1: DroppedNeedle ships no source that indexes infringing content.
+"""Guardrail 1: SongSeek ships no source that indexes infringing content.
 
 The user supplies every *acquisition* source the app can reach - their own slskd
 instance, or their own Newznab indexers and their own SABnzbd. No indexer, tracker,
@@ -107,7 +107,7 @@ def test_no_indexer_or_tracker_domain_in_shipped_source():
 
     assert offenders == [], (
         "Guardrail 1 broken: shipped source carries the address of a source the user "
-        "did not configure. DroppedNeedle must ship no indexers, trackers, or sources.\n  "
+        "did not configure. SongSeek must ship no indexers, trackers, or sources.\n  "
         + "\n  ".join(offenders)
     )
 

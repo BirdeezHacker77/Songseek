@@ -259,7 +259,7 @@ async def _require_provider_album_id(
         from core.exceptions import ProviderIdentityRequiredError
 
         raise ProviderIdentityRequiredError(
-            "Use the local library album route for a DroppedNeedle album ID."
+            "Use the local library album route for a SongSeek album ID."
         )
 
 
@@ -272,7 +272,7 @@ async def _require_provider_artist_id(
         from core.exceptions import ProviderIdentityRequiredError
 
         raise ProviderIdentityRequiredError(
-            "Use the local library artist route for a DroppedNeedle artist ID."
+            "Use the local library artist route for a SongSeek artist ID."
         )
 
 
@@ -685,7 +685,7 @@ async def production_target_lifespan(app: FastAPI):
             except Exception:  # noqa: BLE001
                 logger.exception("Legacy pending migration scheduling failed")
         logger.info("target_startup.operational_runtime_started")
-        logger.info("DroppedNeedle target application started")
+        logger.info("SongSeek target application started")
 
     try:
         yield
@@ -705,7 +705,7 @@ def create_production_target_application() -> FastAPI:
     """Build the process that is selected only by the authorized offline replacement."""
 
     app = FastAPI(
-        title="DroppedNeedle",
+        title="SongSeek",
         description="Music request and management system",
         version="1.0.0",
         docs_url="/api/v1/docs",
@@ -771,7 +771,7 @@ def create_production_target_application() -> FastAPI:
 
     @app.get("/health")
     def health_check():
-        return {"status": "ok", "message": "DroppedNeedle backend running"}
+        return {"status": "ok", "message": "SongSeek backend running"}
 
     _include_complete_target_routes(app)
     _install_target_overrides(app)

@@ -1,11 +1,11 @@
-"""FreeMusicService - DroppedNeedle's own lawful download client (D24).
+"""FreeMusicService - SongSeek's own lawful download client (D24).
 
 Requests are served from the Internet Archive, restricted to items carrying an
 explicit Creative Commons or public-domain licence. Downloaded files are handed
 to the drop-import pipeline (01c), which identifies them against MusicBrainz,
 tags, organises, resolves the request, and notifies the requester.
 
-Why this exists: DroppedNeedle's download capability is lawful *because* it has
+Why this exists: SongSeek's download capability is lawful *because* it has
 a demonstrated lawful use. Free Music is that use. A broken Free Music client is
 a P1, not a curiosity. See .dev-notes/Plans/FreeMusic/00-PLAN.md.
 """

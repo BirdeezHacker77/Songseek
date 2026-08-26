@@ -1,7 +1,7 @@
 import type { LibraryManagementActivationProof, LibraryManagementSettings } from './types';
 
-const TOKEN_PREFIX = 'droppedneedle:library-management:preview-token:';
-const ACTIVATION_SESSION_PREFIX = 'droppedneedle:library-management:activation-session:';
+const TOKEN_PREFIX = 'songseek:library-management:preview-token:';
+const ACTIVATION_SESSION_PREFIX = 'songseek:library-management:activation-session:';
 
 export interface LibraryManagementActivationSession {
 	sourceRevision: string;

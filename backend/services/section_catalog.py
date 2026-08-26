@@ -62,7 +62,7 @@ HOME_SECTIONS: tuple[SectionDef, ...] = (
     SectionDef(
         key="recently_played",
         title="Recently Played",
-        description="Your latest plays in DroppedNeedle.",
+        description="Your latest plays in SongSeek.",
         zone="For You",
         fields=("recently_played",),
     ),

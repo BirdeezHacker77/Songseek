@@ -41,7 +41,7 @@ describe('password recovery page', () => {
 		await page.getByText('Recover as server owner').click();
 		await expect.element(page.getByText(/Only someone with host access/)).toBeVisible();
 		await expect
-			.element(page.getByText(/docker compose exec --user droppedneedle droppedneedle/))
+			.element(page.getByText(/docker compose exec --user songseek songseek/))
 			.toBeVisible();
 		await expect.element(page.getByText(/Enter your username above/)).toBeVisible();
 	});

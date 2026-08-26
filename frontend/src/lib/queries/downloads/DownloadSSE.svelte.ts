@@ -83,7 +83,7 @@ function parseSourceUpdate(
 	};
 }
 
-// EventSource authenticates via the droppedneedle_session cookie (no custom headers).
+// EventSource authenticates via the songseek_session cookie (no custom headers).
 // no 'error' handler so keepalive gaps/close don't clobber a terminal state
 export function createDownloadStream() {
 	let state = $state<DownloadStreamState>({

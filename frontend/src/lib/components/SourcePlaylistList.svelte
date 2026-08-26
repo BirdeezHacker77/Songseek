@@ -59,7 +59,7 @@
 			</h2>
 			<p class="mx-auto mt-1 max-w-lg text-sm text-base-content/55">
 				{relinkRequired
-					? `Reconnect your ${sourceLabel} account so DroppedNeedle can load its playlists.`
+					? `Reconnect your ${sourceLabel} account so SongSeek can load its playlists.`
 					: "We couldn't load playlists from this server. Try again in a moment."}
 			</p>
 			<div class="mt-4 flex flex-wrap justify-center gap-2">

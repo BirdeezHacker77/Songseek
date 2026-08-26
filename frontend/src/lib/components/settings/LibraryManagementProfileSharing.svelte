@@ -399,7 +399,7 @@
 							bind:this={fileInput}
 							type="file"
 							aria-label="Profile file"
-							accept=".dnprofile,application/json,application/vnd.droppedneedle.profile+json"
+							accept=".dnprofile,application/json,application/vnd.songseek.profile+json"
 							class="hidden"
 							onchange={(event) => void chooseFile(event)}
 						/>

@@ -557,7 +557,7 @@ def _id3_artwork_descriptions(
     for image in images:
         description = image.description
         if description in used:
-            stem = description or f"DroppedNeedle {image.image_type}"
+            stem = description or f"SongSeek {image.image_type}"
             description = stem
             suffix = 2
             while description in used:

@@ -88,7 +88,7 @@ def _seed(
 
 
 async def run(*, artists: int, albums: int, tracks: int) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="droppedneedle-issue-224-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="songseek-issue-224-") as scratch:
         store = _seed(
             Path(scratch) / "catalog.db",
             artists=artists,

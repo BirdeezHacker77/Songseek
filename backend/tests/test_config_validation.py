@@ -18,7 +18,7 @@ def _make_settings(**overrides) -> Settings:
     """Build a Settings with sensible defaults, applying overrides."""
     defaults = {
         "jellyfin_url": "http://jellyfin:8096",
-        "config_file_path": Path("/tmp/droppedneedle-test-config.json"),
+        "config_file_path": Path("/tmp/songseek-test-config.json"),
     }
     defaults.update(overrides)
     return Settings(**defaults)

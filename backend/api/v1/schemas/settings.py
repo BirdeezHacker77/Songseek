@@ -325,8 +325,8 @@ class WantedWatcherSettings(AppStruct):
 class SabnzbdConnectionSettings(AppStruct):
     """SABnzbd download-client connection (D5). ``api_key`` is the FULL key (the add-only
     nzbkey can't do queue/history/delete); encrypted at rest, masked on read. ``category``
-    defaults to ``*`` (a fresh SABnzbd has no ``droppedneedle`` category). ``downloads_mount``
-    is where DroppedNeedle sees SABnzbd's completed dir (the remap target)."""
+    defaults to ``*`` (a fresh SABnzbd has no ``songseek`` category). ``downloads_mount``
+    is where SongSeek sees SABnzbd's completed dir (the remap target)."""
 
     enabled: bool = False
     client_type: str = "sabnzbd"
@@ -347,7 +347,7 @@ class SabnzbdConnectionSettings(AppStruct):
 class NewznabIndexerSettings(AppStruct):
     """One configured Newznab indexer (D6). ``api_key`` is a Fernet-encrypted
     secret, masked on read and preserved on a masked save - **per array element**.
-    DroppedNeedle ships no indexers; the user adds their own (guardrail 1)."""
+    SongSeek ships no indexers; the user adds their own (guardrail 1)."""
 
     id: str = ""
     type: str = "newznab"
@@ -442,7 +442,7 @@ class PluginConfig(AppStruct):
 
 
 class FreeMusicSettings(AppStruct):
-    """Free Music (D24): DroppedNeedle's own lawful download client. Downloads
+    """Free Music (D24): SongSeek's own lawful download client. Downloads
     Creative Commons and public-domain music from the Internet Archive, filtered
     to items carrying an explicit licence. Enabled by default - it costs nothing,
     needs no signup, and the lawful use it demonstrates is what makes having a
@@ -709,7 +709,7 @@ class ConnectAppsSettings(AppStruct):
     transcoding_enabled: bool = True
     transcode_default_format: Literal["mp3", "opus"] = "mp3"
     transcode_max_bitrate_kbps: int = 320
-    advertise_server_name: str = "DroppedNeedle"
+    advertise_server_name: str = "SongSeek"
     advertise_server_version: str = "10.10.6"
     discover_mode: Literal["local-only", "lazy-mb", "use-scrobble-targets"] = (
         "local-only"

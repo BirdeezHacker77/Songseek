@@ -37,8 +37,8 @@ async def test_attempt_schema_is_idempotent_and_survives_task_deletion(tmp_path:
         task_id=task.id,
         source="usenet",
         candidate_index=0,
-        job_name=f"droppedneedle-{task.id}-0",
-        handle=TaskHandle(source="usenet", job_name=f"droppedneedle-{task.id}-0"),
+        job_name=f"songseek-{task.id}-0",
+        handle=TaskHandle(source="usenet", job_name=f"songseek-{task.id}-0"),
         now=10.0,
     )
 
@@ -85,8 +85,8 @@ async def test_attempt_state_changes_advance_download_activity_revision(tmp_path
         task_id=task.id,
         source="usenet",
         candidate_index=0,
-        job_name=f"droppedneedle-{task.id}-0",
-        handle=TaskHandle(source="usenet", job_name=f"droppedneedle-{task.id}-0"),
+        job_name=f"songseek-{task.id}-0",
+        handle=TaskHandle(source="usenet", job_name=f"songseek-{task.id}-0"),
         now=1.0,
     )
     inserted = await store.get_activity_summary("user-a", "user")
@@ -115,8 +115,8 @@ async def test_attempt_cas_leases_and_retry_ladder_are_deterministic(tmp_path: P
         task_id="a" * 32,
         source="usenet",
         candidate_index=2,
-        job_name=f"droppedneedle-{'a' * 32}-2",
-        handle=TaskHandle(source="usenet", job_name=f"droppedneedle-{'a' * 32}-2"),
+        job_name=f"songseek-{'a' * 32}-2",
+        handle=TaskHandle(source="usenet", job_name=f"songseek-{'a' * 32}-2"),
         now=10.0,
     )
     attempt = await store.schedule_download_attempt_cleanup(
@@ -164,9 +164,9 @@ async def test_finalize_and_cleanup_state_precedence_are_atomic(tmp_path: Path):
                 task_id=task.id,
                 source="usenet",
                 candidate_index=index,
-                job_name=f"droppedneedle-{task.id}-{index}",
+                job_name=f"songseek-{task.id}-{index}",
                 handle=TaskHandle(
-                    source="usenet", job_name=f"droppedneedle-{task.id}-{index}"
+                    source="usenet", job_name=f"songseek-{task.id}-{index}"
                 ),
                 now=float(index + 1),
             )
@@ -281,8 +281,8 @@ async def test_cancellation_attaches_all_publisher_barriers_atomically(tmp_path:
         task_id=task.id,
         source="usenet",
         candidate_index=0,
-        job_name=f"droppedneedle-{task.id}-0",
-        handle=TaskHandle(source="usenet", job_name=f"droppedneedle-{task.id}-0"),
+        job_name=f"songseek-{task.id}-0",
+        handle=TaskHandle(source="usenet", job_name=f"songseek-{task.id}-0"),
         now=1.0,
     )
 

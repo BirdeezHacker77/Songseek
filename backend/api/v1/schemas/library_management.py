@@ -409,7 +409,7 @@ class EnrichmentManagementSettings(AppStruct):
 
 
 class ProfileNotificationSettings(AppStruct):
-    refresh_droppedneedle: bool = True
+    refresh_songseek: bool = True
     refresh_external_servers: bool = False
 
 
@@ -960,7 +960,7 @@ def normalize_library_management_settings(
         if compatibility.constrained_genres_primary_only:
             profile.genres.write_primary_only_for_constrained_formats = True
             compatibility.constrained_genres_primary_only = False
-        profile.notification.refresh_droppedneedle = True
+        profile.notification.refresh_songseek = True
         if len(profile.metadata.format_compatibility.id3v23_join_delimiter) > 8:
             raise ValueError("The ID3v2.3 join delimiter is too long.")
         if (
@@ -1454,7 +1454,7 @@ def build_initial_library_management_settings(
     )
     legacy_script = NamingScriptSettings(
         id=LEGACY_NAMING_SCRIPT_ID,
-        name="Existing DroppedNeedle naming",
+        name="Existing SongSeek naming",
         source=legacy_naming_template or DEFAULT_NAMING_TEMPLATE,
         preset_origin="legacy_naming_template",
         preset_version=1,

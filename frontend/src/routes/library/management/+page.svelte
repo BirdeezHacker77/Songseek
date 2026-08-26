@@ -120,7 +120,7 @@
 	});
 </script>
 
-<svelte:head><title>Library Management · DroppedNeedle</title></svelte:head>
+<svelte:head><title>Library Management · SongSeek</title></svelte:head>
 
 <div class="min-h-[calc(100vh-200px)]">
 	<PageHeader

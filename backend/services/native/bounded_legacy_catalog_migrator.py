@@ -1232,7 +1232,7 @@ class BoundedLegacyCatalogMigrator:
         if kind == "playlist_track":
             local_source = str(row.get("source_type") or "") in {
                 "local",
-                "droppedneedle-local",
+                "songseek-local",
                 "howler",
             }
             file_id = row.get("library_file_id") or (

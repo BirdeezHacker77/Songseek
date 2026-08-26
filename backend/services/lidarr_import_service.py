@@ -1,6 +1,6 @@
 """Read-only Lidarr → follows importer (LidarrImport).
 
-Turns a user's Lidarr *monitored artists* into DroppedNeedle *follows*, keyed 1:1 on the
+Turns a user's Lidarr *monitored artists* into SongSeek *follows*, keyed 1:1 on the
 MusicBrainz artist MBID (Lidarr's ``foreignArtistId`` == ``user_followed_artists.artist_mbid``).
 
 Design guarantees (see .dev-notes/LidarrImport):

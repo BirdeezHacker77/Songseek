@@ -194,7 +194,7 @@ describe('LibraryManagementOperationPage', () => {
 			request: expect.objectContaining({ expected_operation_row_revision: 12 })
 		});
 		expect(
-			sessionStorage.getItem('droppedneedle:library-management:preview-token:undo-preview-1')
+			sessionStorage.getItem('songseek:library-management:preview-token:undo-preview-1')
 		).toBe('undo-token');
 		expect(h.goto).toHaveBeenCalledWith('/library/management/previews/undo-preview-1');
 	});

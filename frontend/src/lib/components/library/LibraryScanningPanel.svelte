@@ -204,7 +204,7 @@
 						<ScanLine class="h-4 w-4" /> Rescan files...
 					</button>
 					<p class="text-base-content/55">
-						Deep re-read of selected folders. Use after fixing files outside DroppedNeedle.
+						Deep re-read of selected folders. Use after fixing files outside SongSeek.
 					</p>
 				</div>
 				<div

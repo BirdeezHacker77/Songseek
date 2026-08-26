@@ -268,7 +268,7 @@
 				<div class="alert alert-warning alert-soft text-sm">
 					<CircleAlert class="h-4 w-4 shrink-0" />
 					<span>
-						<strong>Only enable if you are serving DroppedNeedle over HTTPS.</strong> Enabling HSTS on
+						<strong>Only enable if you are serving SongSeek over HTTPS.</strong> Enabling HSTS on
 						a plain HTTP install will lock users out until the HSTS header expires in their browser.
 					</span>
 				</div>
@@ -453,10 +453,10 @@
 							type="url"
 							bind:value={oidcForm.data.redirect_uri}
 							class="input input-bordered w-full"
-							placeholder="https://droppedneedle.example.com/api/v1/auth/oidc/callback"
+							placeholder="https://songseek.example.com/api/v1/auth/oidc/callback"
 						/>
 						<p class="text-xs text-base-content/50 mt-1.5 ml-1">
-							This must point to the DroppedNeedle <strong>backend API</strong> (it ends in
+							This must point to the SongSeek <strong>backend API</strong> (it ends in
 							<code class="text-xs">/api/v1/auth/oidc/callback</code>), not the web app page.
 							Register this exact URL as a redirect/callback URI with your provider.
 						</p>
@@ -506,7 +506,7 @@
 									{:else if !oidcForm.testResult?.valid && !oidcForm.wasAlreadyEnabled}
 										Test and get a valid connection to enable
 									{:else}
-										Let users sign in to DroppedNeedle with this SSO provider
+										Let users sign in to SongSeek with this SSO provider
 									{/if}
 								</p>
 							</div>

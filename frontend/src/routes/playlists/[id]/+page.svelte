@@ -90,7 +90,7 @@
 
 	// Source-resolution cache is namespaced per user so two accounts on a shared
 	// browser never read each other's resolved sources (AMU-5).
-	const SOURCES_CACHE_PREFIX = 'droppedneedle_playlist_sources_';
+	const SOURCES_CACHE_PREFIX = 'songseek_playlist_sources_';
 	function sourcesCacheKey(playlistId: string): string {
 		return `${SOURCES_CACHE_PREFIX}${authStore.user?.id ?? 'anon'}_${playlistId}`;
 	}
@@ -277,7 +277,7 @@
 </script>
 
 <svelte:head>
-	<title>{playlist?.name ?? 'Playlist'} - DroppedNeedle</title>
+	<title>{playlist?.name ?? 'Playlist'} - SongSeek</title>
 </svelte:head>
 
 <div class="w-full px-2 sm:px-4 lg:px-8 py-4 sm:py-8 max-w-7xl mx-auto">

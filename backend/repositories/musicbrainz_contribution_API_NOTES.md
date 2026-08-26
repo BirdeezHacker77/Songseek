@@ -1,7 +1,7 @@
 # MusicBrainz contribution API notes
 
 Verified against the official production service and documentation on 2026-07-21 with
-DroppedNeedle 2.3.0's descriptive user agent.
+SongSeek 2.3.0's descriptive user agent.
 
 ## URL resolution
 

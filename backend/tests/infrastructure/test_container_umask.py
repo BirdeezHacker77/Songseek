@@ -61,7 +61,7 @@ def test_entrypoint_fails_fast_when_app_is_shadowed(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 1
-    assert "does not contain the DroppedNeedle application code" in result.stdout
+    assert "does not contain the SongSeek application code" in result.stdout
     assert "Mount data subdirectories only" in result.stdout
 
 
@@ -86,11 +86,11 @@ def test_entrypoint_skips_shadow_check_when_app_missing(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "must be three or four octal digits" in result.stdout
-    assert "does not contain the DroppedNeedle application code" not in result.stdout
+    assert "does not contain the SongSeek application code" not in result.stdout
 
 
 def test_unraid_template_uses_the_secure_default() -> None:
-    root = ElementTree.parse(REPOSITORY_ROOT / "templates/droppedneedle.xml").getroot()
+    root = ElementTree.parse(REPOSITORY_ROOT / "templates/songseek.xml").getroot()
     setting = next(
         item for item in root.findall("Config") if item.get("Target") == "UMASK"
     )

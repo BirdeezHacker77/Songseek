@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import droppedneedle_cli
+import songseek_cli
 from core.exceptions import AuthenticationError
 
 
@@ -20,7 +20,7 @@ def test_cli_help_does_not_load_runtime_config(tmp_path):
     environment["ROOT_APP_DIR"] = str(tmp_path)
 
     result = subprocess.run(
-        [sys.executable, "-m", "droppedneedle_cli", "--help"],
+        [sys.executable, "-m", "songseek_cli", "--help"],
         cwd=Path(__file__).parents[2],
         env=environment,
         capture_output=True,
@@ -39,9 +39,9 @@ async def test_cli_prints_recovery_code_without_password_data(monkeypatch, capsy
             return_value=("AAAA-BBBB-CCCC-DDDD-EEEE", "2026-07-17T17:00:00Z")
         )
     )
-    monkeypatch.setattr(droppedneedle_cli, "get_auth_service", lambda: service)
+    monkeypatch.setattr(songseek_cli, "get_auth_service", lambda: service)
 
-    assert await droppedneedle_cli._create_recovery_code("admin") == 0
+    assert await songseek_cli._create_recovery_code("admin") == 0
     output = capsys.readouterr().out
     assert "AAAA-BBBB-CCCC-DDDD-EEEE" in output
     assert "/recover-password" in output
@@ -57,9 +57,9 @@ async def test_cli_reports_accounts_without_local_recovery(monkeypatch, capsys):
             )
         )
     )
-    monkeypatch.setattr(droppedneedle_cli, "get_auth_service", lambda: service)
+    monkeypatch.setattr(songseek_cli, "get_auth_service", lambda: service)
 
-    assert await droppedneedle_cli._create_recovery_code("missing") == 1
+    assert await songseek_cli._create_recovery_code("missing") == 1
     assert "not available" in capsys.readouterr().err
 
 
@@ -72,10 +72,10 @@ def test_cli_hides_unknown_runtime_config_keys(monkeypatch, caplog):
         logger.warning("A useful configuration warning")
         return service
 
-    monkeypatch.setattr(droppedneedle_cli, "get_auth_service", get_service)
+    monkeypatch.setattr(songseek_cli, "get_auth_service", get_service)
 
     with caplog.at_level(logging.WARNING, logger="core.config"):
-        assert droppedneedle_cli._get_auth_service_for_cli() is service
+        assert songseek_cli._get_auth_service_for_cli() is service
 
     messages = [record.getMessage() for record in caplog.records]
     assert "Unknown config key 'plugins', ignoring" not in messages

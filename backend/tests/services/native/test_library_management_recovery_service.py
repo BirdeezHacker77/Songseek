@@ -550,7 +550,7 @@ async def test_recovery_rolls_back_when_configuration_changed(tmp_path: Path) ->
     assert prepared[0].temporary.exists() is False
     assert prepared[0].destination.exists() is False
     assert [journal.state for journal in journals] == ["rolled_back"]
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio

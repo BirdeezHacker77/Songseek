@@ -7,8 +7,8 @@ and never propagates into the host flow that triggered it.
 
 **No capability here acquires content, and the host never calls plugin code to
 acquire** (D22). Do not add one. A capability that searches a source and fetches
-its files is a downloader-shaped socket, whatever it is named: DroppedNeedle's
-own UI would present the results and DroppedNeedle's own process would perform
+its files is a downloader-shaped socket, whatever it is named: SongSeek's
+own UI would present the results and SongSeek's own process would perform
 the fetch, and no plugin boundary launders that. It would also defeat Free
 Music's licence filter, since fetched bytes arrive with no licence attached. A
 third party who wants their own source uses the public REST API (``GET

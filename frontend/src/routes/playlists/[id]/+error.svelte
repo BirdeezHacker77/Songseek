@@ -4,7 +4,7 @@
 </script>
 
 <svelte:head>
-	<title>Playlist Error - DroppedNeedle</title>
+	<title>Playlist Error - SongSeek</title>
 </svelte:head>
 
 <div class="w-full px-2 sm:px-4 lg:px-8 py-4 sm:py-8 max-w-7xl mx-auto">

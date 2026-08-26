@@ -1,18 +1,18 @@
 name: "\u2728 Feature Request"
-description: Suggest an idea for DroppedNeedle
+description: Suggest an idea for SongSeek
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before opening a feature request, please search [existing issues](https://github.com/DroppedNeedle/DroppedNeedle/issues) to check if it's already been suggested.
+        Before opening a feature request, please search [existing issues](https://github.com/BirdeezHacker77/Songseek/issues) to check if it's already been suggested.
 
-        For general discussion, use [Discord](https://discord.gg/B5suDg7gu2).
+        For general discussion, use [Discord](https://github.com/BirdeezHacker77/Songseek/discussions).
   - type: textarea
     id: description
     attributes:
       label: What would you like?
-      description: A clear description of what you want DroppedNeedle to do. If this is related to a problem, describe the problem too.
+      description: A clear description of what you want SongSeek to do. If this is related to a problem, describe the problem too.
     validations:
       required: true
   - type: textarea

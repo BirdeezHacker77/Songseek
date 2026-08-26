@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class = MsgSpecRoute, prefix = "/auth", tags = ["auth"])
 
-_COOKIE_NAME = "droppedneedle_session"
+_COOKIE_NAME = "songseek_session"
 _COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
 
 

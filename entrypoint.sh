@@ -6,8 +6,8 @@ set -e
 # runtime errors against the shadowing mount later. /app is always present in
 # the image, so a missing /app means we are outside the container (e.g. tests
 # or a hand-run shell) and the check is skipped.
-if [ -d /app ] && { [ ! -f /app/main.py ] || [ ! -f /app/.droppedneedle-source-revision ] || [ ! -f /app/maintenance/automatic_upgrade.py ]; }; then
-    echo "[init] FATAL: /app does not contain the DroppedNeedle application code."
+if [ -d /app ] && { [ ! -f /app/main.py ] || [ ! -f /app/.songseek-source-revision ] || [ ! -f /app/maintenance/automatic_upgrade.py ]; }; then
+    echo "[init] FATAL: /app does not contain the SongSeek application code."
     echo "[init]   A bind mount over /app hides the application with your data."
     echo "[init]   Mount data subdirectories only: /app/config, /app/cache, /app/plugins, /app/imports."
     echo "[init]   Remove the /app bind mount and restart."
@@ -30,7 +30,7 @@ case "$PGID" in ''|*[!0-9]*) echo "[init] FATAL: PGID='$PGID' is not a valid num
 check_writable() {
     _dir="$1"
     _identity="$2"
-    _probe="$_dir/.droppedneedle_write_test_$$"
+    _probe="$_dir/.songseek_write_test_$$"
     if [ -n "$_identity" ]; then
         gosu "$_identity" touch "$_probe" 2>/dev/null; _rc=$?
         gosu "$_identity" rm -f "$_probe" 2>/dev/null
@@ -58,20 +58,20 @@ fi
 # Only remap when the baked identity differs from the requested PUID/PGID.
 # usermod/groupmod can stall for minutes on some storage backends, and they
 # block startup before uvicorn execs, so skip them entirely when not needed.
-if [ "$(id -g droppedneedle)" != "$PGID" ]; then
-    if ! groupmod -o -g "$PGID" droppedneedle 2>/dev/null; then
-        echo "[init] WARNING: Could not set droppedneedle group to GID=$PGID."
+if [ "$(id -g songseek)" != "$PGID" ]; then
+    if ! groupmod -o -g "$PGID" songseek 2>/dev/null; then
+        echo "[init] WARNING: Could not set songseek group to GID=$PGID."
     fi
 fi
-if [ "$(id -u droppedneedle)" != "$PUID" ]; then
-    if ! usermod -o -u "$PUID" droppedneedle 2>/dev/null; then
-        echo "[init] WARNING: Could not set droppedneedle user to UID=$PUID."
+if [ "$(id -u songseek)" != "$PUID" ]; then
+    if ! usermod -o -u "$PUID" songseek 2>/dev/null; then
+        echo "[init] WARNING: Could not set songseek user to UID=$PUID."
     fi
 fi
 
-TARGET_UID=$(id -u droppedneedle)
-TARGET_GID=$(id -g droppedneedle)
-echo "[init] Runtime user: droppedneedle (uid=$TARGET_UID gid=$TARGET_GID)"
+TARGET_UID=$(id -u songseek)
+TARGET_GID=$(id -g songseek)
+echo "[init] Runtime user: songseek (uid=$TARGET_UID gid=$TARGET_GID)"
 
 if [ "$TARGET_UID" != "$PUID" ]; then
     echo "[init] WARNING: Requested PUID=$PUID but running as uid=$TARGET_UID (usermod may have failed)."
@@ -87,7 +87,7 @@ for dir in /app/cache /app/config; do
         continue
     fi
 
-    if chown droppedneedle:droppedneedle "$dir" 2>/dev/null; then
+    if chown songseek:songseek "$dir" 2>/dev/null; then
         echo "[init] Adjusted ownership of $dir - verifying write access."
     else
         echo "[init] WARNING: Could not chown $dir (mount may not support ownership changes)."
@@ -101,4 +101,4 @@ for dir in /app/cache /app/config; do
     fi
 done
 
-exec gosu droppedneedle:droppedneedle "$@"
+exec gosu songseek:songseek "$@"

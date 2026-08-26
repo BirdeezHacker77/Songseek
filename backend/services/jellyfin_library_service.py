@@ -583,7 +583,7 @@ class JellyfinLibraryService:
         existing = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
         if existing:
             return JellyfinImportResult(
-                droppedneedle_playlist_id=existing.id,
+                songseek_playlist_id=existing.id,
                 already_imported=True,
             )
 
@@ -595,7 +595,7 @@ class JellyfinLibraryService:
         except Exception:  # noqa: BLE001
             re_check = await playlist_service.get_by_source_ref(source_ref, user_id=requesting.id)
             if re_check:
-                return JellyfinImportResult(droppedneedle_playlist_id=re_check.id, already_imported=True)
+                return JellyfinImportResult(songseek_playlist_id=re_check.id, already_imported=True)
             raise
 
         # Map each distinct Jellyfin album GUID to its MusicBrainz MBID so the
@@ -642,7 +642,7 @@ class JellyfinLibraryService:
                 raise ExternalServiceError(f"Failed to import Jellyfin playlist {playlist_id}")
 
         return JellyfinImportResult(
-            droppedneedle_playlist_id=created.id,
+            songseek_playlist_id=created.id,
             tracks_imported=len(track_dicts),
             tracks_failed=failed,
         )

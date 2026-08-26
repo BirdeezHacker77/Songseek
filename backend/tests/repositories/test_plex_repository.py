@@ -123,7 +123,7 @@ class TestBuildHeaders:
         repo, _, _ = _make_repo()
         headers = repo._build_headers()
         assert headers["X-Plex-Token"] == "test-token"
-        assert headers["X-Plex-Product"] == "DroppedNeedle"
+        assert headers["X-Plex-Product"] == "SongSeek"
         assert headers["X-Plex-Version"] == "1.0"
         assert headers["Accept"] == "application/json"
 

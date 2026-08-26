@@ -84,7 +84,7 @@
 				return 'A planned destination conflicts with a different file. Nothing was overwritten.';
 			case 'ROOT_UNAVAILABLE':
 			case 'ROOT_READ_ONLY':
-				return 'The library destination was unavailable or read-only when DroppedNeedle tried to publish the album.';
+				return 'The library destination was unavailable or read-only when SongSeek tried to publish the album.';
 			case 'INSUFFICIENT_SPACE':
 				return 'There was not enough temporary or destination space to publish this album safely.';
 			case 'OUT_OF_ROOT':

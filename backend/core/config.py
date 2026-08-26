@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     jellyfin_url: str = Field(default="http://jellyfin:8096")
 
     contact_email: str = Field(
-        default="contact@droppedneedle.com",
+        default="",
         description="Contact email for MusicBrainz API User-Agent. Override with your own if desired."
     )
     discover_warmer_enabled: bool = Field(
@@ -158,10 +158,15 @@ class Settings(BaseSettings):
         return self
     
     def get_user_agent(self) -> str:
+        """MusicBrainz requires a UA that identifies this app with reachable contact
+        info. The project URL satisfies that on its own, so an unset contact_email is
+        omitted entirely rather than sent as an empty field or a fake address - MB
+        blocks UAs whose contact does not resolve."""
         version = os.environ.get("COMMIT_TAG", "dev")
         id_part = self.instance_id[:8] if self.instance_id else "unknown"
-        email = (self.contact_email or "").strip() or "contact@droppedneedle.com"
-        return f"DroppedNeedleApp/{version} ({id_part}; {email}; https://www.droppedneedle.com)"
+        email = (self.contact_email or "").strip()
+        contact = f"{id_part}; {email}; " if email else f"{id_part}; "
+        return f"SongSeekApp/{version} ({contact}https://github.com/BirdeezHacker77/Songseek)"
 
     def load_from_file(self) -> None:
         if not self.config_file_path.exists():

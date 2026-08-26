@@ -1,7 +1,7 @@
 from typing import Any
 
 
-class DroppedNeedleException(Exception):
+class SongSeekException(Exception):
     def __init__(self, message: str, details: Any = None):
         self.message = message
         self.details = details
@@ -13,7 +13,7 @@ class DroppedNeedleException(Exception):
         return self.message
 
 
-class ExternalServiceError(DroppedNeedleException):
+class ExternalServiceError(SongSeekException):
     pass
 
 
@@ -28,7 +28,7 @@ class RateLimitedError(ExternalServiceError):
         self.retry_after_seconds = retry_after_seconds
 
 
-class ServiceDisabledUpstreamError(DroppedNeedleException):
+class ServiceDisabledUpstreamError(SongSeekException):
     """A provider has deliberately switched a sub-API off (e.g. ListenBrainz's
     "Popularity API currently disabled due to high load"). Deliberately NOT an
     ExternalServiceError: it must not be retried (deterministic for the outage)
@@ -46,11 +46,11 @@ class InvalidExternalPayloadError(ExternalServiceError):
     callers degrade through their normal paths."""
 
 
-class ResourceNotFoundError(DroppedNeedleException):
+class ResourceNotFoundError(SongSeekException):
     pass
 
 
-class ValidationError(DroppedNeedleException):
+class ValidationError(SongSeekException):
     pass
 
 
@@ -119,13 +119,13 @@ class RangeNotSatisfiableError(ValidationError):
         self.file_size = file_size
 
 
-class PermissionDeniedError(DroppedNeedleException):
+class PermissionDeniedError(SongSeekException):
     """Ownership/authorization violation. Mapped to HTTP 403 by the registered handler."""
 
     pass
 
 
-class ConflictError(DroppedNeedleException):
+class ConflictError(SongSeekException):
     """Duplicate active request/download. Mapped to HTTP 409 by the registered handler."""
 
     pass
@@ -155,7 +155,7 @@ class SourceResolutionError(ValidationError):
     pass
 
 
-class ConfigurationError(DroppedNeedleException):
+class ConfigurationError(SongSeekException):
     pass
 
 
@@ -169,7 +169,7 @@ class LibraryManagementPolicyChangedError(StaleRevisionError):
     pass
 
 
-class AutomaticManagementHoldError(DroppedNeedleException):
+class AutomaticManagementHoldError(SongSeekException):
     """A verified import unit must remain intact until management can be retried."""
 
     def __init__(self, reason_code: str, message: str) -> None:
@@ -197,7 +197,7 @@ class ContributionResultMismatchError(ConflictError):
     error_code = "CONTRIBUTION_RESULT_MISMATCH"
 
 
-class ContributionDataError(DroppedNeedleException):
+class ContributionDataError(SongSeekException):
     """A persisted contribution document cannot be decoded safely."""
 
     pass
@@ -209,11 +209,11 @@ class DiscogsApiError(ExternalServiceError):
     pass
 
 
-class RevisionOverflowError(DroppedNeedleException):
+class RevisionOverflowError(SongSeekException):
     pass
 
 
-class TargetStartupInvariantError(DroppedNeedleException):
+class TargetStartupInvariantError(SongSeekException):
     pass
 
 
@@ -375,19 +375,19 @@ class GeocodingApiError(ExternalServiceError):
     pass
 
 
-class ClientDisconnectedError(DroppedNeedleException):
+class ClientDisconnectedError(SongSeekException):
     pass
 
 
-class AuthenticationError(DroppedNeedleException):
+class AuthenticationError(SongSeekException):
     pass
 
 
-class RegistrationError(DroppedNeedleException):
+class RegistrationError(SongSeekException):
     pass
 
 
-class SubsonicError(DroppedNeedleException):
+class SubsonicError(SongSeekException):
     """Inbound OpenSubsonic failure -> rendered as a status=failed envelope.
 
     Distinct from the outbound ``NavidromeSubsonicError`` (us-as-client): this is
@@ -401,7 +401,7 @@ class SubsonicError(DroppedNeedleException):
         self.code = code
 
 
-class JellyfinError(DroppedNeedleException):
+class JellyfinError(SongSeekException):
     """Inbound Jellyfin failure -> rendered as a real HTTP status code.
 
     Distinct from the outbound Jellyfin client errors: this is us-as-server

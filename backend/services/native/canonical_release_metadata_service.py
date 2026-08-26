@@ -911,7 +911,7 @@ class CanonicalReleaseMetadataService:
         snapshot = await self._store.put_management_metadata_snapshot(
             LibraryManagementMetadataSnapshot(
                 id=snapshot_id,
-                provider="droppedneedle" if custom else "musicbrainz",
+                provider="songseek" if custom else "musicbrainz",
                 entity_kind="custom_edition" if custom else "release",
                 entity_id=(
                     document.custom_manifest_id
@@ -925,7 +925,7 @@ class CanonicalReleaseMetadataService:
                 fetched_at=now,
                 expires_at=None if custom else now + 3600,
                 provider_version_notes=(
-                    "Immutable DroppedNeedle Custom edition manifest"
+                    "Immutable SongSeek Custom edition manifest"
                     if custom
                     else _PROVIDER_NOTES
                 ),

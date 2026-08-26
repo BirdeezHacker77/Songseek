@@ -27,9 +27,9 @@ from api.v1.schemas.library_management_sharing import (
 )
 from core.exceptions import ValidationError
 
-PROFILE_BUNDLE_FORMAT = "droppedneedle-library-profile"
+PROFILE_BUNDLE_FORMAT = "songseek-library-profile"
 PROFILE_BUNDLE_VERSION = 1
-PROFILE_BUNDLE_MIME_TYPE = "application/vnd.droppedneedle.profile+json"
+PROFILE_BUNDLE_MIME_TYPE = "application/vnd.songseek.profile+json"
 PROFILE_SHARE_CODE_PREFIX = "DNLP1:"
 MAX_PROFILE_BUNDLE_BYTES = 1_048_576
 MAX_PROFILE_SHARE_CODE_CHARS = 1_500_000
@@ -37,7 +37,7 @@ _PREVIEW_NAMESPACE = uuid.UUID("54f7ffdf-3c94-58d4-8c08-7a21304ea02d")
 _IDENTITY_FIELDS = {"id", "preset_origin", "preset_version", "revision"}
 _COMPATIBILITY_ONLY_FIELDS = {
     ("metadata", "format_compatibility", "constrained_genres_primary_only"),
-    ("notification", "refresh_droppedneedle"),
+    ("notification", "refresh_songseek"),
 }
 
 
@@ -125,7 +125,7 @@ def _portable_profile(
     compatibility = metadata["format_compatibility"]
     assert isinstance(compatibility, dict)
     compatibility.pop("constrained_genres_primary_only", None)
-    notification.pop("refresh_droppedneedle", None)
+    notification.pop("refresh_songseek", None)
     metadata["tagging_script_ids"] = [
         tagging_keys[value] for value in profile.metadata.tagging_script_ids
     ]
@@ -334,7 +334,7 @@ def parse_profile_bundle(content: str) -> ParsedProfileBundle:
         ) from exc
     if document.format != PROFILE_BUNDLE_FORMAT:
         raise ValidationError(
-            "This file is not a DroppedNeedle Library Management profile."
+            "This file is not a SongSeek Library Management profile."
         )
     if document.version != PROFILE_BUNDLE_VERSION:
         raise ValidationError(

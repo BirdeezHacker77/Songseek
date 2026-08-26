@@ -33,7 +33,7 @@ from api.compat.subsonic.parameters import (
 )
 from api.compat.subsonic.serialization import render, render_error
 from core.exceptions import (
-    DroppedNeedleException,
+    SongSeekException,
     RangeNotSatisfiableError,
     SubsonicError,
 )
@@ -254,7 +254,7 @@ async def _dispatch(
         )
         return await handler(ctx)
     except Exception as exc:  # noqa: BLE001 - boundary: nothing reaches global handlers
-        if not isinstance(exc, DroppedNeedleException):
+        if not isinstance(exc, SongSeekException):
             logger.exception("Unhandled error in Subsonic endpoint %s", name)
         code = to_subsonic_code(exc)
         message = to_subsonic_message(exc, code)

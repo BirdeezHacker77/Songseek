@@ -36,10 +36,10 @@ Curated genre entries carry `genre_mbid`; ordinary folksonomy entries may omit i
   `Allow: GET, HEAD, OPTIONS`. The recording metadata endpoint's POST support must
   not be generalized to release groups.
 - Live responses exposed `X-RateLimit-Limit: 30` and related remaining/reset headers.
-  This does not authorize raising DroppedNeedle's existing verified 5/s limiter.
+  This does not authorize raising SongSeek's existing verified 5/s limiter.
 
 The current server route accepts comma-separated GET IDs but does not apply its
-generic `MAX_ITEMS_PER_GET` guard to this endpoint. DroppedNeedle therefore uses an
+generic `MAX_ITEMS_PER_GET` guard to this endpoint. SongSeek therefore uses an
 explicit 25-ID batch ceiling to bound URL and response sizes. This is a local safety
 bound, not an upstream claim. `Retry-After` and `X-RateLimit-*` remain response hints.
 

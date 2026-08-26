@@ -1,4 +1,4 @@
-"""Download manifest - DroppedNeedle-side crash-recovery + correlation state (Phase 7).
+"""Download manifest - SongSeek-side crash-recovery + correlation state (Phase 7).
 
 slskd has no batch id and no per-request ``externalId`` (C2): a task is tied to
 its slskd transfers only by ``source_username`` plus the exact set of filenames it

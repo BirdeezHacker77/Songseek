@@ -28,7 +28,7 @@ from repositories.protocols.download_client import (
 
 logger = logging.getLogger(__name__)
 
-_JOB_NAME = re.compile(r"^droppedneedle-([0-9a-f]{32})-(0|[1-9][0-9]*)$")
+_JOB_NAME = re.compile(r"^songseek-([0-9a-f]{32})-(0|[1-9][0-9]*)$")
 _TERMINAL_CLEANABLE = frozenset({"completed", "partial", "cancelled"})
 _ACTIVE_TASK_STATES = frozenset({"queued", "downloading", "processing"})
 _HEALTH_SERVICE = "acquisition_cleanup"
@@ -1003,7 +1003,7 @@ def _descend_allowed(name: str, category: str) -> bool:
     """Descend only into DN-owned trees: the job prefix, plus the configured SAB
     category dir (case-insensitive) when it isn't ``*``. Sonarr/Radarr/Whisparr
     trees sharing the mount are never visited."""
-    if name.startswith("droppedneedle"):
+    if name.startswith("songseek"):
         return True
     return category != "*" and name.lower() == category.lower()
 

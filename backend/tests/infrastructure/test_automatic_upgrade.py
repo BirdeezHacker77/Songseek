@@ -440,7 +440,7 @@ def test_real_upgrade_remaps_absent_legacy_paths_to_configured_root(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
-    historical_music = Path("/legacy-droppedneedle-test") / tmp_path.name / "Music"
+    historical_music = Path("/legacy-songseek-test") / tmp_path.name / "Music"
     current_music = tmp_path / "Current" / "Music"
     compilation = current_music / "Compilation"
     compilation.mkdir(parents=True)
@@ -490,7 +490,7 @@ def test_real_upgrade_retargets_root_to_present_legacy_location(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
-    historical_base = Path.home() / f".droppedneedle-upgrade-test-{tmp_path.name}"
+    historical_base = Path.home() / f".songseek-upgrade-test-{tmp_path.name}"
     historical_music = historical_base / "Music"
     configured_music = tmp_path / "Configured" / "Music"
     compilation = historical_music / "Compilation"
@@ -542,7 +542,7 @@ def test_real_upgrade_records_sanitized_pending_path_reconciliation(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "app"
-    historical_music = Path("/legacy-droppedneedle-test") / tmp_path.name / "Music"
+    historical_music = Path("/legacy-songseek-test") / tmp_path.name / "Music"
     configured_music = tmp_path / "Current" / "Music"
     configured_music.mkdir(parents=True)
     database = root / "cache" / "library.db"
@@ -1583,7 +1583,7 @@ def test_baked_source_revision_overrides_static_compose_tag(
     revision = tmp_path / "revision"
     revision.write_text("backend-build-one\n", encoding="utf-8")
     monkeypatch.setattr(automatic_upgrade, "_SOURCE_REVISION_PATH", revision)
-    monkeypatch.setenv("DROPPEDNEEDLE_SOURCE_REVISION", "unknown")
+    monkeypatch.setenv("SONGSEEK_SOURCE_REVISION", "unknown")
     monkeypatch.setenv("COMMIT_TAG", "hosting-local")
 
     assert automatic_upgrade._image_version() == "backend-build-one"

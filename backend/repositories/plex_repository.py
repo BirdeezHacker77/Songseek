@@ -124,7 +124,7 @@ class PlexRepository:
     def _build_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
             "X-Plex-Token": self._token,
-            "X-Plex-Product": "DroppedNeedle",
+            "X-Plex-Product": "SongSeek",
             "X-Plex-Version": "1.0",
             "Accept": "application/json",
         }
@@ -851,7 +851,7 @@ class PlexRepository:
             response = await client.post(
                 f"{_PLEX_TV_BASE}/pins",
                 headers={
-                    "X-Plex-Product": "DroppedNeedle",
+                    "X-Plex-Product": "SongSeek",
                     "X-Plex-Client-Identifier": client_id,
                     "Accept": "application/json",
                 },
@@ -891,7 +891,7 @@ class PlexRepository:
         # the configured server token). Used by the login flow.
         headers = {
             "X-Plex-Token": auth_token,
-            "X-Plex-Product": "DroppedNeedle",
+            "X-Plex-Product": "SongSeek",
             "X-Plex-Client-Identifier": client_id,
             "Accept": "application/json",
         }

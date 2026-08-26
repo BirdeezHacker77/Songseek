@@ -43,10 +43,10 @@ async def test_add_file_id_entry_populates_snapshot_and_link(
     )
     assert entry.library_file_id == ids["tracks"][0]
     assert entry.track_source_id == ids["tracks"][0]
-    assert entry.source_type == "droppedneedle-local"
+    assert entry.source_type == "songseek-local"
     assert entry.track_name == "Airbag"
     assert entry.album_id == ids["rg"]
-    assert entry.available_sources == ["droppedneedle-local"]
+    assert entry.available_sources == ["songseek-local"]
 
 
 async def test_entry_persists_and_reads_back_with_link(playlist_service, seeded_library):

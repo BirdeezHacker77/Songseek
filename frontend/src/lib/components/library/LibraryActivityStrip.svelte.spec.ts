@@ -192,7 +192,7 @@ describe('LibraryActivityStrip', () => {
 		});
 		renderStrip([failed], { now: 10_000 });
 		await page.getByRole('button', { name: 'Dismiss library failure' }).click();
-		expect(localStorage.getItem('droppedneedle:library-failure:user-1:failure-1')).toBe('1');
+		expect(localStorage.getItem('songseek:library-failure:user-1:failure-1')).toBe('1');
 		await expect.element(page.getByTestId('library-activity-strip')).not.toBeInTheDocument();
 
 		renderStrip(

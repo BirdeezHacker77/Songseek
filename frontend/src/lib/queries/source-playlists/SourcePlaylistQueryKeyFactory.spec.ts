@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { SourcePlaylistQueryKeyFactory } from './SourcePlaylistQueryKeyFactory';
 
 describe('SourcePlaylistQueryKeyFactory', () => {
-	it('separates persisted playlist data by DroppedNeedle user', () => {
+	it('separates persisted playlist data by SongSeek user', () => {
 		expect(SourcePlaylistQueryKeyFactory.list('alice', 'jellyfin', 200)).not.toEqual(
 			SourcePlaylistQueryKeyFactory.list('bob', 'jellyfin', 200)
 		);

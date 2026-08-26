@@ -17,7 +17,7 @@ def test_envelope_fields_present_both_formats():
     j = _json(render(None, None, fmt="json"))
     assert j["status"] == "ok"
     assert j["version"] == "1.16.1"
-    assert j["type"] == "DroppedNeedle"
+    assert j["type"] == "SongSeek"
     assert "serverVersion" in j
     assert j["openSubsonic"] is True
 
@@ -26,7 +26,7 @@ def test_envelope_fields_present_both_formats():
     assert root.tag == f"{_NS}subsonic-response"
     assert root.attrib["status"] == "ok"
     assert root.attrib["version"] == "1.16.1"
-    assert root.attrib["type"] == "DroppedNeedle"
+    assert root.attrib["type"] == "SongSeek"
     assert root.attrib["openSubsonic"] == "true"
 
 

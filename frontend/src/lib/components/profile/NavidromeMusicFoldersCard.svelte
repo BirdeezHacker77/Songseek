@@ -64,7 +64,7 @@
 		<div>
 			<h2 id="navidrome-music-folders-heading" class="text-sm font-semibold">Music folders</h2>
 			<p class="mt-0.5 text-xs text-base-content/50">
-				Choose which Navidrome folders appear in your DroppedNeedle catalog.
+				Choose which Navidrome folders appear in your SongSeek catalog.
 			</p>
 		</div>
 	</div>

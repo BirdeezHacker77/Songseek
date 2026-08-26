@@ -1,4 +1,4 @@
-"""Explicit read adapters for every audio extension admitted by DroppedNeedle."""
+"""Explicit read adapters for every audio extension admitted by SongSeek."""
 
 import base64
 import binascii

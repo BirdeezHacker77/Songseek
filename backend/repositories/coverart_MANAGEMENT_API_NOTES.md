@@ -11,7 +11,7 @@ Live-probed on 2026-07-21 against `coverartarchive.org`.
 - Observed image types included `Front`, `Back`, `Spine`, and `Booklet`; one image had
   multiple types (`Back`, `Spine`). Original files may be PNG and must not be assumed
   to be JPEG.
-- Response image URLs were observed with an `http` scheme. DroppedNeedle upgrades
+- Response image URLs were observed with an `http` scheme. SongSeek upgrades
   only validated `coverartarchive.org` URLs to HTTPS and rejects every other host.
 - A missing entity returns 404. Other non-success responses are provider failures,
   not authoritative empty artwork.

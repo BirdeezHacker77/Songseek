@@ -144,7 +144,7 @@ def _seed(database: Path, *, tracks: int, reviews: int) -> NativeLibraryStore:
 
 async def run(*, tracks: int, reviews: int) -> dict[str, object]:
     with tempfile.TemporaryDirectory(
-        prefix="droppedneedle-library-actions-"
+        prefix="songseek-library-actions-"
     ) as scratch:
         store = _seed(Path(scratch) / "hunter.db", tracks=tracks, reviews=reviews)
         gate = BackgroundWorkloadGate()

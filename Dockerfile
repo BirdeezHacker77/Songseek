@@ -25,16 +25,16 @@ FROM python:3.13.5-slim
 
 ARG COMMIT_TAG
 ARG BUILD_DATE
-ARG DROPPEDNEEDLE_SOURCE_REVISION=unknown
+ARG SONGSEEK_SOURCE_REVISION=unknown
 
-LABEL org.opencontainers.image.title="DroppedNeedle" \
+LABEL org.opencontainers.image.title="SongSeek" \
       org.opencontainers.image.description="Music request and discovery app with a built-in native library + download engine" \
-      org.opencontainers.image.url="https://github.com/DroppedNeedle/DroppedNeedle" \
-      org.opencontainers.image.source="https://github.com/DroppedNeedle/DroppedNeedle" \
+      org.opencontainers.image.url="https://github.com/BirdeezHacker77/Songseek" \
+      org.opencontainers.image.source="https://github.com/BirdeezHacker77/Songseek" \
       org.opencontainers.image.version="${COMMIT_TAG}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.licenses="AGPL-3.0" \
-      org.droppedneedle.source-revision="${DROPPEDNEEDLE_SOURCE_REVISION}"
+      org.songseek.source-revision="${SONGSEEK_SOURCE_REVISION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -42,7 +42,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8688 \
     COMMIT_TAG=${COMMIT_TAG} \
     BUILD_DATE=${BUILD_DATE} \
-    DROPPEDNEEDLE_SOURCE_REVISION=${DROPPEDNEEDLE_SOURCE_REVISION}
+    SONGSEEK_SOURCE_REVISION=${SONGSEEK_SOURCE_REVISION}
 
 WORKDIR /app
 
@@ -57,8 +57,8 @@ COPY --from=python-deps /install /usr/local
 
 # Bake the user at the entrypoint's default PUID/PGID (1000) so the common
 # deployment needs no runtime usermod/groupmod remap (which can stall startup).
-RUN groupadd -r -g 1000 droppedneedle \
-    && useradd -r -u 1000 -g droppedneedle -d /app -s /sbin/nologin droppedneedle
+RUN groupadd -r -g 1000 songseek \
+    && useradd -r -u 1000 -g songseek -d /app -s /sbin/nologin songseek
 
 COPY backend/ .
 COPY --from=frontend-build /app/frontend/build ./static
@@ -68,11 +68,11 @@ RUN find /app -type f -print0 \
       | sort -z \
       | xargs -0 sha256sum \
       | sha256sum \
-      | cut -d' ' -f1 > /app/.droppedneedle-source-revision \
-    && test -s /app/.droppedneedle-source-revision
+      | cut -d' ' -f1 > /app/.songseek-source-revision \
+    && test -s /app/.songseek-source-revision
 
 RUN mkdir -p /app/cache /app/config \
-    && chown -R droppedneedle:droppedneedle /app \
+    && chown -R songseek:songseek /app \
     && chmod +x /entrypoint.sh
 
 EXPOSE ${PORT}

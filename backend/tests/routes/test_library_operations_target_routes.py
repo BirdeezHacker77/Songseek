@@ -83,7 +83,7 @@ def services() -> dict[str, AsyncMock]:
         )
     )
     diagnostics = AsyncMock()
-    diagnostics.export.return_value = ("droppedneedle-library-run-safe.json", b"{}")
+    diagnostics.export.return_value = ("songseek-library-run-safe.json", b"{}")
     reidentification = AsyncMock()
     reidentification.create_or_coalesce.return_value = {
         "id": "job-1",
@@ -156,7 +156,7 @@ def test_review_and_diagnostic_contracts(
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.headers["content-disposition"] == (
-        'attachment; filename="droppedneedle-library-run-safe.json"'
+        'attachment; filename="songseek-library-run-safe.json"'
     )
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "no-store"

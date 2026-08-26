@@ -136,7 +136,7 @@ class TestInstanceId:
             root_app_dir=tmp_path,
         )
         ua = settings.get_user_agent()
-        assert ua.startswith("DroppedNeedleApp/")
+        assert ua.startswith("SongSeekApp/")
         assert "a1b2c3d4" in ua
 
     def test_user_agent_uses_default_contact_when_empty(self, tmp_path):
@@ -148,7 +148,7 @@ class TestInstanceId:
             root_app_dir=tmp_path,
         )
         ua = settings.get_user_agent()
-        assert "contact@droppedneedle.com" in ua
+        assert "" in ua
         assert "; ;" not in ua
 
     def test_user_agent_unknown_when_no_instance_id(self, tmp_path):

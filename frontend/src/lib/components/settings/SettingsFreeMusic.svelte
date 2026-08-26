@@ -30,7 +30,7 @@
 			<h2 class="card-title">Free Music</h2>
 		</div>
 		<p class="text-sm text-base-content/60">
-			Request an album and DroppedNeedle downloads it from the
+			Request an album and SongSeek downloads it from the
 			<a
 				href="https://archive.org"
 				target="_blank"

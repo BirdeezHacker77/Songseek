@@ -23,7 +23,7 @@ def _prior_application() -> dict[str, object]:
     return {
         "container_id": "container-before-cutover",
         "image_id": "sha256:" + "a" * 64,
-        "rollback_image_reference": "droppedneedle:feedback-fixes-rollback-aabbccdd",
+        "rollback_image_reference": "songseek:feedback-fixes-rollback-aabbccdd",
         "entrypoint": ["tini", "--", "/entrypoint.sh"],
         "command": ["sh", "-c", "exec uvicorn main:app --workers 1"],
         "launch_command": [
@@ -32,7 +32,7 @@ def _prior_application() -> dict[str, object]:
             "up",
             "-d",
             "--no-build",
-            "droppedneedle",
+            "songseek",
         ],
         "compose_config_sha256": "b" * 64,
     }

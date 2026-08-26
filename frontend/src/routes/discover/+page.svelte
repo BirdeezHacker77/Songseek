@@ -190,7 +190,7 @@
 </script>
 
 <svelte:head>
-	<title>Discover - DroppedNeedle</title>
+	<title>Discover - SongSeek</title>
 </svelte:head>
 
 <div class="min-h-[calc(100vh-200px)]">

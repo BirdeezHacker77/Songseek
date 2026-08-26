@@ -99,7 +99,7 @@
 </script>
 
 <svelte:head>
-	<title>{genreName ? `${genreName}` : 'Genre'} - DroppedNeedle</title>
+	<title>{genreName ? `${genreName}` : 'Genre'} - SongSeek</title>
 </svelte:head>
 
 <div class="min-h-screen bg-base-100 relative overflow-hidden">

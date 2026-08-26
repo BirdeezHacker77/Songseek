@@ -215,7 +215,7 @@ class PlaylistRepository:
                 UPDATE playlist_tracks
                 SET library_file_id = track_source_id
                 WHERE library_file_id IS NULL
-                  AND source_type IN ('local', 'droppedneedle-local', 'howler')
+                  AND source_type IN ('local', 'songseek-local', 'howler')
                   AND track_source_id IS NOT NULL
                   AND track_source_id != ''
             """)

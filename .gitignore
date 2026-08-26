@@ -42,6 +42,7 @@ config/config.json
 .DS_Store
 .idea/
 .vscode/
+.claude/settings.local.json
 *.swp
 Thumbs.db
 ehthumbs.db

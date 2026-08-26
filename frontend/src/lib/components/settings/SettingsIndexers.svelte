@@ -180,7 +180,7 @@
 	<header class="space-y-1">
 		<h2 class="text-lg font-semibold">Indexers</h2>
 		<p class="max-w-prose text-sm text-base-content/70">
-			Newznab search sources for Usenet. DroppedNeedle ships none - add your own. A Prowlarr
+			Newznab search sources for Usenet. SongSeek ships none - add your own. A Prowlarr
 			"Generic Newznab" endpoint works here too. Higher in the list is searched first.
 		</p>
 	</header>
@@ -194,7 +194,7 @@
 			</div>
 			<p class="mt-4 font-semibold">No indexers yet</p>
 			<p class="mx-auto mt-1 max-w-md text-sm text-base-content/70">
-				Add a Newznab indexer (its URL + your API key) to search Usenet. DroppedNeedle bundles none
+				Add a Newznab indexer (its URL + your API key) to search Usenet. SongSeek bundles none
 				- bring your own. A Prowlarr "Generic Newznab" endpoint works here too.
 			</p>
 			<button type="button" class="btn btn-primary btn-sm mt-5" onclick={startAdd}>

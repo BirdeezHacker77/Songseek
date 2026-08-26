@@ -121,7 +121,7 @@
 		Connect Apps
 	</h2>
 
-	<!-- decorative motif: apps converging into DroppedNeedle -->
+	<!-- decorative motif: apps converging into SongSeek -->
 	<div class="cx-motif mb-5" aria-hidden="true">
 		{#each CLIENT_NODES as node, i (node)}
 			<span class="cx-node" style="--i: {i}">{node}</span>

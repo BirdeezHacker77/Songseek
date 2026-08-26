@@ -535,7 +535,7 @@ class LibraryContributionService:
             or parsed_base.username is not None
             or parsed_base.password is not None
         ):
-            raise ValidationError("The public DroppedNeedle URL is not valid.")
+            raise ValidationError("The public SongSeek URL is not valid.")
         current = await self.get(contribution_id)
         if current.row_revision != expected_row_revision:
             raise ContributionStateError(
@@ -1415,8 +1415,8 @@ class LibraryContributionService:
                 )
             )
         edit_note = (
-            "Seeded with DroppedNeedle "
-            "(https://github.com/DroppedNeedle/DroppedNeedle).\nSources:\n"
+            "Seeded with SongSeek "
+            "(https://github.com/BirdeezHacker77/Songseek).\nSources:\n"
             "* Local audio-file metadata"
         )
         if discogs_release is not None:

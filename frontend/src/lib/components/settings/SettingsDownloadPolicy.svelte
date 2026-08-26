@@ -118,7 +118,7 @@
 				<span class="label-text">Allow automatic upgrades</span>
 			</label>
 			<p class="text-xs text-base-content/60">
-				When on, DroppedNeedle looks for better-quality copies of anything below your cutoff.
+				When on, SongSeek looks for better-quality copies of anything below your cutoff.
 			</p>
 			<label class="label cursor-pointer justify-start gap-3 p-0">
 				<input

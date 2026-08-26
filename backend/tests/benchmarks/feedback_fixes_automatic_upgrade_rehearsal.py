@@ -55,15 +55,15 @@ def _compose_text(
     runtime_pgid = os.getgid() if pgid is None else pgid
     mount_mode = ":ro" if read_only else ""
     return f"""services:
-  droppedneedle:
-    image: ${{DROPPEDNEEDLE_IMAGE:-{image}}}
+  songseek:
+    image: ${{SONGSEEK_IMAGE:-{image}}}
     build:
       context: {_REPOSITORY_ROOT}
       dockerfile: Dockerfile
       args:
         COMMIT_TAG: automatic-upgrade-rehearsal
         BUILD_DATE: ''
-        DROPPEDNEEDLE_SOURCE_REVISION: unknown
+        SONGSEEK_SOURCE_REVISION: unknown
     container_name: {container}
 {runtime_user}{root_filesystem}    environment:
       PUID: '{runtime_puid}'
@@ -84,8 +84,8 @@ def _named_volume_compose_text(
     *, image: str, container: str, prefix: str, port: int, scratch: Path
 ) -> str:
     return f"""services:
-  droppedneedle:
-    image: ${{DROPPEDNEEDLE_IMAGE:-{image}}}
+  songseek:
+    image: ${{SONGSEEK_IMAGE:-{image}}}
     container_name: {container}
     environment:
       PUID: '1000'
@@ -170,7 +170,7 @@ def _wait_for_log(
     deadline = time.monotonic() + timeout_seconds
     logs = ""
     while time.monotonic() < deadline:
-        logs = _run([*compose_command, "logs", "--no-color", "droppedneedle"])
+        logs = _run([*compose_command, "logs", "--no-color", "songseek"])
         if message in logs:
             return logs
         time.sleep(0.1)
@@ -369,7 +369,7 @@ def run(output: Path) -> dict[str, Any]:
     source_identity = capture_source_identity(_REPOSITORY_ROOT)
     production_before = _docker_object(_PRODUCTION_CONTAINER)
     allow_unhealthy_production = (
-        os.getenv("DROPPEDNEEDLE_REHEARSAL_ALLOW_UNHEALTHY_PRODUCTION", "").strip()
+        os.getenv("SONGSEEK_REHEARSAL_ALLOW_UNHEALTHY_PRODUCTION", "").strip()
         == "1"
     )
     production_was_healthy = bool(
@@ -382,7 +382,7 @@ def run(output: Path) -> dict[str, Any]:
     production_image = str(production_before["Image"])
     run_id = uuid.uuid4().hex[:10]
     configured_source_image = os.getenv(
-        "DROPPEDNEEDLE_REHEARSAL_SOURCE_IMAGE", ""
+        "SONGSEEK_REHEARSAL_SOURCE_IMAGE", ""
     ).strip()
     derived_source_reference: str | None = None
     if configured_source_image:
@@ -390,12 +390,12 @@ def run(output: Path) -> dict[str, Any]:
         _docker_object(source_image)
     else:
         source_image = ""
-    image = f"droppedneedle-automatic-upgrade-{run_id}:target"
+    image = f"songseek-automatic-upgrade-{run_id}:target"
     projects: list[tuple[list[str], str]] = []
     remapped_paths: list[Path] = []
     named_volumes: set[str] = set()
     target_environment = os.environ.copy()
-    target_environment.pop("DROPPEDNEEDLE_IMAGE", None)
+    target_environment.pop("SONGSEEK_IMAGE", None)
 
     with tempfile.TemporaryDirectory(
         prefix="feedback-fixes-auto-upgrade-"
@@ -465,7 +465,7 @@ def run(output: Path) -> dict[str, Any]:
         try:
             build_started = time.perf_counter()
             _run(
-                [*upgrade_command, "build", "droppedneedle"],
+                [*upgrade_command, "build", "songseek"],
                 environment=target_environment,
             )
             build_seconds = time.perf_counter() - build_started
@@ -477,9 +477,9 @@ def run(output: Path) -> dict[str, Any]:
                 )
 
             source_environment = os.environ.copy()
-            source_environment["DROPPEDNEEDLE_IMAGE"] = source_image
+            source_environment["SONGSEEK_IMAGE"] = source_image
             _run(
-                [*upgrade_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*upgrade_command, "up", "-d", "--no-build", "songseek"],
                 environment=source_environment,
             )
             _wait_for_health(f"http://127.0.0.1:{upgrade_port}/health", 60)
@@ -492,7 +492,7 @@ def run(output: Path) -> dict[str, Any]:
 
             upgrade_started = time.perf_counter()
             _run(
-                [*upgrade_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*upgrade_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             _wait_for_target(f"http://127.0.0.1:{upgrade_port}/health", 300)
@@ -500,14 +500,14 @@ def run(output: Path) -> dict[str, Any]:
             upgraded_container_image = str(_docker_object(upgrade_container)["Image"])
             if upgraded_container_image != target_image:
                 raise RuntimeError("The normal update did not replace the old image.")
-            completion_message = "Library upgrade complete. DroppedNeedle is ready."
+            completion_message = "Library upgrade complete. SongSeek is ready."
             logs = _wait_for_log(upgrade_command, completion_message)
             if completion_message not in logs:
                 raise RuntimeError(
                     "The normal update did not report a completed upgrade."
                 )
             time.sleep(1.25)
-            logs = _run([*upgrade_command, "logs", "--no-color", "droppedneedle"])
+            logs = _run([*upgrade_command, "logs", "--no-color", "songseek"])
             if "Target scan supervisor iteration failed" in logs:
                 raise RuntimeError(
                     "The target scan supervisor failed after the normal update."
@@ -527,7 +527,7 @@ def run(output: Path) -> dict[str, Any]:
                     "exec",
                     upgrade_container,
                     "cat",
-                    "/app/.droppedneedle-source-revision",
+                    "/app/.songseek-source-revision",
                 ]
             ).strip()
             if len(baked_source_revision) != 64:
@@ -555,7 +555,7 @@ def run(output: Path) -> dict[str, Any]:
                 )
 
             restart_started = time.perf_counter()
-            _run([*upgrade_command, "restart", "droppedneedle"])
+            _run([*upgrade_command, "restart", "songseek"])
             _wait_for_target(f"http://127.0.0.1:{upgrade_port}/health", 120)
             restart_seconds = time.perf_counter() - restart_started
             restarted_shape = _target_shape(database)
@@ -565,7 +565,7 @@ def run(output: Path) -> dict[str, Any]:
 
             fresh_started = time.perf_counter()
             _run(
-                [*fresh_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*fresh_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             _wait_for_target(f"http://127.0.0.1:{fresh_port}/health", 120)
@@ -603,7 +603,7 @@ def run(output: Path) -> dict[str, Any]:
             ]
             projects.append((nonroot_command, nonroot_container))
             _run(
-                [*nonroot_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*nonroot_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             _wait_for_target(f"http://127.0.0.1:{nonroot_port}/health", 120)
@@ -653,13 +653,13 @@ def run(output: Path) -> dict[str, Any]:
             ]
             projects.append((unraid_command, unraid_container))
             _run(
-                [*unraid_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*unraid_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             try:
                 _wait_for_target(f"http://127.0.0.1:{unraid_port}/health", 120)
             except RuntimeError as error:
-                logs = _run([*unraid_command, "logs", "--no-color", "droppedneedle"])
+                logs = _run([*unraid_command, "logs", "--no-color", "songseek"])
                 raise RuntimeError(
                     f"{error}\nUnraid-style logs:\n{logs[-4000:]}"
                 ) from error
@@ -709,13 +709,13 @@ def run(output: Path) -> dict[str, Any]:
             ]
             projects.append((truenas_command, truenas_container))
             _run(
-                [*truenas_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*truenas_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             try:
                 _wait_for_target(f"http://127.0.0.1:{truenas_port}/health", 120)
             except RuntimeError as error:
-                logs = _run([*truenas_command, "logs", "--no-color", "droppedneedle"])
+                logs = _run([*truenas_command, "logs", "--no-color", "songseek"])
                 raise RuntimeError(
                     f"{error}\nTrueNAS-style logs:\n{logs[-4000:]}"
                 ) from error
@@ -776,7 +776,7 @@ def run(output: Path) -> dict[str, Any]:
             ]
             projects.append((named_command, named_container))
             _run(
-                [*named_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*named_command, "up", "-d", "--no-build", "songseek"],
                 environment=source_environment,
             )
             _wait_for_health(f"http://127.0.0.1:{named_port}/health", 60)
@@ -784,13 +784,13 @@ def run(output: Path) -> dict[str, Any]:
             if named_source_shape["target_catalog_present"]:
                 raise RuntimeError("The named-volume source was already target-shaped.")
             _run(
-                [*named_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*named_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             _wait_for_target(f"http://127.0.0.1:{named_port}/health", 120)
             named_shape = _container_target_shape(named_container)
             named_storage = _container_upgrade_storage_shape(named_container)
-            _run([*named_command, "restart", "droppedneedle"])
+            _run([*named_command, "restart", "songseek"])
             _wait_for_target(f"http://127.0.0.1:{named_port}/health", 120)
             named_restart_shape = _container_target_shape(named_container)
             named_restart_storage = _container_upgrade_storage_shape(named_container)
@@ -830,12 +830,12 @@ def run(output: Path) -> dict[str, Any]:
             ]
             projects.append((readonly_command, readonly_container))
             _run(
-                [*readonly_command, "up", "-d", "--no-build", "droppedneedle"],
+                [*readonly_command, "up", "-d", "--no-build", "songseek"],
                 environment=target_environment,
             )
             time.sleep(2)
             readonly_logs = _run(
-                [*readonly_command, "logs", "--no-color", "droppedneedle"]
+                [*readonly_command, "logs", "--no-color", "songseek"]
             )
             readonly_after = _data_tree_snapshot(readonly_data)
             readonly_refused_unchanged = (

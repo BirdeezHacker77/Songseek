@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # 10.11 removed alongside X-Emby-Token (issue #151); both spellings of the value
 # are accepted by older servers.
 _EMBY_AUTH_HEADER = (
-    'MediaBrowser Client="DroppedNeedle", Device="DroppedNeedle", DeviceId="{client_id}", Version="1.4.0"'
+    'MediaBrowser Client="SongSeek", Device="SongSeek", DeviceId="{client_id}", Version="1.4.0"'
 )
 
 
@@ -67,7 +67,7 @@ class JellyfinUserAuthService:
 
     async def authenticate_credentials(self, username: str, password: str) -> dict:
         """Validate a Jellyfin username/password and return the auth profile
-        (jellyfin_user_id / username / access_token) without any DroppedNeedle
+        (jellyfin_user_id / username / access_token) without any SongSeek
         login side effects. Used by the per-user connection link flow."""
         if not self._jellyfin_repo.is_configured():
             raise AuthenticationError("Jellyfin is not configured on this server")
@@ -99,7 +99,7 @@ class JellyfinUserAuthService:
 
     async def _authenticate_with_jellyfin(self, username: str, password: str) -> dict:
         client_id = self._prefs.get_or_create_setting(
-            "droppedneedle_device_id", lambda: str(uuid.uuid4())
+            "songseek_device_id", lambda: str(uuid.uuid4())
         )
 
         base_url = self._jellyfin_repo._base_url

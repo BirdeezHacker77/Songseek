@@ -51,7 +51,7 @@ async def test_authenticate_by_name_sends_authorization_header(monkeypatch):
 
     headers = _StubAsyncClient.captured["headers"]
     assert headers["Authorization"] == (
-        'MediaBrowser Client="DroppedNeedle", Device="DroppedNeedle", '
+        'MediaBrowser Client="SongSeek", Device="SongSeek", '
         'DeviceId="device-1", Version="1.4.0"'
     )
     assert "X-Emby-Authorization" not in headers

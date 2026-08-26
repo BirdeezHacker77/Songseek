@@ -156,7 +156,7 @@ class PluginHost:
             )
             if manifest_entry is None:
                 raise PluginInstallError(
-                    "No plugin.toml at the repository root - this is not a DroppedNeedle plugin"
+                    "No plugin.toml at the repository root - this is not a SongSeek plugin"
                 )
 
             staging = self._dir / f".installing-{root}"
@@ -260,7 +260,7 @@ class PluginHost:
         if not module_path.is_file():
             raise ManifestError(f"entrypoint module {module_name}.py not found")
         # namespaced so two plugins may both ship e.g. plugin.py
-        full_name = f"droppedneedle_plugin.{manifest.name}.{module_name}"
+        full_name = f"songseek_plugin.{manifest.name}.{module_name}"
         spec = importlib.util.spec_from_file_location(full_name, module_path)
         if spec is None or spec.loader is None:
             raise ManifestError("entrypoint module could not be prepared")

@@ -57,7 +57,7 @@ async def test_get_license(compat_env):
 async def test_get_music_folders(compat_env):
     body = _get(compat_env, "getMusicFolders")
     folders = body["musicFolders"]["musicFolder"]
-    assert folders == [{"id": 1, "name": "DroppedNeedle"}]
+    assert folders == [{"id": 1, "name": "SongSeek"}]
 
 
 async def test_get_artists_index_shape(compat_env):
@@ -284,7 +284,7 @@ async def test_get_music_directory_artist_then_album(compat_env):
 async def test_get_music_directory_root_is_folder_one(compat_env):
     root = _get(compat_env, "getMusicDirectory", id="1")["directory"]
     assert root["id"] == "1"
-    assert root["name"] == "DroppedNeedle"
+    assert root["name"] == "SongSeek"
     assert root["child"][0]["id"].startswith("ar-")
     assert root["child"][0]["isDir"] is True
 

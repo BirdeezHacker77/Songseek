@@ -685,7 +685,7 @@ class UsenetStrategy:
         # candidate_index advances), so a constant name collides with the prior attempt's
         # not-yet-deleted SABnzbd job and SAB appends .1/.2, orphaning unpacked folders on the
         # mount. The index makes each attempt individually addressable + cleanable.
-        job_name = f"droppedneedle-{task.id}-{task.candidate_index or 0}"
+        job_name = f"songseek-{task.id}-{task.candidate_index or 0}"
         await self._store.update_status(
             task.id,
             "downloading",

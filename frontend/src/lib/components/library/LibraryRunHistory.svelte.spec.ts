@@ -100,7 +100,7 @@ describe('LibraryRunHistory', () => {
 				status: 200,
 				headers: {
 					'content-type': 'application/json',
-					'content-disposition': 'attachment; filename="droppedneedle-library-run-opaque.json"'
+					'content-disposition': 'attachment; filename="songseek-library-run-opaque.json"'
 				}
 			})
 		);

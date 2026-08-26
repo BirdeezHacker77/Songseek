@@ -57,7 +57,7 @@ class LibraryDiagnosticsService:
             for item in snapshot["inventory"]
         ]
         document = {
-            "format": "droppedneedle-library-diagnostic-v1",
+            "format": "songseek-library-diagnostic-v1",
             "run": safe_run,
             "scopes": safe_scopes,
             "scopes_truncated": snapshot["scopes_truncated"],
@@ -82,7 +82,7 @@ class LibraryDiagnosticsService:
                 "The diagnostic report exceeds the safe export limit."
             )
         opaque_id = hashlib.sha256(run_id.encode()).hexdigest()[:16]
-        return f"droppedneedle-library-run-{opaque_id}.json", encoded
+        return f"songseek-library-run-{opaque_id}.json", encoded
 
     @staticmethod
     def _hash_path(path: str) -> str:

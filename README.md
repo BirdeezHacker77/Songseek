@@ -1,25 +1,23 @@
 <div align="center">
 
-<img src="Images/logo_wide.png" alt="DroppedNeedle" width="400" />
+<img src="Images/logo_wide.png" alt="SongSeek" width="400" />
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/DroppedNeedle/DroppedNeedle?label=stars&logo=github&logoColor=white)](https://github.com/DroppedNeedle/DroppedNeedle)
-[![Docker Hub](https://img.shields.io/badge/docker-hub-blue?logo=docker&logoColor=white)](https://hub.docker.com/r/droppedneedle/droppedneedle)
-[![Discord](https://img.shields.io/discord/1356702267809808404?label=discord&logo=discord&logoColor=white)](https://discord.gg/B5suDg7gu2)
-<br>
-
-[![Docs](https://img.shields.io/badge/docs-droppedneedle.com-blue)](https://www.droppedneedle.com/)
-[![GitHub Sponsors](https://img.shields.io/github/sponsors/HabiRabbu?label=sponsors&logo=github&logoColor=white)](https://github.com/sponsors/HabiRabbu)
-<br>
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M41URGJO)
-<a href="https://github.com/sponsors/HabiRabbu"><img src="https://img.shields.io/badge/Sponsor%20this%20project-ea4aaa?style=for-the-badge&logo=github&logoColor=white" alt="Sponsor this project" style="border-radius: 6px; height: 30px" /></a>
+[![GitHub Stars](https://img.shields.io/github/stars/BirdeezHacker77/Songseek?label=stars&logo=github&logoColor=white)](https://github.com/BirdeezHacker77/Songseek)
+[![Docker Hub](https://img.shields.io/badge/docker-hub-blue?logo=docker&logoColor=white)](https://hub.docker.com/r/birdeezhacker77/songseek)
 
 </div>
 
 ---
 
-DroppedNeedle is a self-hosted music request and discovery app with a **built-in native library and download engine** (no Lidarr required). Search the full MusicBrainz catalogue, request whole albums or single tracks, and let the engine index your library while it drives downloads through your own slskd or Usenet/SABnzbd. Its optional Library Management system can write tags and organize files after an administrator previews and enables it. Stream from Jellyfin, Navidrome, Plex, or your local files, get recommendations from your listening history, and scrobble to ListenBrainz and Last.fm. Play your library in third-party apps like Symfonium and Finamp over the OpenSubsonic and Jellyfin APIs. It all runs as a single Docker container, configured from the web UI.
+> SongSeek is a fork of [DroppedNeedle](https://github.com/DroppedNeedle/DroppedNeedle) by Harvey Bragg, used
+> under the AGPL-3.0. It is not affiliated with or endorsed by the DroppedNeedle project.
+> For support with SongSeek, open an issue here - please do not take fork-specific
+> problems to the upstream project.
+
+---
+
+SongSeek is a self-hosted music request and discovery app with a **built-in native library and download engine** (no Lidarr required). Search the full MusicBrainz catalogue, request whole albums or single tracks, and let the engine index your library while it drives downloads through your own slskd or Usenet/SABnzbd. Its optional Library Management system can write tags and organize files after an administrator previews and enables it. Stream from Jellyfin, Navidrome, Plex, or your local files, get recommendations from your listening history, and scrobble to ListenBrainz and Last.fm. Play your library in third-party apps like Symfonium and Finamp over the OpenSubsonic and Jellyfin APIs. It all runs as a single Docker container, configured from the web UI.
 
 ---
 
@@ -36,19 +34,30 @@ DroppedNeedle is a self-hosted music request and discovery app with a **built-in
 
 ## Quick Start
 
-You need Docker, a music library, and a download client. The example below uses slskd; [SABnzbd](https://sabnzbd.org/) with Newznab indexers works too. DroppedNeedle does not ship or run either for you - see [slskd Setup](#slskd-setup) and [Usenet Setup](#usenet-setup).
+You need Docker, a music library, and a download client. The example below uses slskd; [SABnzbd](https://sabnzbd.org/) with Newznab indexers works too. SongSeek does not ship or run either for you - see [slskd Setup](#slskd-setup) and [Usenet Setup](#usenet-setup).
 
-> **DroppedNeedle only orchestrates a user-provided download client over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for your own download client and, for slskd, its shared folders.**
+> **SongSeek only orchestrates a user-provided download client over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for your own download client and, for slskd, its shared folders.**
 
 ### 1. Create a docker-compose.yml
 
-Images are available on [Docker Hub](https://hub.docker.com/r/droppedneedle/droppedneedle) (`droppedneedle/droppedneedle:latest`).
+> **No prebuilt images are published yet.** `birdeezhacker77/songseek` is a placeholder
+> name; nothing is on Docker Hub under it. Until a release is cut, build the image
+> yourself from a checkout:
+>
+> ```bash
+> docker build -t birdeezhacker77/songseek:latest .
+> ```
+>
+> The compose file below then works unchanged, because Docker resolves the locally built
+> image before trying to pull. To publish images later, create the Docker Hub repository,
+> add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as repository secrets, and re-enable the
+> triggers in `.github/workflows/release.yml` and `dev-image.yml`.
 
 ```yaml
 services:
-  droppedneedle:
-    image: droppedneedle/droppedneedle:latest
-    container_name: droppedneedle
+  songseek:
+    image: birdeezhacker77/songseek:latest
+    container_name: songseek
     environment:
       - PUID=1000            # Run `id` on your host to find your user/group ID
       - PGID=1000
@@ -76,7 +85,9 @@ services:
       retries: 3
 ```
 
-> A `:dev` tag (`droppedneedle/droppedneedle:dev`) is also available. It's built automatically from `main` on every push and may be unstable. Pin to a specific commit with `:dev-<short-sha>` (e.g. `:dev-a1b2c3d`).
+> Upstream publishes a `:dev` tag built from `main` on every push. This fork does not:
+> `dev-image.yml` is set to manual dispatch until Docker Hub credentials exist, so there is
+> no `:dev` tag to pull and no `:dev-<short-sha>` pins. Build from a checkout instead.
 
 ### 2. Start it
 
@@ -86,14 +97,20 @@ docker compose up -d
 
 ### Updating
 
-Update DroppedNeedle the same way as any other container:
+Once images are published, update SongSeek the same way as any other container:
 
 ```bash
 docker compose pull
 docker compose up -d
 ```
 
-The first start of a version with library changes may take longer. DroppedNeedle keeps
+Until then there is nothing to pull - rebuild from an updated checkout instead:
+
+```bash
+git pull && docker compose up -d --build
+```
+
+The first start of a version with library changes may take longer. SongSeek keeps
 the health endpoint available and saves the database and settings under
 `/app/cache/upgrade-backups`. It upgrades a working copy, checks the result, puts the
 checked files into place, and validates the new app before any scanner, download worker,
@@ -101,7 +118,7 @@ or other background task starts. It does not rewrite or move music files. Fresh
 installations create the new database directly, and later restarts skip completed
 upgrades.
 
-If the copied migration or pre-worker startup validation fails, DroppedNeedle restores
+If the copied migration or pre-worker startup validation fails, SongSeek restores
 the database and settings from the backup and does not start against a partial upgrade.
 Once validation is recorded and background work is allowed to start, automatic rollback
 ends because newer catalog or settings changes may exist. Check the container log before
@@ -131,15 +148,15 @@ Open [http://localhost:8688](http://localhost:8688). On first launch you'll be p
 
 ## Native Engine
 
-DroppedNeedle replaces Lidarr with a built-in library and download engine. Library Scanning reads files, identifies them, and updates the catalog without changing the music on disk. Finished downloads are scored, verified, and published into the library through a staged writer. Library Management adds optional Picard-style tag, artwork, naming, and organization rules for existing files and future imports. It remains off until an administrator enables it. Lidarr is not used for library management.
+SongSeek replaces Lidarr with a built-in library and download engine. Library Scanning reads files, identifies them, and updates the catalog without changing the music on disk. Finished downloads are scored, verified, and published into the library through a staged writer. Library Management adds optional Picard-style tag, artwork, naming, and organization rules for existing files and future imports. It remains off until an administrator enables it. Lidarr is not used for library management.
 
-> **The slskd downloads path is required for imports.** DroppedNeedle must be able to see it read-write. A common container mount with the library enables a fast atomic move; separate mounts use a safe copy-and-remove fallback and briefly need space for both copies. See [slskd Setup](#slskd-setup).
+> **The slskd downloads path is required for imports.** SongSeek must be able to see it read-write. A common container mount with the library enables a fast atomic move; separate mounts use a safe copy-and-remove fallback and briefly need space for both copies. See [slskd Setup](#slskd-setup).
 
 ### Legality boundary
 
 The engine talks only to a user-supplied slskd instance over its local HTTP API. It never joins or distributes on the Soulseek/P2P network itself; it issues searches and download requests to slskd and imports the results. The operator supplies, runs, and is responsible for slskd and its shared folders. This is built into the architecture, not just the UI: the engine has no Soulseek protocol code, only an HTTP client for slskd.
 
-DroppedNeedle ships no indexers and no tracker lists. It searches MusicBrainz, an open metadata database that hosts no audio. Every acquisition source it can reach is one you configured yourself: your own slskd instance, or your own Newznab indexers and your own SABnzbd.
+SongSeek ships no indexers and no tracker lists. It searches MusicBrainz, an open metadata database that hosts no audio. Every acquisition source it can reach is one you configured yourself: your own slskd instance, or your own Newznab indexers and your own SABnzbd.
 
 Free Music is the one source that ships with the app. It downloads from the Internet Archive, and it offers only items carrying an explicit Creative Commons or public-domain licence, which is shown to you before anything downloads. It needs no account and no API key, it is on by default, and Settings turns it off.
 
@@ -261,7 +278,7 @@ This walks you from a running container to a library that imports downloads. The
 
 ### 1. Configure library paths
 
-As admin, go to **Settings > Library** and add your library path(s), using the in-container path (for example `/data/music`). DroppedNeedle validates the path at startup and on save; a non-writable or missing path is reported there rather than crashing the app.
+As admin, go to **Settings > Library** and add your library path(s), using the in-container path (for example `/data/music`). SongSeek validates the path at startup and on save; a non-writable or missing path is reported there rather than crashing the app.
 
 ### 2. Configure the download client
 
@@ -287,13 +304,13 @@ Profiles control managed tag fields, genres, artwork, naming, sidecars, format c
 
 The built-in **Picard-style Organizer** profile is the recommended starting point. It manages canonical MusicBrainz tags, normalized genres, front artwork, same-root naming and moves, and recognized sidecars while preserving custom tags, timestamps, and permissions. Lyrics, ReplayGain, tag scrubbing, and scan-discovered automation start disabled. Organization stays within the source root unless an administrator chooses a manual cross-root destination. Copy the profile before adding those policies if you want to keep the preset available for comparison. **Existing naming template** is a path-only compatibility profile for installations that only want their previous naming rule.
 
-Lyrics use LRCLIB and are accepted only when title, artist, album, and duration agree; DroppedNeedle does not guess from ambiguous search results. Plain lyrics have verified mappings for every admitted container when that container's writable tag mode is selected. Synchronized lyrics are supported in MP3, FLAC, Ogg, Opus, WMA, and ID3-tagged WAV. When both outputs are selected, M4A and raw AAC safely use plain lyrics as the fallback. A synchronized-only profile blocks formats that cannot represent them.
+Lyrics use LRCLIB and are accepted only when title, artist, album, and duration agree; SongSeek does not guess from ambiguous search results. Plain lyrics have verified mappings for every admitted container when that container's writable tag mode is selected. Synchronized lyrics are supported in MP3, FLAC, Ogg, Opus, WMA, and ID3-tagged WAV. When both outputs are selected, M4A and raw AAC safely use plain lyrics as the fallback. A synchronized-only profile blocks formats that cannot represent them.
 
 ReplayGain measures perceived loudness and stores recommended track/album playback gain and peak values in tags. It does not re-encode, normalize, or change the audio samples. A profile can preserve existing values, fill only missing values, or replace them with a fresh album-aware analysis; make it required only if an unavailable or invalid analysis should hold the entire import.
 
-The first activation, and any later change that broadens destructive access, requires a current whole-root dry run and the typed confirmation `CONFIRM`. Enabling another automatic trigger under the same authorized root and profile does not repeat that dry run because it changes when the policy runs, not what it may write. Keep a separate backup of the library before enabling it. DroppedNeedle keeps journals, undo snapshots, first-management baselines, and replaced files in the recycle area, but none of those is a substitute for a backup on another device.
+The first activation, and any later change that broadens destructive access, requires a current whole-root dry run and the typed confirmation `CONFIRM`. Enabling another automatic trigger under the same authorized root and profile does not repeat that dry run because it changes when the policy runs, not what it may write. Keep a separate backup of the library before enabling it. SongSeek keeps journals, undo snapshots, first-management baselines, and replaced files in the recycle area, but none of those is a substitute for a backup on another device.
 
-For one-off work, open **Library Management > Manage files**. Select tracks, albums, or roots and create a preview. The preview lists tag, artwork, move, collision, and disk-space effects before Apply becomes available. MusicBrainz release and per-file track mappings must be accepted before DroppedNeedle treats a change as authoritative. Unsupported formats, missing mappings, stale previews, provider failures, and collisions are held for attention instead of being forced through. DroppedNeedle does not automatically overwrite an occupied destination or delete a duplicate source.
+For one-off work, open **Library Management > Manage files**. Select tracks, albums, or roots and create a preview. The preview lists tag, artwork, move, collision, and disk-space effects before Apply becomes available. MusicBrainz release and per-file track mappings must be accepted before SongSeek treats a change as authoritative. Unsupported formats, missing mappings, stale previews, provider failures, and collisions are held for attention instead of being forced through. SongSeek does not automatically overwrite an occupied destination or delete a duplicate source.
 
 When automatic identification cannot prove the physical edition, open the album's
 identity panel or choose the release from the Identity readiness report. The built-in
@@ -321,37 +338,37 @@ Browse or search the MusicBrainz catalogue, open an album, and click **Request**
 
 ## slskd Setup
 
-> **Legality.** DroppedNeedle only orchestrates a user-provided slskd instance over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for slskd and its shared folders.
+> **Legality.** SongSeek only orchestrates a user-provided slskd instance over its local HTTP API; it never joins or distributes on the Soulseek/P2P network. You supply, run, and are responsible for slskd and its shared folders.
 >
-> **Sharing on Soulseek.** Soulseek is a reciprocal network and slskd will not run as a leech-only client: without at least one shared directory (`slskd.yml` -> `shares.directories`), searches and downloads fail. That is a property of Soulseek and slskd, not a DroppedNeedle requirement. Anything you place in a shared directory is distributed to other users of the network. What you share, and whether you hold the right to distribute it, is your decision and your responsibility.
+> **Sharing on Soulseek.** Soulseek is a reciprocal network and slskd will not run as a leech-only client: without at least one shared directory (`slskd.yml` -> `shares.directories`), searches and downloads fail. That is a property of Soulseek and slskd, not a SongSeek requirement. Anything you place in a shared directory is distributed to other users of the network. What you share, and whether you hold the right to distribute it, is your decision and your responsibility.
 
-slskd is one of two download sources DroppedNeedle supports. If you are using Usenet instead, skip this section and go to [Usenet Setup](#usenet-setup).
+slskd is one of two download sources SongSeek supports. If you are using Usenet instead, skip this section and go to [Usenet Setup](#usenet-setup).
 
-DroppedNeedle does not download from Soulseek itself. It talks to your own running slskd instance over slskd's local HTTP API (`X-API-Key`), asks it to search and download, then imports the finished files into your library. You bring slskd; DroppedNeedle drives it.
+SongSeek does not download from Soulseek itself. It talks to your own running slskd instance over slskd's local HTTP API (`X-API-Key`), asks it to search and download, then imports the finished files into your library. You bring slskd; SongSeek drives it.
 
 ### Requirements
 
-- slskd 0.25.0 or newer (0.25.1 is the version DroppedNeedle is verified against). Pin it: `slskd/slskd:0.25.1`.
+- slskd 0.25.0 or newer (0.25.1 is the version SongSeek is verified against). Pin it: `slskd/slskd:0.25.1`.
 - A Soulseek account configured inside slskd.
 - At least one shared folder configured in slskd (see the warning above).
-- slskd's HTTP API reachable from the DroppedNeedle container, with an API key.
+- slskd's HTTP API reachable from the SongSeek container, with an API key.
 
 ### The downloads bind-mount
 
 This is the single most common misconfiguration, so read it carefully.
 
-When slskd finishes a download it writes the file into its own downloads directory (`slskd.yml` -> `directories.downloads`), preserving the remote folder structure. DroppedNeedle first tries to move the file into the library atomically. If the container paths cross a mount boundary, it copies the file and removes the source only after the copy succeeds.
+When slskd finishes a download it writes the file into its own downloads directory (`slskd.yml` -> `directories.downloads`), preserving the remote folder structure. SongSeek first tries to move the file into the library atomically. If the container paths cross a mount boundary, it copies the file and removes the source only after the copy succeeds.
 
-For reliable imports, DroppedNeedle must be able to see slskd's downloads directory:
+For reliable imports, SongSeek must be able to see slskd's downloads directory:
 
 - Expose slskd's completed-downloads directory read-write. A common-parent bind such as `/data` is recommended because the library and downloads remain on one container mount boundary.
-- Point `SLSKD_DOWNLOADS_PATH` at the **exact completed-downloads directory** inside that mount, often `/data/slskd/complete`. Pointing it at the parent makes DroppedNeedle search the wrong tree.
+- Point `SLSKD_DOWNLOADS_PATH` at the **exact completed-downloads directory** inside that mount, often `/data/slskd/complete`. Pointing it at the parent makes SongSeek search the wrong tree.
 - Do not add separate nested binds for `/data/music` or `/data/slskd/complete`. Each bind creates another container mount boundary even when both host paths are on one disk.
 
-DroppedNeedle validates that the path is set, present, and writable. It reports whether fast moves are available and explains the safe copy fallback when the paths use different mount IDs. It still boots to the UI so you can correct a broken path.
+SongSeek validates that the path is set, present, and writable. It reports whether fast moves are available and explains the safe copy fallback when the paths use different mount IDs. It still boots to the UI so you can correct a broken path.
 
 ```yaml
-# In the droppedneedle service of your compose file:
+# In the songseek service of your compose file:
 environment:
   - SLSKD_DOWNLOADS_PATH=/data/slskd/complete
 volumes:
@@ -360,7 +377,7 @@ volumes:
 
 ### API key
 
-Configure an API key in slskd (`slskd.yml` -> `web.authentication.api_keys`) and give it to DroppedNeedle under **Settings > Download Client** (URL plus API key). DroppedNeedle sends it as the `X-API-Key` header on every request; it is stored encrypted and is never written to logs.
+Configure an API key in slskd (`slskd.yml` -> `web.authentication.api_keys`) and give it to SongSeek under **Settings > Download Client** (URL plus API key). SongSeek sends it as the `X-API-Key` header on every request; it is stored encrypted and is never written to logs.
 
 ### Example `slskd.yml` essentials
 
@@ -374,20 +391,20 @@ shares:
     - /data/share   # REQUIRED: at least one folder of files you share, or you get banned
 
 directories:
-  downloads: /data/downloads   # the host path you also bind-mount into DroppedNeedle
+  downloads: /data/downloads   # the host path you also bind-mount into SongSeek
 
 web:
   authentication:
     api_keys:
-      droppedneedle:
-        key: choose-a-long-random-key   # give this to DroppedNeedle's Download Client settings
+      songseek:
+        key: choose-a-long-random-key   # give this to SongSeek's Download Client settings
 ```
 
 ---
 
 ## Usenet Setup
 
-DroppedNeedle's second download source is Usenet through SABnzbd with Newznab-compatible indexers. The engine searches indexers for albums and tracks, enqueues NZBs in SABnzbd, and imports the finished files using the same verification and import pipeline it uses for slskd.
+SongSeek's second download source is Usenet through SABnzbd with Newznab-compatible indexers. The engine searches indexers for albums and tracks, enqueues NZBs in SABnzbd, and imports the finished files using the same verification and import pipeline it uses for slskd.
 
 ### Requirements
 
@@ -417,7 +434,7 @@ slskd and Usenet can be enabled side by side - the source priority control decid
 
 ## Recommended Stack
 
-DroppedNeedle brings its own library and download engine; you supply the download client. For playback, connect Jellyfin, Navidrome, Plex, or mount your music folder directly into the container.
+SongSeek brings its own library and download engine; you supply the download client. For playback, connect Jellyfin, Navidrome, Plex, or mount your music folder directly into the container.
 
 | Service | Role |
 |-|-|
@@ -429,7 +446,7 @@ DroppedNeedle brings its own library and download engine; you supply the downloa
 
 ## Authentication
 
-DroppedNeedle is a multi-user application. Every user has a role that controls what they can do.
+SongSeek is a multi-user application. Every user has a role that controls what they can do.
 
 ### Roles
 
@@ -451,7 +468,7 @@ Every login method is switched on or off from the web UI. No environment variabl
 
 ### Importing users
 
-Instead of creating accounts by hand, an admin can bring in existing users from Jellyfin or Plex. Open Settings > Users, click Import, choose a service, and select the accounts to add; for Plex this includes your Home and managed users as well as your shared friends. No passwords are set during import. Each person signs in with their own Jellyfin or Plex login, and DroppedNeedle links that login to the account the import created for them. Imported users start with the User role, and re-running an import skips anyone already added.
+Instead of creating accounts by hand, an admin can bring in existing users from Jellyfin or Plex. Open Settings > Users, click Import, choose a service, and select the accounts to add; for Plex this includes your Home and managed users as well as your shared friends. No passwords are set during import. Each person signs in with their own Jellyfin or Plex login, and SongSeek links that login to the account the import created for them. Imported users start with the User role, and re-running an import skips anyone already added.
 
 ### Sessions
 
@@ -467,7 +484,7 @@ Search the full MusicBrainz catalogue for any artist or album. Request a whole a
 
 Downloads the engine cannot confidently auto-accept land in a held-import review queue. An admin can preview the audio, accept or reject the import, and supply a MusicBrainz ID before the file is moved into the library.
 
-When a download completes in your download client but DroppedNeedle cannot locate the file, you can trigger a manual reimport from the downloads page to finish the job.
+When a download completes in your download client but SongSeek cannot locate the file, you can trigger a manual reimport from the downloads page to finish the job.
 
 ### Wanted
 
@@ -481,7 +498,7 @@ A global storage cap and per-user quotas keep the library from filling the disk.
 
 ### Built-in Player
 
-DroppedNeedle has a full audio player that supports multiple playback sources per track:
+SongSeek has a full audio player that supports multiple playback sources per track:
 
 - Jellyfin, with configurable codec (AAC, MP3, FLAC, Opus, and others) and bitrate. Playback events are reported back to Jellyfin automatically.
 - Navidrome, streaming via the Subsonic API.
@@ -495,11 +512,11 @@ What you are playing is broadcast live over SSE. Other signed-in users see the c
 
 ### Connect Apps
 
-Third-party music apps can play your library straight from DroppedNeedle, which speaks both the OpenSubsonic and Jellyfin APIs. It is the inbound counterpart to the Jellyfin, Navidrome, and Plex sources: those let DroppedNeedle play from another server, while this lets other apps play from DroppedNeedle.
+Third-party music apps can play your library straight from SongSeek, which speaks both the OpenSubsonic and Jellyfin APIs. It is the inbound counterpart to the Jellyfin, Navidrome, and Plex sources: those let SongSeek play from another server, while this lets other apps play from SongSeek.
 
 Turn on either protocol in Settings > Connect Apps and create an app-password, a separate revocable secret for one app so your account password stays private. In the app, enter your server URL with `/subsonic` or `/jellyfin` on the end (for example `https://music.example.com/jellyfin`), your username, and the app-password. Each user manages their own.
 
-Tested with Symfonium, Feishin, and Amperfy over Subsonic, and Finamp, Jellify, Manet, and Symfonium's Jellyfin mode over Jellyfin. When a client asks for a codec the file isn't already in, DroppedNeedle transcodes on the fly if transcoding is enabled; otherwise it sends the original file.
+Tested with Symfonium, Feishin, and Amperfy over Subsonic, and Finamp, Jellify, Manet, and Symfonium's Jellyfin mode over Jellyfin. When a client asks for a codec the file isn't already in, SongSeek transcodes on the fly if transcoding is enabled; otherwise it sends the original file.
 
 ### Discovery
 
@@ -515,7 +532,7 @@ A per-user weekly mix playlist is built from your listening history and refreshe
 
 ### Upcoming Events
 
-Connect Ticketmaster and Skiddle (free API keys) and DroppedNeedle shows concerts near you. Each user picks as many cities as they like from a geocoded search, each with its own radius. A daily sweep pulls upcoming shows for the artists people follow - or, optionally, for every artist in the library - and a sidebar badge counts the gigs you have not seen yet.
+Connect Ticketmaster and Skiddle (free API keys) and SongSeek shows concerts near you. Each user picks as many cities as they like from a geocoded search, each with its own radius. A daily sweep pulls upcoming shows for the artists people follow - or, optionally, for every artist in the library - and a sidebar badge counts the gigs you have not seen yet.
 
 ### Following Artists
 
@@ -529,15 +546,15 @@ Jellyfin, Navidrome, Plex, and local file sources each get their own library vie
 
 ### Free Music
 
-Request an album and DroppedNeedle looks for it on the Internet Archive. If it is there under a Creative Commons or public-domain licence, it downloads, gets tagged and organised into your library, and the request is resolved, all without you configuring anything. There is no account to make and no API key to paste. The licence each download is taken under is shown on the task, and linked.
+Request an album and SongSeek looks for it on the Internet Archive. If it is there under a Creative Commons or public-domain licence, it downloads, gets tagged and organised into your library, and the request is resolved, all without you configuring anything. There is no account to make and no API key to paste. The licence each download is taken under is shown on the task, and linked.
 
 Nothing else is offered. An item with no licence, or an all-rights-reserved one, is never a candidate, so this works for the artists who chose to give their music away and not for anyone else. It is on by default, and one toggle in Settings turns it off.
 
 ### Import Your Purchases
 
-Buy music wherever you like - Bandcamp, the Qobuz store, a label's own shop - then hand the zip or the loose files to DroppedNeedle. Drag them onto the card on your home page or the Import tab on the Downloads page, or click either one to browse. Archives are extracted, and every album is identified by the same pipeline the library scanner uses: MusicBrainz tags first, then AcoustID fingerprints. The files are tagged, organised into your library under your naming template, and if anyone had requested that album, their request is resolved and they get a notification.
+Buy music wherever you like - Bandcamp, the Qobuz store, a label's own shop - then hand the zip or the loose files to SongSeek. Drag them onto the card on your home page or the Import tab on the Downloads page, or click either one to browse. Archives are extracted, and every album is identified by the same pipeline the library scanner uses: MusicBrainz tags first, then AcoustID fingerprints. The files are tagged, organised into your library under your naming template, and if anyone had requested that album, their request is resolved and they get a notification.
 
-Anything DroppedNeedle cannot identify waits under "Needs a match", where you search for the right album and assign it, or discard it.
+Anything SongSeek cannot identify waits under "Needs a match", where you search for the right album and assign it, or discard it.
 
 Drop a better-quality copy of an album you already have and it upgrades in place: the old files go to the recycle bin. An equal or worse copy is skipped. Admin and trusted users can import.
 
@@ -549,7 +566,7 @@ Stores are ordered with Bandcamp first.
 
 ### Scrobbling
 
-Every track you play can be scrobbled to your own ListenBrainz and Last.fm accounts. Each user links their own accounts from their profile and toggles each service on or off independently. While scrobbling is on, your plays are also saved to a local listening history inside DroppedNeedle, which feeds the Recently Played row on your home page. A "now playing" update goes out when a track starts, and a scrobble is submitted when it finishes.
+Every track you play can be scrobbled to your own ListenBrainz and Last.fm accounts. Each user links their own accounts from their profile and toggles each service on or off independently. While scrobbling is on, your plays are also saved to a local listening history inside SongSeek, which feeds the Recently Played row on your home page. A "now playing" update goes out when a track starts, and a scrobble is submitted when it finishes.
 
 ### Playlists
 
@@ -569,9 +586,9 @@ Set a display name and avatar, change your username/email/password, link your ow
 
 Experimental: the plugin API may change until it stabilises.
 
-Third parties can extend DroppedNeedle with scrobblers and purchase-link providers. Install one by pasting a public GitHub repository URL in Settings, or by copying a folder into the plugins directory. No plugin capability downloads music, and DroppedNeedle never calls plugin code to acquire anything.
+Third parties can extend SongSeek with scrobblers and purchase-link providers. Install one by pasting a public GitHub repository URL in Settings, or by copying a folder into the plugins directory. No plugin capability downloads music, and SongSeek never calls plugin code to acquire anything.
 
-A plugin is Python running in-process with your server's full privileges, and there is no sandbox. Installing downloads the code and nothing more; the plugin does nothing until an admin enables it. Read the code before you do. DroppedNeedle bundles no plugins and endorses none - a worked example ships in `examples/plugins`.
+A plugin is Python running in-process with your server's full privileges, and there is no sandbox. Installing downloads the code and nothing more; the plugin does nothing until an admin enables it. Read the code before you do. SongSeek bundles no plugins and endorses none - a worked example ships in `examples/plugins`.
 
 The full API reference is in [PLUGINS.md](PLUGINS.md).
 
@@ -608,7 +625,7 @@ All integrations are configured through the web UI. No config files or environme
 
 ## Configuration
 
-DroppedNeedle stores its config in `config/config.json` inside the mapped config volume. Everything is managed through the UI.
+SongSeek stores its config in `config/config.json` inside the mapped config volume. Everything is managed through the UI.
 
 ### Environment Variables
 
@@ -630,7 +647,7 @@ Run `id` on your host to find your PUID and PGID values.
 > changes. A read-only config or cache mount is refused before an upgrade changes data.
 
 `UMASK` controls permissions on newly created files; it does not rewrite existing
-permissions. Keep the default `027` for a private deployment. Use `002` when DroppedNeedle
+permissions. Keep the default `027` for a private deployment. Use `002` when SongSeek
 and another trusted service share a group and both must modify the same media. Avoid `000`:
 it makes new files writable by every local account allowed by the underlying filesystem.
 A move or metadata-preserving copy can retain a source file's existing mode, so `UMASK`
@@ -672,7 +689,7 @@ is not a way to override permissions supplied by a download client.
 
 Any OIDC provider that supports the authorization code flow works (Authelia, Keycloak, Authentik, etc.).
 
-1. In your provider, create a new OIDC client / application. Set the redirect URI to `https://your-droppedneedle-url/api/v1/auth/oidc/callback`.
+1. In your provider, create a new OIDC client / application. Set the redirect URI to `https://your-songseek-url/api/v1/auth/oidc/callback`.
 2. In Settings > Security, enter your provider's **Issuer URL**, **Client ID**, and **Client Secret**.
 3. Save, an SSO button will appear on the login page.
 
@@ -684,7 +701,7 @@ Settings > Security exposes two features (admin only):
 
 **Password breach checking (HIBP):** When enabled, new passwords are checked against the [Have I Been Pwned](https://haveibeenpwned.com/Passwords) breach database using the k-anonymity API (`api.pwnedpasswords.com`). Only the first 5 characters of the password's SHA-1 hash are transmitted, the full password never leaves the server. This is on by default. For air-gapped or offline installs, you can either disable it or supply the path to a local copy of the HIBP hash file (download the "ordered by hash" version from haveibeenpwned.com/Passwords, typically ~35 GB). When a local path is configured, no outbound network calls are made.
 
-**HSTS (Strict-Transport-Security):** Only relevant if you're serving DroppedNeedle over HTTPS via a reverse proxy. Leave this disabled for plain HTTP installs. Enabling it on HTTP will cause browsers to refuse to connect until the HSTS entry expires. When behind HTTPS, set a `max-age` to instruct browsers to always use HTTPS. Starting with a shorter value (e.g. 30 days) and increasing it once you're confident everything works is recommended.
+**HSTS (Strict-Transport-Security):** Only relevant if you're serving SongSeek over HTTPS via a reverse proxy. Leave this disabled for plain HTTP installs. Enabling it on HTTP will cause browsers to refuse to connect until the HSTS entry expires. When behind HTTPS, set a `max-age` to instruct browsers to always use HTTPS. Starting with a shorter value (e.g. 30 days) and increasing it once you're confident everything works is recommended.
 
 ### TheAudioDB
 
@@ -702,7 +719,7 @@ Audio is transcoded on the Jellyfin server and streamed to the browser. Supporte
 
 ### Local Files
 
-Mount your music directory into the container and DroppedNeedle serves files directly. The mount path inside the container must match the Music Directory Path set in Settings > Local Files.
+Mount your music directory into the container and SongSeek serves files directly. The mount path inside the container must match the Music Directory Path set in Settings > Local Files.
 
 ```yaml
 volumes:
@@ -715,9 +732,9 @@ Connect your Navidrome instance under Settings > Navidrome.
 
 ### Plex
 
-Connect Plex under Settings > Plex. You can sign in with Plex OAuth or paste in a token yourself. Once you're connected, choose the music libraries you want to include. If you pick more than one, DroppedNeedle merges them into a single library view.
+Connect Plex under Settings > Plex. You can sign in with Plex OAuth or paste in a token yourself. Once you're connected, choose the music libraries you want to include. If you pick more than one, SongSeek merges them into a single library view.
 
-Tracks play directly from Plex with no server-side transcoding. The DroppedNeedle backend proxies the stream so your Plex token never reaches the browser.
+Tracks play directly from Plex with no server-side transcoding. The SongSeek backend proxies the stream so your Plex token never reaches the browser.
 
 Plex scrobbling is on by default. Turn it off in Settings > Plex or from the library page if you'd rather rely on Last.fm and ListenBrainz instead.
 
@@ -746,9 +763,9 @@ Map `/app/config`, `/app/cache`, and `/app/plugins` to persistent host directori
 
 ## API
 
-Interactive API docs (Swagger UI) are available at `/api/v1/docs` on your DroppedNeedle instance.
+Interactive API docs (Swagger UI) are available at `/api/v1/docs` on your SongSeek instance.
 
-All `/api/v1/*` routes require authentication (a Bearer token or the `droppedneedle_session` cookie), aside from a small public allowlist for setup, login, and provider discovery. Everything under `/api/v1/settings/*` additionally requires the **Admin** role.
+All `/api/v1/*` routes require authentication (a Bearer token or the `songseek_session` cookie), aside from a small public allowlist for setup, login, and provider discovery. Everything under `/api/v1/settings/*` additionally requires the **Admin** role.
 
 A health check endpoint is at `/health`.
 
@@ -762,42 +779,29 @@ See the [CONTRIBUTING](CONTRIBUTING.md) guide for instructions on setting up a d
 
 ## Support
 
-Documentation is at [droppedneedle.com](https://www.droppedneedle.com/).
+Bug reports and feature requests go on [GitHub Issues](https://github.com/BirdeezHacker77/Songseek/issues);
+questions and general discussion belong in
+[Discussions](https://github.com/BirdeezHacker77/Songseek/discussions).
 
-For questions, help, or just to chat, join the [Discord](https://discord.gg/B5suDg7gu2). Bug reports and feature requests go on [GitHub Issues](https://github.com/DroppedNeedle/DroppedNeedle/issues).
+If your problem reproduces on upstream DroppedNeedle as well, report it
+[there](https://github.com/DroppedNeedle/DroppedNeedle/issues) instead - they cannot support
+this fork, and fork bugs filed upstream just waste their time.
 
-If you find DroppedNeedle useful, consider supporting development:
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M41URGJO)
-<a href="https://github.com/sponsors/HabiRabbu"><img src="https://img.shields.io/badge/Sponsor%20this%20project-ea4aaa?style=for-the-badge&logo=github&logoColor=white" alt="Sponsor this project" style="border-radius: 6px; height: 30px" /></a>
-
-Monthly sponsorships keep development sustainable and unlock a few perks for you:
-
-| Tier | Amount | Perks |
-| --- | --- | --- |
-| Supporter | $5/month | Sponsor badge on your GitHub profile |
-| Backer | $20/month | All of the above, plus your name in the README credits and a private Discord role |
-| Patron | $50/month | All of the above, plus early access to beta builds and a vote on upcoming features |
-| Guardian | $100/month | All of the above, plus your name or logo on the website and prioritized bug reports and feature requests |
-
-Prefer to give once? One-time donations are welcome through [GitHub Sponsors](https://github.com/sponsors/HabiRabbu) or [Ko-fi](https://ko-fi.com/M4M41URGJO).
-
----
-
-## Sponsors
-
-Thanks to everyone who supports the project - your sponsorship keeps development sustainable.
-
-<!-- Add sponsors here as they join, e.g.:
-- [@username](https://github.com/username) - Patron
--->
-
-Become a sponsor on [GitHub Sponsors](https://github.com/sponsors/HabiRabbu) or [Ko-fi](https://ko-fi.com/M4M41URGJO).
+If you would like to support the *upstream* project this is built on, Harvey Bragg accepts
+sponsorship at [GitHub Sponsors](https://github.com/sponsors/HabiRabbu) and
+[Ko-fi](https://ko-fi.com/M4M41URGJO).
 
 ---
 
 ## License
 
-DroppedNeedle is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). Copyright (c) 2025 Harvey Bragg and contributors.
+SongSeek is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+
+Copyright (c) 2025 Harvey Bragg and contributors (upstream DroppedNeedle).
+Copyright (c) 2026 BirdeezHacker77 (SongSeek fork).
+
+AGPL-3.0 is a network copyleft licence: if you run a modified SongSeek and let anyone else
+reach it over a network, you have to offer those users the corresponding source of your
+version. Keep this repository public, or be ready to hand the source to your users.
 
 For commercial licensing enquiries, contact the maintainer.

@@ -3670,7 +3670,7 @@ class LibraryManagementPublisher:
     def _stage_audio(self, source: Path, temporary: Path, plan) -> None:
         if plan.audio_format == "m4a":
             with tempfile.TemporaryDirectory(
-                prefix="droppedneedle-management-mp4-"
+                prefix="songseek-management-mp4-"
             ) as directory:
                 local = Path(directory) / temporary.name
                 self._copy_temp(source, local)

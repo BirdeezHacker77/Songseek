@@ -1157,7 +1157,7 @@ async def test_management_hold_storage_failure_stops_failover_and_preserves_atte
     assert final.status == "failed"
     assert final.source_username == "goodpeer"
     assert final.error_message == (
-        "Download complete, but DroppedNeedle could not secure its Library "
+        "Download complete, but SongSeek could not secure its Library "
         "Management review copy. The original download was preserved."
     )
     assert len(attempts) == 1

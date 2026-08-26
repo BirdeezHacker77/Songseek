@@ -37,7 +37,7 @@ from api.compat.jellyfin.serialization import (
     no_content,
 )
 from core.exceptions import (
-    DroppedNeedleException,
+    SongSeekException,
     JellyfinError,
     RangeNotSatisfiableError,
 )
@@ -109,7 +109,7 @@ async def _handle(
             retry_after = compat_rate_limits.record_auth_failure(client_ip)
             if retry_after is not None:
                 return reject_jellyfin(retry_after)
-        if not isinstance(exc, DroppedNeedleException):
+        if not isinstance(exc, SongSeekException):
             logger.exception(
                 "Unhandled error in Jellyfin handler %s", getattr(fn, "__name__", fn)
             )

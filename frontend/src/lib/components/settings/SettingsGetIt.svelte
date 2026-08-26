@@ -76,7 +76,7 @@
 		<div class="mt-2 border-t border-base-content/10 pt-4">
 			<p class="text-sm font-medium">Support development</p>
 			<p class="mt-1 text-xs text-base-content/50">
-				DroppedNeedle is free to use. If you'd like to help with development, you can donate
+				SongSeek is free to use. If you'd like to help with development, you can donate
 				directly through Ko-fi or GitHub Sponsors.
 			</p>
 			<div class="mt-3 flex flex-wrap gap-2">
@@ -91,7 +91,7 @@
 					<ExternalLink class="h-3.5 w-3.5 opacity-60" aria-hidden="true" />
 				</a>
 				<a
-					href="https://github.com/sponsors/HabiRabbu"
+					href="https://github.com/sponsors/BirdeezHacker77"
 					target="_blank"
 					rel="noopener noreferrer"
 					class="btn btn-ghost btn-sm border border-base-content/15"

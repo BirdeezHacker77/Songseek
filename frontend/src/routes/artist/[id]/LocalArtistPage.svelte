@@ -130,7 +130,7 @@
 							<h2 id="musicbrainz-albums-title" class="font-bold">Contribute through an album</h2>
 							<p class="mt-1 max-w-3xl text-sm text-base-content/65">
 								Use one of this artist's local albums to check MusicBrainz. If the release matches,
-								DroppedNeedle can also verify and link its artist credit.
+								SongSeek can also verify and link its artist credit.
 							</p>
 						</div>
 					</div>

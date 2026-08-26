@@ -1,7 +1,7 @@
 """Internet Archive client - the Free Music download source.
 
 Only surfaces items carrying an explicit Creative Commons or public-domain
-``licenseurl``. That filter is DroppedNeedle's own editorial rule for its own
+``licenseurl``. That filter is SongSeek's own editorial rule for its own
 client (D24/D25); it is not imposed on anyone else.
 """
 

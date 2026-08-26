@@ -46,8 +46,8 @@
 			label: 'Local-only',
 			description:
 				subject === 'album'
-					? 'This album is in your DroppedNeedle library, but no MusicBrainz release is linked yet.'
-					: 'This artist is in your DroppedNeedle library, but no MusicBrainz artist is linked yet.'
+					? 'This album is in your SongSeek library, but no MusicBrainz release is linked yet.'
+					: 'This artist is in your SongSeek library, but no MusicBrainz artist is linked yet.'
 		};
 	});
 </script>

@@ -1465,7 +1465,7 @@ class LibraryManagementRecoveryService:
         if destination.exists() or destination.is_symlink():
             raise ConflictError("A committed destination became occupied.")
         temporary = destination.parent / (
-            f".droppedneedle-management-recovery-{expected_fingerprint[:16]}"
+            f".songseek-management-recovery-{expected_fingerprint[:16]}"
             f"{destination.suffix}"
         )
         destination_relative = PurePosixPath(destination_identity[1])

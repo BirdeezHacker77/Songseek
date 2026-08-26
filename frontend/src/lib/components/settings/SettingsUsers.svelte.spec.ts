@@ -117,7 +117,7 @@ describe('SettingsUsers password recovery', () => {
 		expect(h.recoveryReset).toHaveBeenCalled();
 	});
 
-	it('disables DroppedNeedle recovery for an SSO-only account', async () => {
+	it('disables SongSeek recovery for an SSO-only account', async () => {
 		render(SettingsUsers);
 		await expect.element(page.getByText('SSO Listener')).toBeVisible();
 		await expect

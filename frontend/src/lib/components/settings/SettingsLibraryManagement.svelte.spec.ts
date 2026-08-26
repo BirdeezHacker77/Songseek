@@ -444,10 +444,10 @@ describe('SettingsLibraryManagement', () => {
 		await profileDialog.getByText('Preservation and format safety').click();
 		await profileDialog.getByText('Post-write notifications').click();
 		await expect
-			.element(profileDialog.getByText('DroppedNeedle catalog updates immediately'))
+			.element(profileDialog.getByText('SongSeek catalog updates immediately'))
 			.toBeVisible();
 		await expect
-			.element(profileDialog.getByRole('checkbox', { name: /Refresh DroppedNeedle/ }))
+			.element(profileDialog.getByRole('checkbox', { name: /Refresh SongSeek/ }))
 			.not.toBeInTheDocument();
 	});
 
@@ -937,8 +937,8 @@ describe('SettingsLibraryManagement', () => {
 	it('exports a saved profile as a file-first bundle with a copyable code', async () => {
 		h.exportProfile.mockResolvedValue({
 			filename: 'picard-style-organizer.dnprofile',
-			mime_type: 'application/vnd.droppedneedle.profile+json',
-			document: '{"format":"droppedneedle-library-profile"}',
+			mime_type: 'application/vnd.songseek.profile+json',
+			document: '{"format":"songseek-library-profile"}',
 			share_code: 'DNLP1:portable-code',
 			bundle_hash: 'a'.repeat(64),
 			settings_revision: 'settings-1'
@@ -1059,7 +1059,7 @@ describe('SettingsLibraryManagement', () => {
 		await expect.element(dialog.getByText('Choose or drop a .dnprofile file')).toBeVisible();
 		await dialog
 			.getByLabelText('Profile file')
-			.upload(new File(['{"format":"droppedneedle-library-profile"}'], 'shared.dnprofile'));
+			.upload(new File(['{"format":"songseek-library-profile"}'], 'shared.dnprofile'));
 		await expect.element(dialog.getByText('shared.dnprofile')).toBeVisible();
 		await dialog
 			.getByLabelText('Profile file')

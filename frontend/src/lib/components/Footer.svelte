@@ -2,7 +2,7 @@
 	import { Github } from 'lucide-svelte';
 	import { getVersionQuery } from '$lib/queries/VersionQuery.svelte';
 
-	const GITHUB_URL = 'https://github.com/DroppedNeedle/DroppedNeedle';
+	const GITHUB_URL = 'https://github.com/BirdeezHacker77/Songseek';
 
 	const versionQuery = getVersionQuery();
 	const version = $derived(versionQuery.data?.version ?? null);
@@ -18,7 +18,7 @@
 <footer class="ms-footer grain" aria-label="Site footer">
 	<div class="ms-footer__inner">
 		<div class="ms-footer__brand">
-			<img src="/logo_wide_white.png" alt="DroppedNeedle" class="ms-footer__logo" />
+			<img src="/logo_wide_white.png" alt="SongSeek" class="ms-footer__logo" />
 		</div>
 
 		<div class="ms-footer__rule" aria-hidden="true"></div>

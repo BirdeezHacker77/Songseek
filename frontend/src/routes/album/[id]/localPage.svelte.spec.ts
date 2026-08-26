@@ -191,7 +191,7 @@ describe('local-only album page', () => {
 		await expect
 			.element(
 				page.getByText(
-					'This album is in your DroppedNeedle library, but no MusicBrainz release is linked yet.'
+					'This album is in your SongSeek library, but no MusicBrainz release is linked yet.'
 				)
 			)
 			.toBeVisible();

@@ -378,12 +378,12 @@
 
 	<div class="drawer-content flex min-w-0 flex-col isolate">
 		<div
-			class="droppedneedle-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
+			class="songseek-topbar navbar bg-base-100/95 backdrop-blur shadow-sm sticky top-0 z-50"
 		>
 			<div class="navbar-start w-auto">
 				<a href="/" class="btn btn-ghost px-2 max-xs:hidden sm:px-4" aria-label="Home">
-					<img src="/logo_wide.png" alt="DroppedNeedle" class="h-8 hidden sm:block" />
-					<img src="/logo_icon.png" alt="DroppedNeedle" class="h-8 block sm:hidden" />
+					<img src="/logo_wide.png" alt="SongSeek" class="h-8 hidden sm:block" />
+					<img src="/logo_icon.png" alt="SongSeek" class="h-8 block sm:hidden" />
 				</a>
 			</div>
 			<div class="navbar-center min-w-0 grow justify-center px-1 sm:px-4">
@@ -415,8 +415,8 @@
 		<LibraryActivityStrip />
 
 		<div
-			class="droppedneedle-main-content flex-1"
-			class:droppedneedle-player-visible={playerStore.isPlayerVisible}
+			class="songseek-main-content flex-1"
+			class:songseek-player-visible={playerStore.isPlayerVisible}
 		>
 			{@render children()}
 			<Footer />
@@ -634,10 +634,10 @@
 	</div>
 </div>
 
-<nav class="droppedneedle-bottom-nav md:hidden" aria-label="Primary navigation">
+<nav class="songseek-bottom-nav md:hidden" aria-label="Primary navigation">
 	<a
 		href="/"
-		class="droppedneedle-bottom-nav__item"
+		class="songseek-bottom-nav__item"
 		class:active={currentPath === '/'}
 		aria-current={currentPath === '/' ? 'page' : undefined}
 	>
@@ -646,7 +646,7 @@
 	</a>
 	<a
 		href="/discover"
-		class="droppedneedle-bottom-nav__item"
+		class="songseek-bottom-nav__item"
 		class:active={isNavActive('/discover')}
 		aria-current={isNavActive('/discover') ? 'page' : undefined}
 	>
@@ -655,7 +655,7 @@
 	</a>
 	<button
 		type="button"
-		class="droppedneedle-bottom-nav__item"
+		class="songseek-bottom-nav__item"
 		class:active={isNavActive('/search')}
 		onclick={() => (document.getElementById('search_modal') as HTMLDialogElement)?.showModal()}
 		aria-current={isNavActive('/search') ? 'page' : undefined}
@@ -665,26 +665,26 @@
 	</button>
 	<a
 		href="/library"
-		class="droppedneedle-bottom-nav__item"
+		class="songseek-bottom-nav__item"
 		class:active={isNavActive('/library')}
 		aria-current={isNavActive('/library') ? 'page' : undefined}
 	>
 		<Menu />
 		<span>Library</span>
 		{#if syncStatus.isActive}
-			<span class="droppedneedle-bottom-nav__badge" aria-label="Library sync in progress"></span>
+			<span class="songseek-bottom-nav__badge" aria-label="Library sync in progress"></span>
 		{/if}
 	</a>
 	<a
 		href={versionUpdateAvailable ? '/settings?tab=about' : '/settings'}
-		class="droppedneedle-bottom-nav__item"
+		class="songseek-bottom-nav__item"
 		class:active={isNavActive('/settings')}
 		aria-current={isNavActive('/settings') ? 'page' : undefined}
 	>
 		<Settings />
 		<span>Settings</span>
 		{#if versionUpdateAvailable}
-			<span class="droppedneedle-bottom-nav__badge" aria-label="Update available">
+			<span class="songseek-bottom-nav__badge" aria-label="Update available">
 				<ArrowUpCircle class="h-3 w-3" />
 			</span>
 		{/if}
@@ -765,8 +765,8 @@
 
 {#if playbackToast.visible}
 	<div
-		class="droppedneedle-playback-toast fixed z-50 left-1/2 -translate-x-1/2 transition-all duration-300"
-		class:droppedneedle-playback-toast--player={playerStore.isPlayerVisible}
+		class="songseek-playback-toast fixed z-50 left-1/2 -translate-x-1/2 transition-all duration-300"
+		class:songseek-playback-toast--player={playerStore.isPlayerVisible}
 	>
 		<div
 			class="alert {playbackToast.type === 'error'

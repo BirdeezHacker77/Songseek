@@ -139,7 +139,7 @@ async def test_library_file_id_roundtrip_to_stream(compat_env):
     # and the persisted row carries library_file_id
     tracks = await compat_env.playlists.get_tracks(pid[3:])
     assert tracks[0].library_file_id == songs[0][3:]
-    assert tracks[0].source_type == "droppedneedle-local"
+    assert tracks[0].source_type == "songseek-local"
 
 
 async def test_uploaded_playlist_cover_is_advertised_and_served(compat_env, auth_store):

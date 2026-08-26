@@ -59,12 +59,12 @@ def test_new_manifest_with_explicit_handle_is_not_clobbered():
         album_title="B",
         naming_template="X",
         target_files=[],
-        handle=TaskHandle(source="usenet", job_name="droppedneedle-t2", nzo_id="SAB_1"),
+        handle=TaskHandle(source="usenet", job_name="songseek-t2", nzo_id="SAB_1"),
     )
     encoded = ManifestCodec().encode(manifest)
     decoded = ManifestCodec().decode(encoded)
     assert decoded.handle.source == "usenet"
-    assert decoded.handle.job_name == "droppedneedle-t2"
+    assert decoded.handle.job_name == "songseek-t2"
     assert decoded.handle.nzo_id == "SAB_1"
     assert decoded.source_username is None
 

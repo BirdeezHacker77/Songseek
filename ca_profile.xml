@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <CommunityApplications>
   <Profile>
-DroppedNeedle is a self-hosted, multi-user music request and discovery app. It has a native library engine (scan, tag, fingerprint, organise) and downloads music from Soulseek (via slskd) and Usenet (via SABnzbd with native Newznab indexers), per album or per track. It can also present a Subsonic- and Jellyfin-compatible server so your existing player apps stream straight from the library. No Lidarr required.
+SongSeek is a self-hosted, multi-user music request and discovery app. It has a native library engine (scan, tag, fingerprint, organise) and downloads music from Soulseek (via slskd) and Usenet (via SABnzbd with native Newznab indexers), per album or per track. It can also present a Subsonic- and Jellyfin-compatible server so your existing player apps stream straight from the library. No Lidarr required.
 
-This repository maintains the official DroppedNeedle Unraid template.
+This repository maintains the official SongSeek Unraid template.
 
-**Support:** open an issue on [GitHub](https://github.com/DroppedNeedle/DroppedNeedle/issues) or join the [Discord](https://discord.gg/B5suDg7gu2). Documentation is at [droppedneedle.com](https://www.droppedneedle.com/).
+**Support:** open an issue on [GitHub](https://github.com/BirdeezHacker77/Songseek/issues) or join the [Discord](https://github.com/BirdeezHacker77/Songseek/discussions). Documentation is at [github.com/BirdeezHacker77/Songseek](https://github.com/BirdeezHacker77/Songseek).
   </Profile>
-  <Icon>https://raw.githubusercontent.com/DroppedNeedle/DroppedNeedle/main/Images/logo_icon.png</Icon>
-  <WebPage>https://www.droppedneedle.com/</WebPage>
-  <Discord>https://discord.gg/B5suDg7gu2</Discord>
+  <Icon>https://raw.githubusercontent.com/BirdeezHacker77/Songseek/main/Images/logo_icon.png</Icon>
+  <WebPage>https://github.com/BirdeezHacker77/Songseek</WebPage>
+  <Discord>https://github.com/BirdeezHacker77/Songseek/discussions</Discord>
 </CommunityApplications>

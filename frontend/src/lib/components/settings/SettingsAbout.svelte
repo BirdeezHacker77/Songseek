@@ -104,7 +104,7 @@
 							<Info class="w-7 h-7 text-primary" />
 						</div>
 						<div>
-							<h3 class="text-xl font-bold">DroppedNeedle</h3>
+							<h3 class="text-xl font-bold">SongSeek</h3>
 							<div class="flex items-center gap-2 mt-1">
 								<span class="badge badge-accent font-mono">
 									{version.version}
@@ -133,7 +133,7 @@
 							Check for Updates
 						</button>
 						<a
-							href="https://github.com/DroppedNeedle/DroppedNeedle"
+							href="https://github.com/BirdeezHacker77/Songseek"
 							target="_blank"
 							rel="noopener noreferrer"
 							class="btn btn-ghost btn-sm"

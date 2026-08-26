@@ -195,7 +195,7 @@ describe('SettingsLibrary target policy UI', () => {
 		await expect
 			.element(
 				page.getByText(
-					'Reads files and updates DroppedNeedle. It does not change your music files.'
+					'Reads files and updates SongSeek. It does not change your music files.'
 				)
 			)
 			.toBeVisible();

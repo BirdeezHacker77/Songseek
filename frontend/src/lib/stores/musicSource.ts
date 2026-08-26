@@ -11,7 +11,7 @@ import type { ScrobblePreferences } from '$lib/queries/scrobble-preferences/type
 export type MusicSource = 'listenbrainz' | 'lastfm';
 export type MusicSourcePage = keyof typeof PAGE_SOURCE_KEYS;
 
-const CACHED_SOURCE_KEY = 'droppedneedle_primary_source';
+const CACHED_SOURCE_KEY = 'songseek_primary_source';
 export const DEFAULT_SOURCE: MusicSource = 'listenbrainz';
 
 interface MusicSourceState {

@@ -1461,8 +1461,8 @@ async def test_target_playlist_writes_and_legacy_track_ids_resolve_to_local_refe
                 "artist_name": "Identified Artist",
                 "album_name": "Identified",
                 "track_source_id": RECORDING_MBID,
-                "source_type": "droppedneedle-local",
-                "available_sources": ["droppedneedle-local"],
+                "source_type": "songseek-local",
+                "available_sources": ["songseek-local"],
                 "duration": 180,
             }
         ],

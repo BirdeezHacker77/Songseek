@@ -204,7 +204,7 @@ def reject_subsonic(
     callback: str | None,
     retry_after: int,
     *,
-    server_name: str = "DroppedNeedle",
+    server_name: str = "SongSeek",
     server_version: str = "dev",
 ) -> Response:
     response = render_error(

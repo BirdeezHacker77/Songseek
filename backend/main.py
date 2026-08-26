@@ -270,7 +270,7 @@ async def _migrate_global_connection_to_first_admin(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting DroppedNeedle...")
+    logger.info("Starting SongSeek...")
 
     settings = get_settings()
     configured_level = getattr(logging, settings.log_level, logging.INFO)
@@ -755,12 +755,12 @@ async def lifespan(app: FastAPI):
     # move the daily slot without a restart (re-read every scheduler tick)
     start_events_watcher_task(get_events_watcher_service, _events_poll_time)
 
-    logger.info("DroppedNeedle started successfully")
+    logger.info("SongSeek started successfully")
 
     try:
         yield
     finally:
-        logger.info("Shutting down DroppedNeedle...")
+        logger.info("Shutting down SongSeek...")
 
         registry = TaskRegistry.get_instance()
         settings = get_settings()
@@ -771,11 +771,11 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.error("Error during cleanup: %s", e)
 
-        logger.info("DroppedNeedle shut down successfully")
+        logger.info("SongSeek shut down successfully")
 
 
 app = FastAPI(
-    title="DroppedNeedle",
+    title="SongSeek",
     description="Music request and management system",
     version="1.0.0",
     docs_url="/api/v1/docs",
@@ -848,7 +848,7 @@ app.add_middleware(CompatCORSMiddleware)
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "DroppedNeedle backend running"}
+    return {"status": "ok", "message": "SongSeek backend running"}
 
 
 v1_router = APIRouter(prefix="/api/v1")

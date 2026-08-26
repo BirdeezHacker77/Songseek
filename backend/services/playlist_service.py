@@ -84,7 +84,7 @@ _SOURCE_TYPE_ALIASES = {
     "navidrome": "navidrome",
     "plex": "plex",
     "youtube": "youtube",
-    "droppedneedle-local": "droppedneedle-local",  # Q11: compat-created local entry
+    "songseek-local": "songseek-local",  # Q11: compat-created local entry
     "": "",
 }
 
@@ -384,7 +384,7 @@ class PlaylistService:
             # assumption as update_track_source); without the link compat
             # clients see an empty playlist (#181)
             if (
-                normalized["source_type"] in ("local", "droppedneedle-local")
+                normalized["source_type"] in ("local", "songseek-local")
                 and normalized.get("track_source_id")
                 and not normalized.get("library_file_id")
             ):
@@ -406,7 +406,7 @@ class PlaylistService:
         """Add one owned library file to a playlist (the ONLY entry point the compat
         shims use to add tracks, Q11). Fills the snapshot fields from the
         library_files row, links ``library_file_id``, and tags the entry
-        ``source_type='droppedneedle-local'``. Ownership is enforced by add_tracks."""
+        ``source_type='songseek-local'``. Ownership is enforced by add_tracks."""
         if self._library_db is None:
             raise SourceResolutionError(
                 "Library database is not configured for compat playlist entries"
@@ -423,8 +423,8 @@ class PlaylistService:
             "artist_id": row.get("artist_mbid"),
             "track_source_id": file_id,
             "cover_url": None,
-            "source_type": "droppedneedle-local",
-            "available_sources": ["droppedneedle-local"],
+            "source_type": "songseek-local",
+            "available_sources": ["songseek-local"],
             "format": row.get("file_format") or None,
             "track_number": row.get("track_number"),
             "disc_number": row.get("disc_number"),

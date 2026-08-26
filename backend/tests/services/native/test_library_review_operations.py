@@ -6529,7 +6529,7 @@ async def test_diagnostic_export_is_bounded_redacted_and_ephemeral(
         "run-private-path"
     )
     decoded = json.loads(payload)
-    assert filename.startswith("droppedneedle-library-run-")
+    assert filename.startswith("songseek-library-run-")
     assert filename.endswith(".json")
     assert len(payload) < 2 * 1024 * 1024
     assert b"private/path" not in payload

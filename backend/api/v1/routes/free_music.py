@@ -1,4 +1,4 @@
-"""Free Music routes (D24) - DroppedNeedle's own lawful download client.
+"""Free Music routes (D24) - SongSeek's own lawful download client.
 
 Reading your own downloads is a user surface; cancelling and retrying are
 curator actions, matching the rest of the download queue.

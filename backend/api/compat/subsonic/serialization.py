@@ -104,7 +104,7 @@ def render(
     *,
     fmt: str = "xml",
     callback: str | None = None,
-    server_name: str = "DroppedNeedle",
+    server_name: str = "SongSeek",
     server_version: str = "dev",
 ) -> Response:
     body = _envelope("ok", server_name, server_version)
@@ -119,7 +119,7 @@ def render_error(
     *,
     fmt: str = "xml",
     callback: str | None = None,
-    server_name: str = "DroppedNeedle",
+    server_name: str = "SongSeek",
     server_version: str = "dev",
 ) -> Response:
     body = _envelope("failed", server_name, server_version)

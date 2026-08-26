@@ -48,12 +48,12 @@ async def _create_recovery_code(username: str) -> int:
     print("Password recovery code created.")
     print(f"Code: {code}")
     print(f"Expires: {expires_at}")
-    print("Open /recover-password on your DroppedNeedle server to use it.")
+    print("Open /recover-password on your SongSeek server to use it.")
     return 0
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="droppedneedle")
+    parser = argparse.ArgumentParser(prog="songseek")
     commands = parser.add_subparsers(dest="command", required=True)
     recovery = commands.add_parser(
         "recovery-code",

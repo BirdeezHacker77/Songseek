@@ -51,7 +51,7 @@ beforeEach(() => {
 describe('login local tab uses a username field', () => {
 	it('keeps the auth-only theme and component styles active', async () => {
 		render(Login);
-		const heading = page.getByRole('heading', { name: 'DroppedNeedle' });
+		const heading = page.getByRole('heading', { name: 'SongSeek' });
 		const submit = page.getByRole('button', { name: 'Sign in' });
 		await expect.element(heading).toBeVisible();
 		await expect.element(submit).toBeVisible();

@@ -1,4 +1,4 @@
-"""Guardrail 2: DroppedNeedle never joins the Soulseek/P2P network.
+"""Guardrail 2: SongSeek never joins the Soulseek/P2P network.
 
 The engine drives a *user-supplied* slskd instance over slskd's local HTTP API
 and imports what lands. It has no Soulseek protocol code, opens no peer
@@ -75,7 +75,7 @@ def test_no_soulseek_protocol_library_is_a_dependency():
                 continue
             assert not _PROTOCOL_LIBS.search(package), (
                 f"Guardrail 2 broken: {name} pulls in a Soulseek protocol library "
-                f"({package!r}). DroppedNeedle drives slskd over HTTP; it does not "
+                f"({package!r}). SongSeek drives slskd over HTTP; it does not "
                 "speak Soulseek."
             )
 

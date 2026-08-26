@@ -2,7 +2,7 @@ import { PersistedState } from 'runed';
 
 // svelte-ignore state_referenced_locally
 const dismissedVersion = new PersistedState<string | null>(
-	'droppedneedle_whats_new_dismissed',
+	'songseek_whats_new_dismissed',
 	null
 );
 

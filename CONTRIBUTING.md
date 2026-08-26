@@ -1,14 +1,14 @@
-# Contributing to DroppedNeedle
+# Contributing to SongSeek
 
 Thanks for your interest. Bug reports, feature requests, and pull requests are all welcome.
 
 ## Reporting Bugs
 
-Use the [bug report template](https://github.com/DroppedNeedle/DroppedNeedle/issues/new?template=bug.yml). Include your DroppedNeedle version, steps to reproduce, and relevant logs from `docker compose logs droppedneedle`. The more detail you give, the faster things get fixed.
+Use the [bug report template](https://github.com/BirdeezHacker77/Songseek/issues/new?template=bug.yml). Include your SongSeek version, steps to reproduce, and relevant logs from `docker compose logs songseek`. The more detail you give, the faster things get fixed.
 
 ## Requesting Features
 
-Use the [feature request template](https://github.com/DroppedNeedle/DroppedNeedle/issues/new?template=feature.yml). Check existing issues first to avoid duplicates.
+Use the [feature request template](https://github.com/BirdeezHacker77/Songseek/issues/new?template=feature.yml). Check existing issues first to avoid duplicates.
 
 ## Development Setup
 
@@ -79,4 +79,4 @@ You're still responsible for understanding and testing the code you submit.
 
 ## Questions?
 
-Open a thread in [Discord](https://discord.gg/B5suDg7gu2) or start a [GitHub Discussion](https://github.com/DroppedNeedle/DroppedNeedle/discussions).
+Open a thread in [Discord](https://github.com/BirdeezHacker77/Songseek/discussions) or start a [GitHub Discussion](https://github.com/BirdeezHacker77/Songseek/discussions).

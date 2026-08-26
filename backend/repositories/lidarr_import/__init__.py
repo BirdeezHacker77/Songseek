@@ -2,7 +2,7 @@
 
 This is a NEW module, deliberately separate from the deleted/tombstoned
 ``repositories/lidarr/`` (D8, DR1): a narrow, read-only migration aid that turns a
-user's Lidarr monitored artists into DroppedNeedle follows. It does NOT resurrect the
+user's Lidarr monitored artists into SongSeek follows. It does NOT resurrect the
 old Lidarr management integration.
 """
 

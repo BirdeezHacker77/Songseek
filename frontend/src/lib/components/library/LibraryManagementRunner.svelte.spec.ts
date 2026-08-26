@@ -208,7 +208,7 @@ describe('LibraryManagementRunner', () => {
 				overrides: expect.objectContaining({ embedded_artwork_enabled: false })
 			})
 		);
-		expect(sessionStorage.getItem('droppedneedle:library-management:preview-token:preview-1')).toBe(
+		expect(sessionStorage.getItem('songseek:library-management:preview-token:preview-1')).toBe(
 			'secret-token'
 		);
 		expect(h.goto).toHaveBeenCalledWith('/library/management/previews/preview-1');

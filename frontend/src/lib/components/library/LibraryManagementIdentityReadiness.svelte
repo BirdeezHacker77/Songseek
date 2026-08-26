@@ -583,7 +583,7 @@
 		</h2>
 		{#if confirmAction === 'apply'}
 			<p class="mt-3 text-sm text-base-content/65">
-				This writes only verified MusicBrainz identities to DroppedNeedle's catalog. It does not
+				This writes only verified MusicBrainz identities to SongSeek's catalog. It does not
 				change tags, paths, or audio. Releases may become eligible for a future organization
 				preview.
 			</p>

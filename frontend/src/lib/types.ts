@@ -1344,7 +1344,7 @@ export type SourcePlaylistDetail = {
 };
 
 export type SourceImportResult = {
-	droppedneedle_playlist_id: string;
+	songseek_playlist_id: string;
 	tracks_imported: number;
 	tracks_failed: number;
 	already_imported: boolean;

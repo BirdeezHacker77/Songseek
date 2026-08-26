@@ -21,7 +21,7 @@ import type { AlbumPreviewResponse, PreviewTrackItem, TrackPreviewResponse } fro
 const FOCUS_ID = 'deck-sampler';
 const CROSSFADE_S = 2;
 const TICK_MS = 100;
-const VOLUME_KEY = 'droppedneedle_sampler_volume';
+const VOLUME_KEY = 'songseek_sampler_volume';
 // clips per album when playing a multi-entry station (keeps a lean-back station
 // moving); a single-album sample plays everything the backend returns
 const STATION_CLIPS_PER_ALBUM = 2;

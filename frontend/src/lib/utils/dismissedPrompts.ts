@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'droppedneedle-dismissed-prompts';
+const STORAGE_KEY = 'songseek-dismissed-prompts';
 
 const isBrowser = typeof localStorage !== 'undefined';
 

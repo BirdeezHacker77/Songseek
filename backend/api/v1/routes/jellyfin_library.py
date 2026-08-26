@@ -416,7 +416,7 @@ async def import_jellyfin_playlist(
     if not result.already_imported:
         background_tasks.add_task(
             playlist_service.resolve_track_sources,
-            result.droppedneedle_playlist_id,
+            result.songseek_playlist_id,
             jf_service=service,
             local_service=local_service,
             nd_service=nd_service,

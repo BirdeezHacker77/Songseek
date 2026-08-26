@@ -22,7 +22,7 @@ def _dc(mock, mount="/sabnzbd-downloads"):
     return SabnzbdDownloadClient(_client(mock), "http://sab:8080", "key", Path(mount))
 
 
-def _handle(nzo_id="nzo-1", job_name="droppedneedle-t1"):
+def _handle(nzo_id="nzo-1", job_name="songseek-t1"):
     return TaskHandle(source="usenet", job_name=job_name, nzo_id=nzo_id)
 
 
@@ -57,17 +57,17 @@ async def test_enqueue_returns_handle_with_nzo_id(monkeypatch):
     monkeypatch.setattr(dc._client, "fetch_nzb", fake_fetch)
     handle = await dc.enqueue(
         EnqueueRequest(task_id="t1", source="usenet", nzb_url="https://idx/nzb",
-                       job_name="droppedneedle-t1", category="audio")
+                       job_name="songseek-t1", category="audio")
     )
     assert handle.source == "usenet"
     assert handle.nzo_id == "nzo-xyz"
-    assert handle.job_name == "droppedneedle-t1"
+    assert handle.job_name == "songseek-t1"
 
 
 @pytest.mark.asyncio
 async def test_only_downloading_is_active():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.queue_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Downloading",
+    mock.queue_job(nzo_id="nzo-1", name="songseek-t1", status="Downloading",
                    mb="100.0", mbleft="40.0", percentage="60")
     status = await _dc(mock).get_status(_handle())
     assert status.status == "downloading"
@@ -83,7 +83,7 @@ async def test_queue_numbers_as_json_numbers_dont_crash_parse():
     # Some SABnzbd builds emit mb/mbleft/percentage as JSON numbers, not strings; the
     # model must accept both (else the whole queue parse raises).
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.queue_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Downloading",
+    mock.queue_job(nzo_id="nzo-1", name="songseek-t1", status="Downloading",
                    mb=100.0, mbleft=25.0, percentage=75)  # floats/ints, not strings
     status = await _dc(mock).get_status(_handle())
     assert status.status == "downloading"
@@ -94,7 +94,7 @@ async def test_queue_numbers_as_json_numbers_dont_crash_parse():
 @pytest.mark.asyncio
 async def test_deleted_history_job_fails_fast():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Deleted")
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Deleted")
     status = await _dc(mock).get_status(_handle())
     assert status.status == "failed"  # don't poll a removed job to the 6h deadline
 
@@ -103,7 +103,7 @@ async def test_deleted_history_job_fails_fast():
 @pytest.mark.parametrize("state", ["Queued", "Grabbing", "Paused", "Propagating"])
 async def test_queued_states_are_not_active(state):
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.queue_job(nzo_id="nzo-1", name="droppedneedle-t1", status=state, mb="100.0", mbleft="100.0", percentage="0")
+    mock.queue_job(nzo_id="nzo-1", name="songseek-t1", status=state, mb="100.0", mbleft="100.0", percentage="0")
     status = await _dc(mock).get_status(_handle())
     assert status.status == "queued"
     assert status.has_active_transfer is False  # must not trip the stall/queued watchdog
@@ -115,7 +115,7 @@ async def test_post_processing_is_processing_not_active(state):
     mock = sabnzbd_mock.SabnzbdMock()
     # SABnzbd zeroes the queue percentage during unpack; the download is finished, so the
     # bar must hold at 100% (status conveys the phase) instead of dropping to 0.
-    mock.queue_job(nzo_id="nzo-1", name="droppedneedle-t1", status=state, mb="100.0", mbleft="0.0", percentage="0")
+    mock.queue_job(nzo_id="nzo-1", name="songseek-t1", status=state, mb="100.0", mbleft="0.0", percentage="0")
     status = await _dc(mock).get_status(_handle())
     assert status.status == "processing"
     assert status.has_active_transfer is False
@@ -128,7 +128,7 @@ async def test_post_processing_in_history_holds_at_100(state):
     # Once the job moves to history for the final unpack/move, there's no percentage at
     # all - it must still report 100%, not the struct default of 0.
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status=state, bytes_=2_000_000_000)
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status=state, bytes_=2_000_000_000)
     status = await _dc(mock).get_status(_handle())
     assert status.status == "processing"
     assert status.progress_percent == 100.0
@@ -138,8 +138,8 @@ async def test_post_processing_in_history_holds_at_100(state):
 @pytest.mark.asyncio
 async def test_completed_history_maps_to_completed():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Completed",
-                     storage="/data/Downloads/complete/droppedneedle-t1", bytes_=2_000_000_000)
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Completed",
+                     storage="/data/Downloads/complete/songseek-t1", bytes_=2_000_000_000)
     status = await _dc(mock).get_status(_handle())
     assert status.status == "completed"
     assert status.bytes_total == 2_000_000_000
@@ -148,7 +148,7 @@ async def test_completed_history_maps_to_completed():
 @pytest.mark.asyncio
 async def test_failed_history_maps_to_failed_with_message():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Failed",
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Failed",
                      fail_message="Unpacking failed, unwanted extension")
     status = await _dc(mock).get_status(_handle())
     assert status.status == "failed"
@@ -159,8 +159,8 @@ async def test_failed_history_maps_to_failed_with_message():
 async def test_crash_recovery_matches_by_job_name_when_nzo_unknown():
     # nzo_id wasn't persisted (crash between addfile and persist) -> match by job name.
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-real", name="droppedneedle-t1", status="Completed", storage="/x")
-    status = await _dc(mock).get_status(TaskHandle(source="usenet", job_name="droppedneedle-t1"))
+    mock.history_job(nzo_id="nzo-real", name="songseek-t1", status="Completed", storage="/x")
+    status = await _dc(mock).get_status(TaskHandle(source="usenet", job_name="songseek-t1"))
     assert status.status == "completed"
 
 
@@ -168,10 +168,10 @@ async def test_crash_recovery_matches_by_job_name_when_nzo_unknown():
 async def test_known_nzo_id_never_falls_back_to_same_job_name():
     mock = sabnzbd_mock.SabnzbdMock()
     mock.queue_job(
-        nzo_id="nzo-other", name="droppedneedle-t1", status="Downloading"
+        nzo_id="nzo-other", name="songseek-t1", status="Downloading"
     )
     mock.history_job(
-        nzo_id="nzo-1", name="droppedneedle-t1", status="Completed", storage="/x"
+        nzo_id="nzo-1", name="songseek-t1", status="Completed", storage="/x"
     )
 
     status = await _dc(mock).get_status(_handle())
@@ -183,22 +183,22 @@ async def test_known_nzo_id_never_falls_back_to_same_job_name():
 async def test_name_only_fallback_rejects_ambiguous_history():
     mock = sabnzbd_mock.SabnzbdMock()
     mock.history_job(
-        nzo_id="nzo-1", name="droppedneedle-t1", status="Completed", storage="/x"
+        nzo_id="nzo-1", name="songseek-t1", status="Completed", storage="/x"
     )
     mock.history_job(
-        nzo_id="nzo-2", name="droppedneedle-t1", status="Completed", storage="/y"
+        nzo_id="nzo-2", name="songseek-t1", status="Completed", storage="/y"
     )
 
     with pytest.raises(SabnzbdApiError, match="ambiguous job identity"):
         await _dc(mock).inspect_materialization(
-            TaskHandle(source="usenet", job_name="droppedneedle-t1")
+            TaskHandle(source="usenet", job_name="songseek-t1")
         )
 
 
 @pytest.mark.asyncio
 async def test_completed_history_discard_never_claims_to_delete_output():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Completed", storage="/x")
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Completed", storage="/x")
     ok = await _dc(mock).discard_client_artifacts(_handle())
     assert ok is True
     assert ("history", "nzo-1") in mock.deleted
@@ -211,21 +211,21 @@ async def test_mock_records_sab_retaining_completed_output_for_del_files_one():
     mock = sabnzbd_mock.SabnzbdMock()
     mock.history_job(
         nzo_id="nzo-1",
-        name="droppedneedle-t1",
+        name="songseek-t1",
         status="Completed",
-        storage="/complete/droppedneedle-t1",
+        storage="/complete/songseek-t1",
     )
 
     assert await _client(mock).delete_history("nzo-1", del_files=True) is True
 
     assert mock.deleted_storage == []
-    assert mock.retained_completed_storage == ["/complete/droppedneedle-t1"]
+    assert mock.retained_completed_storage == ["/complete/songseek-t1"]
 
 
 @pytest.mark.asyncio
 async def test_failed_history_discard_removes_incomplete_data():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Failed")
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Failed")
     assert await _dc(mock).discard_client_artifacts(_handle()) is True
     assert mock.delete_requests[-1]["del_files"] == "1"
 
@@ -233,7 +233,7 @@ async def test_failed_history_discard_removes_incomplete_data():
 @pytest.mark.asyncio
 async def test_active_abort_removes_client_owned_temporary_data():
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.queue_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Downloading")
+    mock.queue_job(nzo_id="nzo-1", name="songseek-t1", status="Downloading")
     assert await _dc(mock).abort(_handle()) is True
     assert mock.delete_requests[-1]["mode"] == "queue"
     assert mock.delete_requests[-1]["del_files"] == "1"
@@ -243,7 +243,7 @@ async def test_active_abort_removes_client_owned_temporary_data():
 async def test_materialization_requires_exact_complete_dir_mapping(tmp_path):
     mock = sabnzbd_mock.SabnzbdMock()
     mock.complete_dir = "/data/Downloads/complete"
-    job_name = "droppedneedle-t1"
+    job_name = "songseek-t1"
     mock.history_job(
         nzo_id="nzo-1",
         name=job_name,
@@ -266,9 +266,9 @@ async def test_materialization_rejects_ambiguous_storage_mapping(tmp_path):
     mock.complete_dir = ""
     mock.history_job(
         nzo_id="nzo-1",
-        name="droppedneedle-t1",
+        name="songseek-t1",
         status="Completed",
-        storage="/unknown/droppedneedle-t1",
+        storage="/unknown/songseek-t1",
     )
     mount = tmp_path / "complete"
     mount.mkdir()
@@ -283,14 +283,14 @@ async def test_materialization_rejects_ambiguous_storage_mapping(tmp_path):
 @pytest.mark.asyncio
 async def test_list_completed_files_remaps_and_enumerates(tmp_path):
     # storage in SABnzbd's namespace -> remap onto the local mount -> enumerate audio.
-    job = tmp_path / "complete" / "droppedneedle-t1"
+    job = tmp_path / "complete" / "songseek-t1"
     job.mkdir(parents=True)
     (job / "01 track.flac").write_bytes(b"x")
     (job / "cover.jpg").write_bytes(b"x")  # excluded
     mock = sabnzbd_mock.SabnzbdMock()
     mock.complete_dir = "/data/Downloads/complete"
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Completed",
-                     storage="/data/Downloads/complete/droppedneedle-t1")
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Completed",
+                     storage="/data/Downloads/complete/songseek-t1")
     dc = _dc(mock, mount=str(tmp_path / "complete"))
     files = await dc.list_completed_files(_handle())
     assert [f.name for f in files] == ["01 track.flac"]  # the jpg is excluded
@@ -301,11 +301,11 @@ async def test_history_lookup_filters_to_the_job():
     # A busy SABnzbd can push our job past the 50-entry window; the client must filter
     # history to THIS job (nzo_ids/search) so it's always found.
     mock = sabnzbd_mock.SabnzbdMock()
-    mock.history_job(nzo_id="nzo-1", name="droppedneedle-t1", status="Completed", storage="/x")
+    mock.history_job(nzo_id="nzo-1", name="songseek-t1", status="Completed", storage="/x")
     await _dc(mock).get_status(_handle())
     assert mock.history_requests, "history was queried"
     last = mock.history_requests[-1]
-    assert last.get("nzo_ids") == "nzo-1" or last.get("search") == "droppedneedle-t1"
+    assert last.get("nzo_ids") == "nzo-1" or last.get("search") == "songseek-t1"
 
 
 @pytest.mark.asyncio
@@ -387,5 +387,5 @@ async def test_addfile_is_not_retried():
         "http://sab:8080", "key", retry_backoff=0,
     )
     with pytest.raises(SabnzbdApiError):
-        await client.add_file("droppedneedle-t1", b"<nzb></nzb>")
+        await client.add_file("songseek-t1", b"<nzb></nzb>")
     assert calls["n"] == 1  # one attempt only - no retry

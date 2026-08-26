@@ -65,7 +65,7 @@ async def test_put_settings_admin_persists(app_password_service, tmp_path):
     r = build_test_client(app).put("/connect-apps/settings", json={
         "subsonic_enabled": True, "jellyfin_enabled": True,
         "transcoding_enabled": True, "transcode_default_format": "opus",
-        "transcode_max_bitrate_kbps": 192, "advertise_server_name": "DroppedNeedle",
+        "transcode_max_bitrate_kbps": 192, "advertise_server_name": "SongSeek",
         "advertise_server_version": "10.10.6", "discover_mode": "lazy-mb",
     })
     assert r.status_code == 200

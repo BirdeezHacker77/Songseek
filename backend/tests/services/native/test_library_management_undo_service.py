@@ -268,7 +268,7 @@ async def test_undo_restores_real_audio_path_tags_and_management_state(
         preview.job_id, int(work["ordinal"])
     )
     assert journals and all(value.state == "completed" for value in journals)
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
     first_job = await store.get_operation_job(first_job_id)
     assert first_job is not None
@@ -645,7 +645,7 @@ async def test_undo_restores_sidecar_and_removes_generated_external_artwork(
     assert generated_art.exists() is False
     assert any(value.subject_key.startswith("delete:") for value in undo_journals)
     assert all(value.state == "completed" for value in undo_journals)
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio

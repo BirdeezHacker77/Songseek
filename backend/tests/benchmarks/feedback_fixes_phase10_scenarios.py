@@ -584,7 +584,7 @@ async def benchmark_fingerprint_playback(
         ).__aenter__()
         idle = [await playback.sample() for _ in range(playback_samples)]
         benchmark_image = os.environ.get(
-            "FEEDBACK_FIXES_BENCHMARK_IMAGE", "droppedneedle:local"
+            "FEEDBACK_FIXES_BENCHMARK_IMAGE", "songseek:local"
         )
         docker = shutil.which("docker")
         container_available = False

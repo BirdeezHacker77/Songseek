@@ -33,9 +33,9 @@ from infrastructure.persistence.maintenance_manifest import (
 )
 
 
-SERVICE_NAME = "droppedneedle"
+SERVICE_NAME = "songseek"
 STATE_FORMAT_VERSION = 2
-_SOURCE_REVISION_LABEL = "org.droppedneedle.source-revision"
+_SOURCE_REVISION_LABEL = "org.songseek.source-revision"
 _AUTOMATIC_TARGET_COMMAND = [
     "python",
     "-m",
@@ -421,8 +421,8 @@ def prepare(
     compose_project: str | None = None,
     service_name: str = SERVICE_NAME,
     container_name: str | None = None,
-    target_build_reference: str = "droppedneedle:local",
-    image_tag_prefix: str = "droppedneedle",
+    target_build_reference: str = "songseek:local",
+    image_tag_prefix: str = "songseek",
     health_url: str = "http://127.0.0.1:8688/health",
     runner: CommandRunner = _run_command,
 ) -> dict[str, Any]:
@@ -791,7 +791,7 @@ def build(
             "--no-cache",
             "--build-arg",
             (
-                "DROPPEDNEEDLE_SOURCE_REVISION="
+                "SONGSEEK_SOURCE_REVISION="
                 + state["source_identity"]["application_revision"]
             ),
             _service_name(state),
@@ -886,7 +886,7 @@ def start_target(
     )
     repository = Path(state["repository_root"])
     environment = os.environ.copy()
-    environment["DROPPEDNEEDLE_IMAGE"] = target["image_id"]
+    environment["SONGSEEK_IMAGE"] = target["image_id"]
     runner(
         _compose_command(state, "up", "-d", "--no-deps", _service_name(state)),
         repository,
@@ -951,7 +951,7 @@ def _start_prior_application(
     if pinned.get("Id") != prior["image_id"]:
         raise MaintenanceStageError("The immutable prior image is unavailable.")
     environment = os.environ.copy()
-    environment["DROPPEDNEEDLE_IMAGE"] = prior["image_id"]
+    environment["SONGSEEK_IMAGE"] = prior["image_id"]
     runner(prior["launch_command"], repository, environment)
     running = _docker_inspect(_container_name(state), runner=runner)
     _validate_running_prior(state, running)
@@ -1137,8 +1137,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--compose-project")
     parser.add_argument("--service-name", default=SERVICE_NAME)
     parser.add_argument("--container-name")
-    parser.add_argument("--target-build-reference", default="droppedneedle:local")
-    parser.add_argument("--image-tag-prefix", default="droppedneedle")
+    parser.add_argument("--target-build-reference", default="songseek:local")
+    parser.add_argument("--image-tag-prefix", default="songseek")
     parser.add_argument("--health-url", default="http://127.0.0.1:8688/health")
     return parser
 

@@ -1,4 +1,4 @@
-"""DroppedNeedle plugin API (phase 01b, EXPERIMENTAL - api_version 0).
+"""SongSeek plugin API (phase 01b, EXPERIMENTAL - api_version 0).
 
 See PLUGINS.md at the repository root for the authored contract. The host
 loads third-party plugin packages from ``<root_app_dir>/plugins``; nothing is

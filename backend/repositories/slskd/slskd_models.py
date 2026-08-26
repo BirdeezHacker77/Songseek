@@ -85,7 +85,7 @@ class SlskdDirectories(msgspec.Struct, kw_only=True):
 
 
 class SlskdOptions(msgspec.Struct, kw_only=True):
-    """Subset of GET /api/v0/options we use: just the directories block, so DroppedNeedle
+    """Subset of GET /api/v0/options we use: just the directories block, so SongSeek
     can tell the user the exact path slskd downloads to. Unknown fields ignored."""
 
     directories: SlskdDirectories = msgspec.field(default_factory=SlskdDirectories)

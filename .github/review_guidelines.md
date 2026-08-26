@@ -1,4 +1,4 @@
-# DroppedNeedle AI Review Guidelines
+# SongSeek AI Review Guidelines
 
 These guidelines drive the automated AI review system. They are loaded at runtime. Update
 them whenever project conventions change; no code changes are needed.
@@ -73,7 +73,7 @@ map domain exceptions to HTTP responses. If a route contains business logic, dat
 transformation, or direct I/O: **Must Fix.**
 
 Services in `backend/services/` orchestrate repositories and other services. They raise
-domain exceptions (`DroppedNeedleException` subclasses), never `HTTPException`. Catching
+domain exceptions (`SongSeekException` subclasses), never `HTTPException`. Catching
 `HTTPException` in a service: **Should Fix.**
 
 Repositories in `backend/repositories/` are the only layer that makes HTTP calls, accesses
@@ -81,7 +81,7 @@ files, or talks to databases. A service calling `httpx` or `aiofiles` directly: 
 The `infrastructure/` layer provides low-level utilities (caching, resilience, crypto,
 persistence) consumed by repositories.
 
-New exception types must extend `DroppedNeedleException` or an existing subclass
+New exception types must extend `SongSeekException` or an existing subclass
 (`ExternalServiceError`, `ResourceNotFoundError`, `ValidationError`, `AuthenticationError`,
 `RegistrationError`, etc.). Using bare `Exception` for application-signalling errors:
 **Should Fix.** It prevents callers from catching specific error types.
@@ -193,7 +193,7 @@ concatenation or f-strings to build SQL: **Must Fix.**
 
 Schema migrations. If a PR changes the persistence schema (new tables, columns, or data
 format in `infrastructure/persistence/`), flag it for explicit human verification.
-DroppedNeedle uses file-based persistence (JSON stores, SQLite via AuthStore), not an ORM
+SongSeek uses file-based persistence (JSON stores, SQLite via AuthStore), not an ORM
 with formal migrations.
 
 Crypto initialization. `init_crypto()` must be called before any `encrypt()` or

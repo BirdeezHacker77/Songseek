@@ -46,7 +46,7 @@ class DownloadFileRef(AppStruct):
 class EnqueueRequest(AppStruct):
     """Client-agnostic hand-off (D8). slskd reads ``source``/``files``; SABnzbd
     reads ``nzb_url``/``job_name``/``category``/``priority``/``post_processing``.
-    ``job_name`` (``droppedneedle-{task_id}``) is the PRE-enqueue correlation key
+    ``job_name`` (``songseek-{task_id}``) is the PRE-enqueue correlation key
     that survives a crash before ``nzo_id`` exists."""
 
     task_id: str
@@ -140,7 +140,7 @@ class MountDiagnosis(AppStruct):
     resolvable_downloads: int = 0
     sampled_downloads: int = 0
     # The client's own configured downloads dir (slskd's directories.downloads), in the
-    # client's namespace - shown to the user so they can match it to DroppedNeedle's mount.
+    # client's namespace - shown to the user so they can match it to SongSeek's mount.
     client_downloads_dir: str | None = None
 
 

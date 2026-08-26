@@ -171,17 +171,17 @@ describe('LibraryBulkActionDialog', () => {
 		await opener.click();
 		await page.getByRole('button', { name: 'Apply to 2' }).click();
 		expect(h.apply).toHaveBeenCalledTimes(1);
-		expect(sessionStorage.getItem('droppedneedle:library-bulk-job:admin-1')).toBe('job-1');
+		expect(sessionStorage.getItem('songseek:library-bulk-job:admin-1')).toBe('job-1');
 		expect(clear).toHaveBeenCalled();
 	});
 
 	it('recovers the stored terminal result after refresh without replaying Apply', async () => {
-		sessionStorage.setItem('droppedneedle:library-bulk-job:admin-1', 'job-1');
+		sessionStorage.setItem('songseek:library-bulk-job:admin-1', 'job-1');
 		h.jobs = { 'job-1': operation };
 		renderDialog();
 		await expect.element(page.getByText('Bulk review · succeeded')).toBeVisible();
 		await expect.element(page.getByText('2 complete · 1 skipped · 0 failed')).toBeVisible();
-		expect(sessionStorage.getItem('droppedneedle:library-bulk-job:admin-1')).toBeNull();
+		expect(sessionStorage.getItem('songseek:library-bulk-job:admin-1')).toBeNull();
 		await page.getByRole('button', { name: 'Dismiss' }).click();
 		await expect.element(page.getByText('Bulk review · succeeded')).not.toBeInTheDocument();
 		expect(h.apply).not.toHaveBeenCalled();

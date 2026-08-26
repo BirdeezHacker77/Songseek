@@ -143,7 +143,7 @@ _IMPORT_FAILED_MSG = (
 )
 _MANAGEMENT_HELD_MSG = "Download complete. The files are secured while Library Management waits for attention."
 _MANAGEMENT_HOLD_STORAGE_MSG = (
-    "Download complete, but DroppedNeedle could not secure its Library Management "
+    "Download complete, but SongSeek could not secure its Library Management "
     "review copy. The original download was preserved."
 )
 
@@ -1998,7 +1998,7 @@ class DownloadOrchestrator:
             except Exception as error:  # noqa: BLE001 - preserve one safe terminal state
                 if aborted:
                     message = (
-                        "The queued source was stopped, but DroppedNeedle could not select "
+                        "The queued source was stopped, but SongSeek could not select "
                         "the next source safely. Retry the download."
                     )
                     await self._fail_task_preserving_attempt(task.id, message)
@@ -2128,7 +2128,7 @@ class DownloadOrchestrator:
     async def _reimport_task_locked(self, task_id: str):  # noqa: ANN201
         """Re-run only the import half of the pipeline for a ``failed``/``partial``
         task whose download the user finished by hand in slskd (e.g. resumed a
-        stalled/errored transfer in slskd's own UI after DroppedNeedle had already
+        stalled/errored transfer in slskd's own UI after SongSeek had already
         given up). This re-resolves the SAME candidate slskd already picked.
         Admin-gated at the route (``CurrentAdminDep``)."""
         task = await self._store.get_task(task_id)

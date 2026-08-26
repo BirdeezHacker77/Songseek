@@ -509,7 +509,7 @@ describe('LibraryManagementPreviewPage', () => {
 									path_changed: false,
 									scrubbed_raw_tags: [
 										{
-											key: 'droppedneedle_acceptance_marker',
+											key: 'songseek_acceptance_marker',
 											value_kind: 'text',
 											values: ['scrub-me-2026-08-07'],
 											value_count: 1,
@@ -531,7 +531,7 @@ describe('LibraryManagementPreviewPage', () => {
 
 		await page.getByRole('button', { name: 'Inspect exact diff for Track' }).click();
 		await expect.element(page.getByText('Unmanaged tags to remove')).toBeVisible();
-		await expect.element(page.getByText('droppedneedle_acceptance_marker')).toBeVisible();
+		await expect.element(page.getByText('songseek_acceptance_marker')).toBeVisible();
 		await expect.element(page.getByText('scrub-me-2026-08-07')).toBeVisible();
 		await expect.element(page.getByText('Remove', { exact: true })).toBeVisible();
 	});
@@ -567,7 +567,7 @@ describe('LibraryManagementPreviewPage', () => {
 			}
 		};
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:preview-1',
+			'songseek:library-management:preview-token:preview-1',
 			'private-token'
 		);
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
@@ -616,11 +616,11 @@ describe('LibraryManagementPreviewPage', () => {
 
 	it('uses the new token when navigation reuses the page for another preview', async () => {
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:preview-1',
+			'songseek:library-management:preview-token:preview-1',
 			'source-token'
 		);
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:resolution-1',
+			'songseek:library-management:preview-token:resolution-1',
 			'resolution-token'
 		);
 		const view = render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
@@ -881,7 +881,7 @@ describe('LibraryManagementPreviewPage', () => {
 			isError: false
 		};
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:preview-1',
+			'songseek:library-management:preview-token:preview-1',
 			'private-token'
 		);
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
@@ -893,7 +893,7 @@ describe('LibraryManagementPreviewPage', () => {
 
 	it('confirms discard, forgets the apply token, and returns to the control room', async () => {
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:preview-1',
+			'songseek:library-management:preview-token:preview-1',
 			'private-token'
 		);
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
@@ -909,7 +909,7 @@ describe('LibraryManagementPreviewPage', () => {
 			request: { expected_operation_row_revision: 7 }
 		});
 		expect(
-			sessionStorage.getItem('droppedneedle:library-management:preview-token:preview-1')
+			sessionStorage.getItem('songseek:library-management:preview-token:preview-1')
 		).toBeNull();
 		expect(h.goto).toHaveBeenCalledWith('/library/management?tab=organize');
 	});
@@ -1008,7 +1008,7 @@ describe('LibraryManagementPreviewPage', () => {
 	])('uses consequence-specific confirmation copy for $mode', async (example) => {
 		h.preview = { data: detail({ mode: example.mode }), isLoading: false, isError: false };
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:preview-1',
+			'songseek:library-management:preview-token:preview-1',
 			'private-token'
 		);
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });
@@ -1029,7 +1029,7 @@ describe('LibraryManagementPreviewPage', () => {
 			isError: false
 		};
 		sessionStorage.setItem(
-			'droppedneedle:library-management:preview-token:preview-1',
+			'songseek:library-management:preview-token:preview-1',
 			'private-token'
 		);
 		render(LibraryManagementPreviewPage, { jobId: 'preview-1' });

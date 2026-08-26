@@ -41,7 +41,7 @@ class FakeDocker:
     ) -> str:
         arguments = list(command)
         self.commands.append(
-            (arguments, environment.get("DROPPEDNEEDLE_IMAGE") if environment else None)
+            (arguments, environment.get("SONGSEEK_IMAGE") if environment else None)
         )
         compose_arguments: list[str] | None = None
         if arguments[:2] == ["docker", "compose"]:
@@ -56,7 +56,7 @@ class FakeDocker:
             else:
                 raise AssertionError(f"unexpected tagged image: {arguments[3]}")
             return ""
-        if compose_arguments == ["stop", "droppedneedle"]:
+        if compose_arguments == ["stop", "songseek"]:
             self.running = False
             return ""
         if compose_arguments == ["down", "--remove-orphans"]:
@@ -70,7 +70,7 @@ class FakeDocker:
         if compose_arguments and compose_arguments[0] == "up":
             self.running = True
             self.exists = True
-            selected = environment.get("DROPPEDNEEDLE_IMAGE") if environment else None
+            selected = environment.get("SONGSEEK_IMAGE") if environment else None
             if selected == _SOURCE_IMAGE:
                 self.image_id = _SOURCE_IMAGE
                 self.command = list(_SOURCE_COMMAND)
@@ -85,7 +85,7 @@ class FakeDocker:
             if target in {_SOURCE_IMAGE, self.rollback_reference}:
                 image_id = _SOURCE_IMAGE
                 command_value = _SOURCE_COMMAND
-            elif target in {"droppedneedle:local", self.target_reference}:
+            elif target in {"songseek:local", self.target_reference}:
                 image_id = _TARGET_IMAGE
                 command_value = _TARGET_COMMAND
             else:
@@ -101,7 +101,7 @@ class FakeDocker:
                             "Cmd": command_value,
                             "Labels": (
                                 {
-                                    "org.droppedneedle.source-revision": self.target_source_revision
+                                    "org.songseek.source-revision": self.target_source_revision
                                 }
                                 if image_id == _TARGET_IMAGE
                                 else {}
@@ -110,7 +110,7 @@ class FakeDocker:
                     }
                 ]
             )
-        if arguments == ["docker", "inspect", "droppedneedle"]:
+        if arguments == ["docker", "inspect", "songseek"]:
             if not self.exists:
                 raise feedback_fixes.MaintenanceStageError("container is absent")
             return json.dumps(
@@ -118,10 +118,10 @@ class FakeDocker:
                     {
                         "Id": "source-container-id",
                         "Image": self.image_id,
-                        "Name": "/droppedneedle",
+                        "Name": "/songseek",
                         "State": {"Running": self.running},
                         "Config": {
-                            "Image": "droppedneedle:local",
+                            "Image": "songseek:local",
                             "Entrypoint": _ENTRYPOINT,
                             "Cmd": self.command,
                             "Env": self.environment,

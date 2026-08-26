@@ -10,7 +10,7 @@ from infrastructure.persistence.auth_store import AuthStore, UserRecord, _derive
 
 logger = logging.getLogger(__name__)
 
-_PRODUCT = "DroppedNeedle"
+_PRODUCT = "SongSeek"
 
 
 class PlexUserAuthService:
@@ -86,7 +86,7 @@ class PlexUserAuthService:
         """Poll a link-flow pin. Returns the verified profile (uuid /
         display_name / auth_token) once the user authorizes, ``None`` while the
         pin is still pending. Enforces the same server-membership gate as login;
-        no DroppedNeedle login side effects."""
+        no SongSeek login side effects."""
         client_id = self.get_client_id()
         auth_token = await self._plex_repo.poll_oauth_pin(pin_id, client_id)
         if not auth_token:

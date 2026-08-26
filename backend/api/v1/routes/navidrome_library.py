@@ -467,7 +467,7 @@ async def import_navidrome_playlist(
     if not result.already_imported:
         background_tasks.add_task(
             playlist_service.resolve_track_sources,
-            result.droppedneedle_playlist_id,
+            result.songseek_playlist_id,
             requesting=current_user,
             jf_service=jf_service,
             local_service=local_service,

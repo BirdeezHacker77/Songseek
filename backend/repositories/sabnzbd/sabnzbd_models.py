@@ -21,7 +21,7 @@ class SabnzbdAddResponse(AppStruct):
 
 
 class SabnzbdQueueSlot(AppStruct):
-    """In-progress job. ``filename`` is the job name (``droppedneedle-{task_id}``).
+    """In-progress job. ``filename`` is the job name (``songseek-{task_id}``).
     ``mb``/``mbleft`` are decimal **megabytes** as strings; ``percentage`` int-as-string;
     ``priority`` a NAME string on read (``Normal``/``High``/…)."""
 

@@ -89,7 +89,7 @@
 </script>
 
 <svelte:head>
-	<title>Upcoming Events - DroppedNeedle</title>
+	<title>Upcoming Events - SongSeek</title>
 </svelte:head>
 
 <div class="mx-auto w-full max-w-4xl px-2 py-4 sm:px-4 sm:py-8 lg:px-8">

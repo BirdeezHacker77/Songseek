@@ -90,7 +90,7 @@ def test_update_unknown_plugin_404s(harness):
 
 
 def test_no_source_routes_are_mounted(harness):
-    """D22: DroppedNeedle never calls plugin code to acquire, so no search or fetch
+    """D22: SongSeek never calls plugin code to acquire, so no search or fetch
     surface exists. Asserted on the route table rather than on a status code, because
     `/plugins/sources` still *resolves* - the `/{plugin_name}` handlers match it as a
     plugin literally named "sources"."""

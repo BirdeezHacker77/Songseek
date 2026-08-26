@@ -869,7 +869,7 @@
 						Nothing on the watchlist
 					</h2>
 					<p class="text-base-content/30 text-sm max-w-xs">
-						When a request can't be found anywhere, DroppedNeedle keeps checking for it and lists it
+						When a request can't be found anywhere, SongSeek keeps checking for it and lists it
 						here.
 					</p>
 				</div>

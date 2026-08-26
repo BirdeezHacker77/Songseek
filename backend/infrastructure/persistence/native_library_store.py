@@ -4323,7 +4323,7 @@ class NativeLibraryStore(PersistenceBase):
                 candidate_id = track.get("library_file_id")
                 if not candidate_id and source_type in {
                     "local",
-                    "droppedneedle-local",
+                    "songseek-local",
                     "howler",
                 }:
                     candidate_id = track.get("track_source_id")
@@ -4348,7 +4348,7 @@ class NativeLibraryStore(PersistenceBase):
                     local_artist_id = membership["artist_id"]
                 elif candidate_id and source_type in {
                     "local",
-                    "droppedneedle-local",
+                    "songseek-local",
                     "howler",
                 }:
                     raise ResourceNotFoundError(
@@ -4551,7 +4551,7 @@ class NativeLibraryStore(PersistenceBase):
             candidate_id = next_file_id
             if not candidate_id and next_source_type in {
                 "local",
-                "droppedneedle-local",
+                "songseek-local",
                 "howler",
             }:
                 candidate_id = next_source_id
@@ -4576,7 +4576,7 @@ class NativeLibraryStore(PersistenceBase):
                 next_file_id = local_track_id
             elif candidate_id and next_source_type in {
                 "local",
-                "droppedneedle-local",
+                "songseek-local",
                 "howler",
             }:
                 raise ResourceNotFoundError("The local playlist track was not found.")
@@ -5304,7 +5304,7 @@ class NativeLibraryStore(PersistenceBase):
                 if kind == "playlist_track":
                     local_source = str(source.get("source_type") or "") in {
                         "local",
-                        "droppedneedle-local",
+                        "songseek-local",
                         "howler",
                     }
                     file_id = source.get("library_file_id") or (

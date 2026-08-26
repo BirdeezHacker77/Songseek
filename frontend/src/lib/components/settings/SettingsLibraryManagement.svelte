@@ -1288,7 +1288,7 @@
 							bind:checked={draft.external_refresh.enabled}
 						/><span
 							><strong>Post-commit refresh</strong><small
-								>Refresh DroppedNeedle and selected media servers.</small
+								>Refresh SongSeek and selected media servers.</small
 							></span
 						></label
 					>

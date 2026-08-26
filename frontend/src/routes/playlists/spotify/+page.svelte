@@ -76,7 +76,7 @@
 </script>
 
 <svelte:head>
-	<title>Import from Spotify - DroppedNeedle</title>
+	<title>Import from Spotify - SongSeek</title>
 </svelte:head>
 
 <div class="space-y-6 px-4 sm:px-6 lg:px-8">

@@ -655,7 +655,7 @@ def test_legacy_editor_options_normalize_to_current_live_settings(
     )
     profile["genres"]["write_primary_only_for_constrained_formats"] = False
     profile["artwork"]["providers"].append("audiodb")
-    profile["notification"]["refresh_droppedneedle"] = False
+    profile["notification"]["refresh_songseek"] = False
     prefs = _preferences(tmp_path, {"library_management": payload})
 
     normalized = prefs.get_library_management_settings_raw()
@@ -673,4 +673,4 @@ def test_legacy_editor_options_normalize_to_current_live_settings(
     )
     assert current.genres.write_primary_only_for_constrained_formats is True
     assert "audiodb" not in current.artwork.providers
-    assert current.notification.refresh_droppedneedle is True
+    assert current.notification.refresh_songseek is True

@@ -94,7 +94,7 @@ async def _attempt(
     paths: list[Path] | None = None,
     bundle_ids: list[str] | None = None,
 ):
-    job_name = f"droppedneedle-{task_id}-0" if source == "usenet" else ""
+    job_name = f"songseek-{task_id}-0" if source == "usenet" else ""
     attempt = await store.create_download_attempt(
         task_id=task_id,
         source=source,
@@ -126,7 +126,7 @@ def _clear_health():
 @pytest.mark.asyncio
 async def test_completed_workspace_is_removed_after_barriers_clear(tmp_path: Path):
     root = tmp_path / "sab"
-    workspace = root / "audio" / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / "audio" / f"songseek-{'a' * 32}-0"
     nested = workspace / "Disc 1"
     nested.mkdir(parents=True)
     for name in ("01.flac", "02-unmatched.flac", "cover.jpg", "album.nfo", "list.m3u"):
@@ -165,7 +165,7 @@ async def test_completed_workspace_is_removed_after_barriers_clear(tmp_path: Pat
 async def test_history_failure_resumes_from_workspace_removed(tmp_path: Path):
     now = [10.0]
     root = tmp_path / "sab"
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     workspace.mkdir(parents=True)
     (workspace / "track.flac").write_bytes(b"x")
     store = _store(tmp_path)
@@ -205,7 +205,7 @@ async def test_history_failure_resumes_from_workspace_removed(tmp_path: Path):
 async def test_unsafe_workspace_evidence_is_preserved(tmp_path: Path, case: str):
     root = tmp_path / "sab"
     root.mkdir()
-    job_name = f"droppedneedle-{'a' * 32}-0"
+    job_name = f"songseek-{'a' * 32}-0"
     outside = tmp_path / job_name
     outside.mkdir()
     if case == "root":
@@ -241,7 +241,7 @@ async def test_unsafe_workspace_evidence_is_preserved(tmp_path: Path, case: str)
 @pytest.mark.asyncio
 async def test_symlinked_mount_root_is_refused(tmp_path: Path):
     real_root = tmp_path / "real-sab"
-    job_name = f"droppedneedle-{'a' * 32}-0"
+    job_name = f"songseek-{'a' * 32}-0"
     workspace = real_root / job_name
     workspace.mkdir(parents=True)
     source = workspace / "track.flac"
@@ -274,7 +274,7 @@ async def test_unhealthy_mount_retries_and_missing_workspace_is_idempotent(
 ):
     root = tmp_path / "sab"
     root.mkdir()
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     store = _store(tmp_path)
     attempt = await _attempt(store, root, workspace=workspace)
     client = _Client(
@@ -310,7 +310,7 @@ async def test_unhealthy_mount_retries_and_missing_workspace_is_idempotent(
 async def test_missing_history_cannot_authorize_a_persisted_workspace(tmp_path: Path):
     now = [10.0]
     root = tmp_path / "sab"
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     workspace.mkdir(parents=True)
     source = workspace / "track.flac"
     source.write_bytes(b"keep")
@@ -595,7 +595,7 @@ async def test_publisher_cleanup_pending_defers_without_counting_a_failure(
     tmp_path: Path,
 ):
     root = tmp_path / "sab"
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     workspace.mkdir(parents=True)
     store = _store(tmp_path)
     attempt = await _attempt(store, root, workspace=workspace, bundle_ids=["bundle"])
@@ -627,7 +627,7 @@ async def test_publisher_cleanup_pending_defers_without_counting_a_failure(
 async def test_repaired_publisher_attention_returns_to_cleanup(tmp_path: Path):
     now = [10.0]
     root = tmp_path / "sab"
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     workspace.mkdir(parents=True)
     store = _store(tmp_path)
     attempt = await _attempt(store, root, workspace=workspace, bundle_ids=["bundle"])
@@ -665,7 +665,7 @@ async def test_health_warning_starts_after_three_failures_and_auto_heals(
 ):
     now = [10.0]
     root = tmp_path / "sab"
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     workspace.mkdir(parents=True)
     (workspace / "track.flac").write_bytes(b"source")
     store = _store(tmp_path)
@@ -706,7 +706,7 @@ async def test_attention_debt_heals_after_unsafe_workspace_is_removed(tmp_path: 
     root = tmp_path / "sab"
     outside = tmp_path / "outside"
     outside.mkdir()
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     root.mkdir()
     workspace.symlink_to(outside, target_is_directory=True)
     store = _store(tmp_path)
@@ -743,7 +743,7 @@ async def test_read_only_workspace_retries_without_deleting_source(tmp_path: Pat
     if os.geteuid() == 0:
         pytest.skip("root can unlink from a read-only test directory")
     root = tmp_path / "sab"
-    workspace = root / f"droppedneedle-{'a' * 32}-0"
+    workspace = root / f"songseek-{'a' * 32}-0"
     workspace.mkdir(parents=True)
     source = workspace / "track.flac"
     source.write_bytes(b"keep")
@@ -811,12 +811,12 @@ async def test_legacy_reconciliation_cleans_only_unambiguous_terminal_tasks(
     await store.update_status(publisher_attention.id, "completed", completed_at=10.0)
 
     cleanable_workspaces = [
-        category / f"droppedneedle-{task.id}-0" for task in cleanable
+        category / f"songseek-{task.id}-0" for task in cleanable
     ]
-    failed_workspace = category / f"droppedneedle-{failed.id}-0"
-    active_workspace = category / f"droppedneedle-{active.id}-0"
-    attention_workspace = category / f"droppedneedle-{publisher_attention.id}-0"
-    unknown_workspace = category / f"droppedneedle-{'f' * 32}-0"
+    failed_workspace = category / f"songseek-{failed.id}-0"
+    active_workspace = category / f"songseek-{active.id}-0"
+    attention_workspace = category / f"songseek-{publisher_attention.id}-0"
+    unknown_workspace = category / f"songseek-{'f' * 32}-0"
     for workspace in (
         *cleanable_workspaces,
         failed_workspace,
@@ -826,7 +826,7 @@ async def test_legacy_reconciliation_cleans_only_unambiguous_terminal_tasks(
     ):
         workspace.mkdir()
         (workspace / "keep.flac").write_bytes(b"x")
-    symlink_name = f"droppedneedle-{'e' * 32}-0"
+    symlink_name = f"songseek-{'e' * 32}-0"
     (category / symlink_name).symlink_to(unknown_workspace, target_is_directory=True)
 
     client = _Client(
@@ -857,22 +857,22 @@ async def test_legacy_reconciliation_cleans_only_unambiguous_terminal_tasks(
     assert unknown_workspace.exists()
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{failed.id}-0"
+            "usenet", f"songseek-{failed.id}-0"
         )
     ).state == "needs_attention"
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{active.id}-0"
+            "usenet", f"songseek-{active.id}-0"
         )
     ).state == "in_use"
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{publisher_attention.id}-0"
+            "usenet", f"songseek-{publisher_attention.id}-0"
         )
     ).state == "needs_attention"
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{'f' * 32}-0"
+            "usenet", f"songseek-{'f' * 32}-0"
         )
     ).state == "needs_attention"
     assert (
@@ -932,7 +932,7 @@ async def test_reconciliation_survives_directory_removed_between_passes(
     tmp_path: Path,
 ):
     root = tmp_path / "sab"
-    vanished = root / "droppedneedle-staging"
+    vanished = root / "songseek-staging"
     vanished.mkdir(parents=True)
     store = _store(tmp_path)
     client = _Client(
@@ -982,13 +982,13 @@ def test_directory_entries_returns_empty_for_vanished_directory(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_default_category_scopes_to_droppedneedle_prefix(
+async def test_reconciliation_default_category_scopes_to_songseek_prefix(
     tmp_path: Path, monkeypatch
 ):
     root = tmp_path / "sab"
-    (root / "droppedneedle-staging").mkdir(parents=True)
+    (root / "songseek-staging").mkdir(parents=True)
     foreign = root / "sonarr"
-    foreign_job = foreign / f"droppedneedle-{'f' * 32}-0"
+    foreign_job = foreign / f"songseek-{'f' * 32}-0"
     foreign_job.mkdir(parents=True)
     store = _store(tmp_path)
     client = _Client(
@@ -1011,11 +1011,11 @@ async def test_reconciliation_default_category_scopes_to_droppedneedle_prefix(
     await service.reconcile_legacy_mount()
 
     assert str(root) in visited
-    assert str(root / "droppedneedle-staging") in visited
+    assert str(root / "songseek-staging") in visited
     assert not any(str(foreign) in path for path in visited)
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{'f' * 32}-0"
+            "usenet", f"songseek-{'f' * 32}-0"
         )
         is None
     )
@@ -1026,9 +1026,9 @@ async def test_reconciliation_configured_category_descends_only_there(
     tmp_path: Path,
 ):
     root = tmp_path / "sab"
-    category_job = root / "audio" / f"droppedneedle-{'f' * 32}-0"
+    category_job = root / "audio" / f"songseek-{'f' * 32}-0"
     category_job.mkdir(parents=True)
-    foreign_job = root / "movies" / f"droppedneedle-{'e' * 32}-0"
+    foreign_job = root / "movies" / f"songseek-{'e' * 32}-0"
     foreign_job.mkdir(parents=True)
     store = _store(tmp_path)
     client = _Client(
@@ -1048,12 +1048,12 @@ async def test_reconciliation_configured_category_descends_only_there(
 
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{'f' * 32}-0"
+            "usenet", f"songseek-{'f' * 32}-0"
         )
     ).state == "needs_attention"
     assert (
         await store.get_download_attempt_for_job(
-            "usenet", f"droppedneedle-{'e' * 32}-0"
+            "usenet", f"songseek-{'e' * 32}-0"
         )
         is None
     )

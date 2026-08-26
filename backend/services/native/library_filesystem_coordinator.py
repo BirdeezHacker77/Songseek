@@ -174,7 +174,7 @@ class LibraryFilesystemCoordinator:
                 self._scan_revisions.pop(key, None)
 
 
-MANAGEMENT_ARTIFACT_PREFIX = ".droppedneedle-management-"
+MANAGEMENT_ARTIFACT_PREFIX = ".songseek-management-"
 
 
 def is_management_artifact(path: Path) -> bool:

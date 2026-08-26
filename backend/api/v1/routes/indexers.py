@@ -2,7 +2,7 @@
 test. All admin-only. ``api_key`` is masked on GET and preserved on PUT when the
 masked sentinel comes back.
 
-DroppedNeedle bundles no indexers - the list starts empty and the user adds their
+SongSeek bundles no indexers - the list starts empty and the user adds their
 own Generic Newznab endpoint (guardrail 1). Test reports caps/version + whether the
 indexer advertises ``<audio-search>`` (so the user knows whether structured music
 search or the ``t=search`` fallback will be used).

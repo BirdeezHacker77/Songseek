@@ -298,7 +298,7 @@
 	}
 </script>
 
-<svelte:head><title>Organization operation · DroppedNeedle</title></svelte:head>
+<svelte:head><title>Organization operation · SongSeek</title></svelte:head>
 
 {#snippet resultInspector(ordinal: number)}
 	{@const result = results.find((candidate) => candidate.plan.ordinal === ordinal)}
@@ -534,7 +534,7 @@
 					<Clock3 class="h-5 w-5 text-base-content/50" />
 					<h2 class="mt-2 font-semibold">Original baseline</h2>
 					<p class="mt-1 text-sm text-base-content/55">
-						Restore files to how they were before DroppedNeedle first managed them. This is broader
+						Restore files to how they were before SongSeek first managed them. This is broader
 						than Undo and leaves restored files unmanaged.
 					</p>
 					{#if operation.baseline_available_count > 0}<p class="mt-2 text-xs text-base-content/55">

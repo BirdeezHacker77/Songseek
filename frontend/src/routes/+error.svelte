@@ -15,7 +15,7 @@
 </script>
 
 <svelte:head>
-	<title>{status} - DroppedNeedle</title>
+	<title>{status} - SongSeek</title>
 </svelte:head>
 
 <div class="err-wrap grain">

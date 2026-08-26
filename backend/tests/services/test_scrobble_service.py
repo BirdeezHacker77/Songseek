@@ -128,7 +128,7 @@ class TestReportNowPlaying:
         lb.submit_now_playing.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_navidrome_now_playing_forwards_when_droppedneedle_is_owner(self):
+    async def test_navidrome_now_playing_forwards_when_songseek_is_owner(self):
         service, lastfm, lb, *_ = _make_service(navidrome_handles_external=False)
         await service.report_now_playing(
             _now_playing_req(source="navidrome"), user_id="u"
@@ -268,7 +268,7 @@ class TestSubmitScrobble:
         lb.submit_single_listen.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_navidrome_still_forwards_when_droppedneedle_is_owner(self):
+    async def test_navidrome_still_forwards_when_songseek_is_owner(self):
         service, lastfm, lb, *_ = _make_service(navidrome_handles_external=False)
         await service.submit_scrobble(_scrobble_req(source="navidrome"), user_id="u")
         lastfm.scrobble.assert_awaited_once()

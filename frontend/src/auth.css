@@ -18,7 +18,7 @@
 	--color-accent-content: #0f1a0a;
 }
 
-/* Auth-free routes keep the established DroppedNeedle type system without loading app.css. */
+/* Auth-free routes keep the established SongSeek type system without loading app.css. */
 @font-face {
 	font-family: 'Space Grotesk';
 	font-style: normal;

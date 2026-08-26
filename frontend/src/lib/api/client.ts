@@ -120,7 +120,7 @@ interface ApiClient {
 function createClient(fetchFn: FetchFn): ApiClient {
 	function transportPath(url: string): string {
 		try {
-			return new URL(url, 'http://droppedneedle.invalid').pathname;
+			return new URL(url, 'http://songseek.invalid').pathname;
 		} catch {
 			return url.split('?', 1)[0] ?? url;
 		}

@@ -3,7 +3,7 @@
 	import LibraryReviewBrowser from '$lib/components/library/LibraryReviewBrowser.svelte';
 </script>
 
-<svelte:head><title>Identification review · DroppedNeedle</title></svelte:head>
+<svelte:head><title>Identification review · SongSeek</title></svelte:head>
 
 <div class="min-h-[calc(100vh-200px)]">
 	<PageHeader

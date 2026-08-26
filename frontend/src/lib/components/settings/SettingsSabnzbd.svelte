@@ -209,7 +209,7 @@
 			</select>
 			<span class="label">
 				<span class="label-text-alt">
-					Run Test to load categories. A dedicated <code>droppedneedle</code> category gives
+					Run Test to load categories. A dedicated <code>songseek</code> category gives
 					predictable folders, but <code>*</code> works.
 				</span>
 			</span>
@@ -222,7 +222,7 @@
 			<div class="space-y-1.5 rounded-box border border-base-content/10 bg-base-200/40 p-3">
 				<label class="text-sm font-medium" for="sab-mount">Downloads mount</label>
 				<p class="text-xs text-base-content/60">
-					Where DroppedNeedle sees SABnzbd's completed folder (its <code>complete</code> dir),
+					Where SongSeek sees SABnzbd's completed folder (its <code>complete</code> dir),
 					mounted read-write into this container on the same disk as your library.
 					{#if testResult?.complete_dir}
 						SABnzbd's complete dir is <code class="text-base-content/70"

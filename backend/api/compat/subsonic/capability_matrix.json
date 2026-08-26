@@ -91,7 +91,7 @@
     "getTranscodeStream": {"state": "full", "methods": ["GET"], "response_key": "binary", "service": "shared transcode service", "parameters": ["mediaId", "mediaType", "offset?", "transcodeParams"], "extension": "transcoding:1"}
   },
   "signed_deviations": {
-    "D5_one_native_folder": "The hosted catalog exposes only DroppedNeedle folder 1 and never outbound Navidrome folders.",
+    "D5_one_native_folder": "The hosted catalog exposes only SongSeek folder 1 and never outbound Navidrome folders.",
     "D11_validated_no_op": "Ratings 0-5 validate the target and succeed without persisting a rating.",
     "D15_admin_only_if_existing_guard_supports": "Scan start is added only through the existing guarded scanner and is admin-only."
   },

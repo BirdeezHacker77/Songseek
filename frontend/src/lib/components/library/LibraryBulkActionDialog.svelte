@@ -41,7 +41,7 @@
 	let dialogHeading: HTMLHeadingElement;
 	let opener: HTMLButtonElement | null = null;
 	const storageKey = $derived(
-		`droppedneedle:library-bulk-job:${authStore.user?.id ?? 'anonymous'}`
+		`songseek:library-bulk-job:${authStore.user?.id ?? 'anonymous'}`
 	);
 
 	$effect(() => {

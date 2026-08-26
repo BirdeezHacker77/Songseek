@@ -81,11 +81,11 @@
 
 	async function continueOnMusicBrainz(): Promise<void> {
 		if (!canMutate || !canSeed || seedMutation.isPending) return;
-		const target = `droppedneedle-musicbrainz-${contribution.id}`;
+		const target = `songseek-musicbrainz-${contribution.id}`;
 		const editorWindow = window.open('about:blank', target);
 		if (!editorWindow) {
 			toastStore.show({
-				message: 'Allow pop-ups for DroppedNeedle, then try again',
+				message: 'Allow pop-ups for SongSeek, then try again',
 				type: 'error'
 			});
 			return;
@@ -211,7 +211,7 @@
 				<div>
 					<h3 class="font-bold">Linked to MusicBrainz</h3>
 					<p class="mt-1 text-sm text-base-content/65">
-						This local album keeps its DroppedNeedle identity and now has a verified MusicBrainz
+						This local album keeps its SongSeek identity and now has a verified MusicBrainz
 						match.
 					</p>
 					{#if contribution.result_release_mbid}
@@ -234,7 +234,7 @@
 				<div class="min-w-0">
 					<h3 class="font-bold">MusicBrainz release returned</h3>
 					<p class="mt-1 text-sm text-base-content/65">
-						DroppedNeedle is waiting for the release to appear in the MusicBrainz API. It will
+						SongSeek is waiting for the release to appear in the MusicBrainz API. It will
 						compare the release with the current local album before attaching anything.
 					</p>
 					{#if contribution.result_release_mbid}
@@ -294,7 +294,7 @@
 				<div>
 					<h3 class="font-bold">Search before you add</h3>
 					<p class="mt-1 max-w-2xl text-sm text-base-content/60">
-						DroppedNeedle checks Discogs relationships, release groups, barcodes and similar
+						SongSeek checks Discogs relationships, release groups, barcodes and similar
 						releases. An exact Discogs match blocks a duplicate submission.
 					</p>
 				</div>
@@ -360,7 +360,7 @@
 						<div>
 							<h3 class="font-bold">Discogs points to several MusicBrainz releases</h3>
 							<p class="mt-1 text-sm text-base-content/65">
-								DroppedNeedle cannot safely choose one. Review the relationships upstream, then run
+								SongSeek cannot safely choose one. Review the relationships upstream, then run
 								the check again.
 							</p>
 						</div>
@@ -466,7 +466,7 @@
 						<div>
 							<h3 class="font-bold">Ready for your final review</h3>
 							<p class="mt-1 max-w-2xl text-sm text-base-content/60">
-								You will sign in, review every field and submit on MusicBrainz. DroppedNeedle does
+								You will sign in, review every field and submit on MusicBrainz. SongSeek does
 								not receive your MusicBrainz password.
 							</p>
 							{#if groupCandidates.length === 1}

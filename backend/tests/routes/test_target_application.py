@@ -364,7 +364,7 @@ def test_offline_replacement_entrypoint_is_complete_and_single_worker() -> None:
 def test_production_target_application_always_runs_startup_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("DROPPEDNEEDLE_TARGET_ADMISSION_TOKEN", raising=False)
+    monkeypatch.delenv("SONGSEEK_TARGET_ADMISSION_TOKEN", raising=False)
     reject = AsyncMock(
         side_effect=TargetStartupInvariantError("target migration validation failed")
     )
@@ -593,9 +593,9 @@ def test_production_target_lifespan_selects_validation_phase_and_runs_runtime(
     )
     monkeypatch.setenv("TZ", "Europe/London")
     if admission_token is None:
-        monkeypatch.delenv("DROPPEDNEEDLE_TARGET_ADMISSION_TOKEN", raising=False)
+        monkeypatch.delenv("SONGSEEK_TARGET_ADMISSION_TOKEN", raising=False)
     else:
-        monkeypatch.setenv("DROPPEDNEEDLE_TARGET_ADMISSION_TOKEN", admission_token)
+        monkeypatch.setenv("SONGSEEK_TARGET_ADMISSION_TOKEN", admission_token)
     app = create_production_target_application()
 
     with build_test_client(app):
@@ -658,7 +658,7 @@ def test_production_target_lifespan_rejects_malformed_admission_before_validatio
     from maintenance import automatic_upgrade
 
     validate = AsyncMock()
-    monkeypatch.setenv("DROPPEDNEEDLE_TARGET_ADMISSION_TOKEN", "malformed")
+    monkeypatch.setenv("SONGSEEK_TARGET_ADMISSION_TOKEN", "malformed")
     monkeypatch.setattr(config_module, "migrate_legacy_config", lambda: None)
     monkeypatch.setattr(
         target_module,

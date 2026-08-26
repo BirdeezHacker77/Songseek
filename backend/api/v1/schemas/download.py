@@ -60,7 +60,7 @@ class DownloadClientStatusResponse(AppStruct):
     # it (the silent misconfig); None when there's nothing to flag.
     mount_advisory: str | None = None
     # slskd's own configured downloads dir (its in-container path), shown as a hint so the
-    # user can match it to DroppedNeedle's mount. None when slskd didn't report it.
+    # user can match it to SongSeek's mount. None when slskd didn't report it.
     slskd_downloads_dir: str | None = None
 
 

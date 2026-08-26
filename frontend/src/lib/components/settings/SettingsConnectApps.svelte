@@ -56,7 +56,7 @@
 			transcode_default_format: transcodeFormat,
 			// a cleared number input binds to null; fall back so we never PUT null
 			transcode_max_bitrate_kbps: transcodeMaxKbps ?? 320,
-			advertise_server_name: settingsQuery.data?.advertise_server_name ?? 'DroppedNeedle',
+			advertise_server_name: settingsQuery.data?.advertise_server_name ?? 'SongSeek',
 			advertise_server_version: settingsQuery.data?.advertise_server_version ?? '10.10.6',
 			discover_mode: discoverMode
 		};

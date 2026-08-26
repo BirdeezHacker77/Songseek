@@ -195,7 +195,7 @@ describe('ContributionMusicBrainzReview', () => {
 		expect(submitted).toEqual({
 			action: 'https://musicbrainz.org/release/add',
 			method: 'post',
-			target: 'droppedneedle-musicbrainz-contribution-1',
+			target: 'songseek-musicbrainz-contribution-1',
 			entries: fields.map((field) => [field.name, field.value])
 		});
 	});

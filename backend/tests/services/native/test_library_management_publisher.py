@@ -1942,7 +1942,7 @@ async def test_import_preparation_failure_rolls_back_the_in_progress_journal(
     journals = await store.list_library_management_import_journals(bundle_id)
     assert [value.state for value in journals] == ["rolled_back", "rolled_back"]
     assert all(source.is_file() for source in sources)
-    assert list(root.rglob(".droppedneedle-management-*")) == []
+    assert list(root.rglob(".songseek-management-*")) == []
 
 
 @pytest.mark.asyncio
@@ -2163,7 +2163,7 @@ async def test_legacy_standard_only_request_compensates_after_a_late_settings_ch
     assert len(journals) == 2
     assert all(journal.baseline_blob_sha256 is None for journal in journals)
     assert all(journal.baseline_ancillary_snapshot_json == "[]" for journal in journals)
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio
@@ -2315,7 +2315,7 @@ async def test_published_import_retry_does_not_restage_artifact_temporaries(
 
     assert result.paths == (str(root / request.destination_relative_path),)
     assert (root / "Import Artist/Import Album/cover.jpg").read_bytes() == artwork
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio
@@ -2361,7 +2361,7 @@ async def test_publisher_moves_validated_real_audio_and_is_idempotent(
         == hashlib.sha256(destination.read_bytes()).hexdigest()
     )
     assert [journal.state for journal in journals] == ["completed"]
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio
@@ -2403,7 +2403,7 @@ async def test_publisher_replaces_same_path_through_verified_backup(
     assert source.read_bytes() != original
     assert audio.read(source).metadata.value_for("title") == "Aria"
     assert [journal.state for journal in journals] == ["completed"]
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio
@@ -2669,7 +2669,7 @@ async def test_publisher_rejects_settings_changed_after_preview(tmp_path: Path) 
 
     assert source.is_file()
     assert await store.list_file_mutation_journals_for_bundle(job_id, 0) == []
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio
@@ -2687,7 +2687,7 @@ async def test_publisher_rejects_identity_changed_after_preview(tmp_path: Path) 
         await publisher.publish_bundle(job_id, 0, "apply-worker")
 
     assert source.is_file()
-    assert not list(root.rglob(".droppedneedle-management-*"))
+    assert not list(root.rglob(".songseek-management-*"))
 
 
 @pytest.mark.asyncio

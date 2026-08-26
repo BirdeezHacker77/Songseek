@@ -38,7 +38,7 @@
 </script>
 
 <QueryProvider>
-	<div data-testid="app-shell" data-theme="dark" class="droppedneedle-app-shell">
+	<div data-testid="app-shell" data-theme="dark" class="songseek-app-shell">
 		{#if needsAppShell}
 			{#if AppShell}
 				<AppShell {children} />
@@ -46,7 +46,7 @@
 				<main class="grid min-h-screen place-items-center bg-base-100 p-6">
 					<div class="alert alert-error max-w-lg shadow-lg" role="alert">
 						<div>
-							<p class="font-semibold">DroppedNeedle did not finish loading.</p>
+							<p class="font-semibold">SongSeek did not finish loading.</p>
 							<p class="mt-1 text-sm opacity-80">Check your connection, then try again.</p>
 						</div>
 						<button class="btn btn-sm" type="button" onclick={retryShellLoad}>Try again</button>
@@ -54,7 +54,7 @@
 				</main>
 			{:else}
 				<div class="min-h-screen bg-base-100" aria-busy="true">
-					<span class="sr-only">Loading DroppedNeedle</span>
+					<span class="sr-only">Loading SongSeek</span>
 				</div>
 			{/if}
 		{:else}

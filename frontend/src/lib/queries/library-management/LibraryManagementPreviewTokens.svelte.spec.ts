@@ -76,7 +76,7 @@ describe('Library Management activation session', () => {
 		expect(readLibraryManagementActivationSession('admin-1')).toBeNull();
 
 		sessionStorage.setItem(
-			'droppedneedle:library-management:activation-session:admin-1',
+			'songseek:library-management:activation-session:admin-1',
 			'{"rootIds":"not-an-array"}'
 		);
 		expect(readLibraryManagementActivationSession('admin-1')).toBeNull();

@@ -1,6 +1,6 @@
 # Discogs API notes
 
-Verified live on 2026-07-21 with DroppedNeedle 2.3.0's descriptive user agent.
+Verified live on 2026-07-21 with SongSeek 2.3.0's descriptive user agent.
 
 ## Operations used
 
@@ -12,7 +12,7 @@ Verified live on 2026-07-21 with DroppedNeedle 2.3.0's descriptive user agent.
   returned HTTP 200 without authentication. The modeled result fields were `id`,
   `master_id`, `title`, `year`, `country`, `label`, `catno`, `format`, `formats`,
   `barcode`, `uri`, and `resource_url`.
-- Both responses advertised `x-discogs-ratelimit: 25`. DroppedNeedle therefore limits
+- Both responses advertised `x-discogs-ratelimit: 25`. SongSeek therefore limits
   this unauthenticated adapter to 25 requests per minute with no burst.
 
 The live payloads also contained image, community, and marketplace-adjacent fields.

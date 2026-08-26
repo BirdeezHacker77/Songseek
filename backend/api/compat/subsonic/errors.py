@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from core.exceptions import (
     ConflictError,
-    DroppedNeedleException,
+    SongSeekException,
     PermissionDeniedError,
     ResourceNotFoundError,
     SubsonicError,
@@ -62,7 +62,7 @@ def to_subsonic_code(exc: Exception) -> int:
 def to_subsonic_message(exc: Exception, code: int) -> str:
     """Message for the failed envelope. Only our own exceptions surface their text;
     an unexpected str() can leak paths/ids, so fall back to the static code default."""
-    if isinstance(exc, DroppedNeedleException):
+    if isinstance(exc, SongSeekException):
         message = str(getattr(exc, "message", "") or exc).strip()
         if message:
             return message

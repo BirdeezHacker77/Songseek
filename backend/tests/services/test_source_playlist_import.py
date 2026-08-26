@@ -180,7 +180,7 @@ class TestPlexImportPlaylist:
         svc = _plex_service(playlists=[pl], items=tracks)
         ps = _mock_playlist_service()
         result = await svc.import_playlist("pl-1", ps, requesting=_REQ)
-        assert result.droppedneedle_playlist_id == "new-pl-1"
+        assert result.songseek_playlist_id == "new-pl-1"
         assert result.tracks_imported == 1
         assert result.already_imported is False
         ps.create_playlist.assert_awaited_once()
@@ -193,7 +193,7 @@ class TestPlexImportPlaylist:
         ps = _mock_playlist_service(existing=existing)
         result = await svc.import_playlist("pl-1", ps, requesting=_REQ)
         assert result.already_imported is True
-        assert result.droppedneedle_playlist_id == "existing-1"
+        assert result.songseek_playlist_id == "existing-1"
         ps.create_playlist.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -11,7 +11,7 @@ const h = vi.hoisted(() => ({
 		transcoding_enabled: true,
 		transcode_default_format: 'mp3',
 		transcode_max_bitrate_kbps: 320,
-		advertise_server_name: 'DroppedNeedle',
+		advertise_server_name: 'SongSeek',
 		advertise_server_version: '10.10.6',
 		discover_mode: 'local-only'
 	},
@@ -83,7 +83,7 @@ beforeEach(() => {
 		transcoding_enabled: true,
 		transcode_default_format: 'mp3',
 		transcode_max_bitrate_kbps: 320,
-		advertise_server_name: 'DroppedNeedle',
+		advertise_server_name: 'SongSeek',
 		advertise_server_version: '10.10.6',
 		discover_mode: 'local-only'
 	};

@@ -1,17 +1,17 @@
 name: "\U0001F41B Bug Report"
-description: Report a problem with DroppedNeedle
+description: Report a problem with SongSeek
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Before opening a bug report, please search [existing issues](https://github.com/DroppedNeedle/DroppedNeedle/issues) to check if it's already been reported.
+        Before opening a bug report, please search [existing issues](https://github.com/BirdeezHacker77/Songseek/issues) to check if it's already been reported.
 
-        For general support questions, use [Discord](https://discord.gg/B5suDg7gu2) instead.
+        For general support questions, use [Discord](https://github.com/BirdeezHacker77/Songseek/discussions) instead.
   - type: input
     id: version
     attributes:
-      label: DroppedNeedle Version
+      label: SongSeek Version
       description: Found in Settings or the bottom of the sidebar.
       placeholder: v1.0.0
     validations:
@@ -50,7 +50,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant log output from `docker compose logs droppedneedle`. This will be formatted as code automatically.
+      description: Relevant log output from `docker compose logs songseek`. This will be formatted as code automatically.
       render: shell
   - type: dropdown
     id: deployment

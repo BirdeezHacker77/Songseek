@@ -108,7 +108,7 @@ def _place(downloads: Path, rel: str) -> None:
 
 
 def _write_fixture_tag(path: Path, tag: AudioTag) -> None:
-    """Seed FLAC tags with raw mutagen, independent of DroppedNeedle's writer."""
+    """Seed FLAC tags with raw mutagen, independent of SongSeek's writer."""
     from mutagen.flac import FLAC
 
     audio = FLAC(path)

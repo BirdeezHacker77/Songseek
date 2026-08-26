@@ -108,7 +108,7 @@
 
 {#if playerStore.isPlayerVisible && playerStore.nowPlaying && !deckFocus.inView}
 	<div
-		class="droppedneedle-player-bar fixed left-0 right-0 z-50 bg-base-300/95 backdrop-blur-md shadow-[0_-4px_20px_rgba(0,0,0,0.3)] transition-transform duration-300"
+		class="songseek-player-bar fixed left-0 right-0 z-50 bg-base-300/95 backdrop-blur-md shadow-[0_-4px_20px_rgba(0,0,0,0.3)] transition-transform duration-300"
 	>
 		<button
 			class="btn btn-ghost btn-xs btn-circle absolute top-1.5 right-1.5 opacity-60 hover:opacity-100"
@@ -119,7 +119,7 @@
 		</button>
 
 		<div
-			class="droppedneedle-player-inner flex items-center gap-2 px-3 pr-9 sm:gap-4 sm:px-4 sm:pr-10 max-w-screen-2xl mx-auto"
+			class="songseek-player-inner flex items-center gap-2 px-3 pr-9 sm:gap-4 sm:px-4 sm:pr-10 max-w-screen-2xl mx-auto"
 		>
 			<div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 lg:w-1/4 lg:flex-none">
 				{#if nowPlayingCoverUrl && !coverImgError}

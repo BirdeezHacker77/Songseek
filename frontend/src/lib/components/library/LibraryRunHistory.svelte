@@ -99,7 +99,7 @@
 			const blob = await response.blob();
 			const disposition = response.headers.get('content-disposition') ?? '';
 			const filename =
-				disposition.match(/filename="([^"]+)"/)?.[1] ?? 'droppedneedle-library-run.json';
+				disposition.match(/filename="([^"]+)"/)?.[1] ?? 'songseek-library-run.json';
 			const url = URL.createObjectURL(blob);
 			const link = document.createElement('a');
 			link.href = url;

@@ -1028,8 +1028,8 @@ async def test_scan_ignores_reserved_management_artifacts(
     root = tmp_path / "music"
     root.mkdir()
     (root / "track-1.flac").write_bytes(b"audio")
-    (root / ".droppedneedle-management-job-track-2.flac").write_bytes(b"temp")
-    hidden = root / ".droppedneedle-management-job"
+    (root / ".songseek-management-job-track-2.flac").write_bytes(b"temp")
+    hidden = root / ".songseek-management-job"
     hidden.mkdir()
     (hidden / "track-3.flac").write_bytes(b"backup")
     resolver = _resolver(root)
