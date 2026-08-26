@@ -1,6 +1,9 @@
 name: Backend CI
 
 on:
+  # Manual trigger, so CI can be run on demand without pushing a change that
+  # happens to match the path filters below.
+  workflow_dispatch:
   push:
     branches: [main]
     paths:

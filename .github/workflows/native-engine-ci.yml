@@ -4,6 +4,9 @@ name: Native Engine CI
 # does NOT replace backend-ci.yml / frontend-ci.yml.
 
 on:
+  # Manual trigger, so CI can be run on demand without pushing a change that
+  # happens to match the path filters below.
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
