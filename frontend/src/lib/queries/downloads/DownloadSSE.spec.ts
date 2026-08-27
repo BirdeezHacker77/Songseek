@@ -27,12 +27,17 @@ class FakeEventSource {
 
 beforeEach(() => {
 	FakeEventSource.instances = [];
+	// Streams take from a shared connection budget; without a reset the earlier
+	// tests' unstopped streams would starve the later ones.
+	resetStreamSlots();
 	vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource);
 });
 
 afterEach(() => {
 	vi.unstubAllGlobals();
 });
+
+import { MAX_CONCURRENT_STREAMS, resetStreamSlots } from './streamSlots';
 
 const { createDownloadStream } = await import('./DownloadSSE.svelte');
 
@@ -125,5 +130,102 @@ describe('createDownloadStream', () => {
 		const es = FakeEventSource.instances[0];
 		s.stop();
 		expect(es.closed).toBe(true);
+	});
+});
+
+describe('connection budget', () => {
+	it('opens no EventSource once the budget is spent', () => {
+		const streams = Array.from({ length: MAX_CONCURRENT_STREAMS }, (_value, index) => {
+			const s = createDownloadStream();
+			s.start(`task-${index}`);
+			return s;
+		});
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS);
+
+		// One album can have more tracks transferring than the browser has
+		// connections; the surplus falls back to polled progress instead of
+		// starving every other request on the page.
+		const refused = createDownloadStream();
+		refused.start('one-too-many');
+
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS);
+		streams.forEach((s) => s.stop());
+	});
+
+	it('lets a waiting caller through once a stream stops', () => {
+		const held = Array.from({ length: MAX_CONCURRENT_STREAMS }, (_value, index) => {
+			const s = createDownloadStream();
+			s.start(`task-${index}`);
+			return s;
+		});
+
+		held[0].stop();
+		const next = createDownloadStream();
+		next.start('later');
+
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS + 1);
+		next.stop();
+		held.slice(1).forEach((s) => s.stop());
+	});
+
+	it('does not reopen a healthy stream for the same task', () => {
+		const s = createDownloadStream();
+		s.start('t1');
+		s.start('t1');
+
+		expect(FakeEventSource.instances).toHaveLength(1);
+		expect(FakeEventSource.instances[0].closed).toBe(false);
+		s.stop();
+	});
+
+	it('upgrades a refused caller to a live stream when a slot frees', () => {
+		const held = Array.from({ length: MAX_CONCURRENT_STREAMS }, (_value, index) => {
+			const s = createDownloadStream();
+			s.start(`task-${index}`);
+			return s;
+		});
+		const refused = createDownloadStream();
+		refused.start('waiting');
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS);
+
+		// No second start() call: the waiter queue promotes it, so the caller
+		// never has to re-run and tear down its own state to get a stream.
+		held[0].stop();
+
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS + 1);
+		refused.stop();
+		held.slice(1).forEach((s) => s.stop());
+	});
+
+	it('stops waiting for a slot once the caller gives up', () => {
+		const held = Array.from({ length: MAX_CONCURRENT_STREAMS }, (_value, index) => {
+			const s = createDownloadStream();
+			s.start(`task-${index}`);
+			return s;
+		});
+		const abandoned = createDownloadStream();
+		abandoned.start('gone');
+		abandoned.stop();
+
+		held[0].stop();
+
+		// The abandoned caller must not be handed the freed slot.
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS);
+		held.slice(1).forEach((s) => s.stop());
+	});
+
+	it('releases its slot when the transfer completes', () => {
+		const first = createDownloadStream();
+		first.start('t1');
+		FakeEventSource.instances[0].emit('complete', { status: 'completed' });
+
+		const others = Array.from({ length: MAX_CONCURRENT_STREAMS }, (_value, index) => {
+			const s = createDownloadStream();
+			s.start(`after-${index}`);
+			return s;
+		});
+
+		expect(FakeEventSource.instances).toHaveLength(MAX_CONCURRENT_STREAMS + 1);
+		others.forEach((s) => s.stop());
 	});
 });

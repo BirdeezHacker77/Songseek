@@ -1,5 +1,6 @@
 import { API } from '$lib/constants';
 import type { DownloadProgress, DownloadSourceUpdate } from '$lib/types';
+import { acquireStreamSlot, cancelStreamSlotWait, releaseStreamSlot } from './streamSlots';
 
 interface DownloadStreamState {
 	progress: DownloadProgress | null;
@@ -93,17 +94,46 @@ export function createDownloadStream() {
 		done: false
 	});
 	let source: EventSource | null = null;
+	/** The task a stream is wanted for, whether or not one is open yet. */
+	let wantedTaskId: string | null = null;
+	let holdsSlot = false;
 
 	function stop() {
 		if (source) {
 			source.close();
 			source = null;
 		}
+		wantedTaskId = null;
+		cancelStreamSlotWait(onSlotFree);
+		if (holdsSlot) {
+			releaseStreamSlot();
+			holdsSlot = false;
+		}
+	}
+
+	/** A slot freed up while this transfer was still running on polled progress. */
+	function onSlotFree() {
+		if (!wantedTaskId || source) return;
+		if (!acquireStreamSlot(onSlotFree)) return;
+		holdsSlot = true;
+		open(wantedTaskId);
 	}
 
 	function start(taskId: string) {
+		// Idempotent, so a caller re-running this does not tear down a healthy
+		// stream just to rebuild the very connection being rationed.
+		if (wantedTaskId === taskId && (source || holdsSlot)) return;
 		stop();
 		state = { progress: null, status: null, source: null, done: false };
+		wantedTaskId = taskId;
+		// Refused: the caller keeps rendering polled progress, and onSlotFree
+		// upgrades it to a live stream when somebody else's transfer ends.
+		if (!acquireStreamSlot(onSlotFree)) return;
+		holdsSlot = true;
+		open(taskId);
+	}
+
+	function open(taskId: string) {
 		source = new EventSource(API.downloads.stream(taskId));
 		source.addEventListener('status', (e) => {
 			const d = parse(e);
