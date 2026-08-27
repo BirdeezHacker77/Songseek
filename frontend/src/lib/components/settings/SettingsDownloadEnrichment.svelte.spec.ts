@@ -15,7 +15,14 @@ const h = vi.hoisted(() => {
 				write_lrc_file: true
 			},
 			replaygain: { enabled: false, album_aware: true },
-			refresh: { enabled: false, navidrome_enabled: false, jellyfin_enabled: false }
+			refresh: { enabled: false, navidrome_enabled: false, jellyfin_enabled: false },
+			genres: {
+				enabled: false,
+				canonicalize: true,
+				known_genres_only: true,
+				maximum_count: 5,
+				denylist: []
+			}
 		}
 	};
 	return state;
@@ -63,7 +70,14 @@ describe('Settings > Enrichment', () => {
 				write_lrc_file: true
 			},
 			replaygain: { enabled: false, album_aware: true },
-			refresh: { enabled: false, navidrome_enabled: false, jellyfin_enabled: false }
+			refresh: { enabled: false, navidrome_enabled: false, jellyfin_enabled: false },
+			genres: {
+				enabled: false,
+				canonicalize: true,
+				known_genres_only: true,
+				maximum_count: 5,
+				denylist: []
+			}
 		};
 	});
 
@@ -112,5 +126,12 @@ describe('Settings > Enrichment', () => {
 
 		await expect.element(page.getByText('Refresh after a download is imported')).toBeVisible();
 		await expect.element(page.getByText('Navidrome')).toBeVisible();
+	});
+
+	it('offers genre tidying as a plain toggle', async () => {
+		render(SettingsDownloadEnrichment);
+
+		await expect.element(page.getByText('Tidy genres on future downloads')).toBeVisible();
+		await expect.element(page.getByText('Drop anything unrecognised')).toBeVisible();
 	});
 });

@@ -29,6 +29,7 @@ from pathlib import Path
 
 from api.v1.schemas.settings import (
     DownloadEnrichmentSettings,
+    DownloadGenreSettings,
     DownloadLyricsSettings,
     DownloadRefreshSettings,
     DownloadReplayGainSettings,
@@ -46,6 +47,9 @@ from models.audio_metadata import (
 from models.enrichment_history import EnrichmentHistoryEntry
 from models.library_management_enrichment import LyricsCandidate
 from repositories.protocols.lrclib import LrclibRepositoryProtocol
+from models.library_management_genres import GenreCandidate
+from services.native.download_enrichment_policy import import_genre_settings
+from services.native.genre_normalizer import GenreNormalizer, fold_genre
 from services.native.lyrics_management_policy import synchronized_lyrics_supported
 from services.native.replaygain_analysis_service import ReplayGainAnalysisService
 
@@ -67,6 +71,7 @@ class PostImportEnrichmentService:
         navidrome_getter: Callable[[], object] | None = None,
         jellyfin_getter: Callable[[], object] | None = None,
         history: object | None = None,
+        genres: GenreNormalizer | None = None,
     ) -> None:
         self._settings_getter = settings_getter
         self._lrclib = lrclib
@@ -75,6 +80,7 @@ class PostImportEnrichmentService:
         self._navidrome_getter = navidrome_getter
         self._jellyfin_getter = jellyfin_getter
         self._history = history
+        self._genres = genres
 
     async def enrich(self, paths: Sequence[str]) -> None:
         try:
@@ -109,6 +115,7 @@ class PostImportEnrichmentService:
                     candidate=candidates.get(track),
                     gain=gains.get(track),
                     lyrics_settings=lyrics_settings,
+                    genre_settings=settings.genres,
                 )
             except Exception:  # noqa: BLE001 - one bad track must not stop the rest
                 logger.warning(
@@ -266,15 +273,20 @@ class PostImportEnrichmentService:
         candidate: LyricsCandidate | None,
         gain: object | None,
         lyrics_settings: DownloadLyricsSettings,
+        genre_settings: DownloadGenreSettings,
     ) -> None:
-        if candidate is None and gain is None:
-            return
         if candidate is not None and not lyrics_settings.embed_in_tags:
             candidate = None
-            if gain is None:
-                return
+        tidy_genres = genre_settings.enabled and self._genres is not None
+        if candidate is None and gain is None and not tidy_genres:
+            return
         entry = await asyncio.to_thread(
-            self._write_tags_blocking, path, candidate, gain, lyrics_settings
+            self._write_tags_blocking,
+            path,
+            candidate,
+            gain,
+            lyrics_settings,
+            genre_settings,
         )
         # Recorded from the async side: the write itself runs in a worker thread,
         # and the store is async. Best-effort on purpose - the write already
@@ -296,7 +308,8 @@ class PostImportEnrichmentService:
         candidate: LyricsCandidate | None,
         gain: object | None,
         lyrics_settings: DownloadLyricsSettings,
-    ) -> None:
+        genre_settings: DownloadGenreSettings,
+    ):  # noqa: ANN201
         # Written to a copy beside the track and swapped in, so a failure midway
         # leaves the imported file exactly as it was. copy2 carries the mode and
         # timestamps across, matching what the managed writer preserves.
@@ -304,7 +317,9 @@ class PostImportEnrichmentService:
         try:
             shutil.copy2(path, staged)
             current = self._audio.read(staged)
-            fields = self._desired_fields(current, candidate, gain, lyrics_settings)
+            fields = self._desired_fields(
+                current, candidate, gain, lyrics_settings, genre_settings
+            )
             if not fields:
                 return None
             plan = self._audio.plan(
@@ -341,6 +356,8 @@ class PostImportEnrichmentService:
             kinds.append("lyrics")
         if gain is not None:
             kinds.append("replaygain")
+        if any(value.name == "genre" for value in plan.mutations):
+            kinds.append("genres")
         return EnrichmentHistoryEntry(
             id=str(uuid.uuid4()),
             file_path=str(path),
@@ -349,6 +366,48 @@ class PostImportEnrichmentService:
             snapshot_json=msgspec.json.encode(snapshot).decode(),
             created_at=time.time(),
         )
+
+    def _tidy_genres(
+        self,
+        current,
+        settings: DownloadGenreSettings,  # noqa: ANN001
+    ) -> tuple[str, ...] | None:
+        """Normalized genres for this file, or None to leave them alone.
+
+        Works only from what the file already carries - no provider is consulted.
+        Uploaders write "Hard Rock", "hard-rock" and "Rock; Metal; 1982" for the
+        same record, and it is the inconsistency rather than the shortage that
+        makes a library hard to browse.
+        """
+        if not settings.enabled or self._genres is None:
+            return None
+        existing = tuple(current.metadata.strings_for("genre"))
+        if not existing:
+            return None
+        policy = import_genre_settings(settings)
+        kept: list[str] = []
+        seen: set[str] = set()
+        for value in existing:
+            normalized = self._genres.normalize(
+                GenreCandidate(
+                    display_name=value,
+                    folded_name=fold_genre(value),
+                    provider="existing_local",
+                    provider_entity="audio_tag",
+                ),
+                policy,
+                require_canonical_vocabulary=settings.known_genres_only,
+            )
+            if normalized is None or normalized.folded_name in seen:
+                continue
+            seen.add(normalized.folded_name)
+            kept.append(normalized.display_name)
+        result = tuple(kept[: max(1, settings.maximum_count)])
+        # Nothing survived: leave the file's own genres rather than stripping a
+        # track down to none because its vocabulary is unusual.
+        if not result or result == existing:
+            return None
+        return result
 
     @staticmethod
     def _staged_path(path: Path) -> Path:
@@ -363,14 +422,18 @@ class PostImportEnrichmentService:
         """
         return path.with_name(f".songseek-enrich.{path.name}")
 
-    @staticmethod
     def _desired_fields(
+        self,
         current,  # noqa: ANN001 - ReadAudioDocument
         candidate: LyricsCandidate | None,
         gain: object | None,
         lyrics_settings: DownloadLyricsSettings,
+        genre_settings: DownloadGenreSettings,
     ) -> list[DesiredAudioField]:
         fields: list[DesiredAudioField] = []
+        tidied = self._tidy_genres(current, genre_settings)
+        if tidied is not None:
+            fields.append(DesiredAudioField(name="genre", action="set", value=tidied))
         if candidate is not None:
             plain = (candidate.plain_lyrics or "").strip() or None
             if plain:

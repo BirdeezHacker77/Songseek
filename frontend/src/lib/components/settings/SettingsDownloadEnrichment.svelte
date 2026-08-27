@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AudioLines, Mic2, RefreshCw } from 'lucide-svelte';
+	import { AudioLines, Mic2, RefreshCw, Tags } from 'lucide-svelte';
 
 	import {
 		getDownloadEnrichmentQuery,
@@ -182,6 +182,64 @@
 				<p class="text-base-content/40 text-xs">
 					Analysis runs per track and is CPU-heavy, so a large download takes noticeably longer.
 					Gains already present on a file are kept.
+				</p>
+			</div>
+		</section>
+
+		<section class="card border border-base-300 bg-base-200/55">
+			<div class="card-body gap-4">
+				<div class="flex items-start gap-3">
+					<Tags class="mt-0.5 h-5 w-5 text-primary" aria-hidden="true" />
+					<div class="min-w-0 flex-1">
+						<h3 class="font-semibold">Genres</h3>
+						<p class="text-base-content/50 text-sm">
+							Tidies the genres a download arrives with. It does not look genres up - it settles on
+							one spelling for each, so <em>Hard Rock</em>, <em>hard rock</em> and
+							<em>alt rock</em> stop appearing as separate entries when you browse.
+						</p>
+					</div>
+				</div>
+
+				<label class="flex cursor-pointer items-center gap-3">
+					<input
+						type="checkbox"
+						class="toggle toggle-primary toggle-sm"
+						bind:checked={draft.genres.enabled}
+					/>
+					<span class="font-medium">Tidy genres on future downloads</span>
+				</label>
+
+				<fieldset class="grid gap-3 pl-1" disabled={!draft.genres.enabled}>
+					<label class="flex cursor-pointer items-start gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm mt-0.5"
+							bind:checked={draft.genres.known_genres_only}
+						/>
+						<span
+							><strong class="text-sm">Drop anything unrecognised</strong>
+							<small class="text-base-content/50 block"
+								>Removes years, rip notes and other junk that ends up in genre tags. A track whose
+								genres are all unrecognised keeps what it had.</small
+							></span
+						>
+					</label>
+					<label class="flex items-center gap-3 text-sm">
+						<span class="text-base-content/60 w-28 shrink-0">Keep at most</span>
+						<input
+							type="number"
+							min="1"
+							max="20"
+							class="input input-bordered input-sm w-24"
+							bind:value={draft.genres.maximum_count}
+						/>
+						<span class="text-base-content/50">genres per track</span>
+					</label>
+				</fieldset>
+
+				<p class="text-base-content/40 text-xs">
+					Names follow the MusicBrainz vocabulary, which is lowercase by convention. Files whose
+					genres are already canonical are left untouched.
 				</p>
 			</div>
 		</section>

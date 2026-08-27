@@ -336,6 +336,24 @@ class DownloadReplayGainSettings(AppStruct):
     album_aware: bool = True
 
 
+class DownloadGenreSettings(AppStruct):
+    """Tidy the genres a download arrives with.
+
+    Deliberately not a genre *lookup*: it normalizes what the file already has
+    rather than fetching more. Uploaders write "Hard Rock", "hard-rock" and
+    "Rock; Metal; 1982" for the same record, which is what makes a library
+    unbrowsable - not a shortage of genres.
+    """
+
+    enabled: bool = False
+    # Map aliases and spellings onto one canonical name.
+    canonicalize: bool = True
+    # Drop anything outside the known vocabulary - years, "Various", rip notes.
+    known_genres_only: bool = True
+    maximum_count: int = 5
+    denylist: list[str] = msgspec.field(default_factory=list)
+
+
 class DownloadRefreshSettings(AppStruct):
     """Tell the media servers a new album landed, so it shows up without waiting
     for their own scan schedule."""
@@ -356,6 +374,9 @@ class DownloadEnrichmentSettings(AppStruct):
     )
     refresh: DownloadRefreshSettings = msgspec.field(
         default_factory=DownloadRefreshSettings
+    )
+    genres: DownloadGenreSettings = msgspec.field(
+        default_factory=DownloadGenreSettings
     )
 
 

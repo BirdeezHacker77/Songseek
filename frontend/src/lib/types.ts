@@ -2208,10 +2208,19 @@ export interface DownloadRefreshSettings {
 	jellyfin_enabled: boolean;
 }
 
+export interface DownloadGenreSettings {
+	enabled: boolean;
+	canonicalize: boolean;
+	known_genres_only: boolean;
+	maximum_count: number;
+	denylist: string[];
+}
+
 export interface DownloadEnrichmentSettings {
 	lyrics: DownloadLyricsSettings;
 	replaygain: DownloadReplayGainSettings;
 	refresh: DownloadRefreshSettings;
+	genres: DownloadGenreSettings;
 }
 
 export interface DownloadPolicySettings {

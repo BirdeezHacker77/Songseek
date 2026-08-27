@@ -13,11 +13,13 @@ exactly one notion of "the lyrics settings", not two.
 from __future__ import annotations
 
 from api.v1.schemas.library_management import (
+    GenreManagementSettings,
     LyricsManagementSettings,
     ReplayGainManagementSettings,
 )
 from api.v1.schemas.settings import (
     DownloadEnrichmentSettings,
+    DownloadGenreSettings,
     DownloadLyricsSettings,
     DownloadReplayGainSettings,
 )
@@ -54,6 +56,25 @@ def import_replaygain_settings(
         album_aware=settings.album_aware,
         # Analysis failing is not a reason to refuse the music.
         required=False,
+    )
+
+
+def import_genre_settings(
+    settings: DownloadGenreSettings,
+) -> GenreManagementSettings:
+    """The normalizer's own settings shape, filled from the plain ones.
+
+    `sources` is empty on purpose: this tidies the genres already on the file
+    and never reaches out to MusicBrainz, ListenBrainz or Last.fm. The
+    normalizer reads only the vocabulary, alias and allow/deny rules below.
+    """
+    return GenreManagementSettings(
+        enabled=settings.enabled,
+        sources=[],
+        mode="replace",
+        canonicalize=settings.canonicalize,
+        maximum_count=settings.maximum_count,
+        denylist=list(settings.denylist),
     )
 
 

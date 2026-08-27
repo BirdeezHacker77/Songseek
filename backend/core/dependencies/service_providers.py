@@ -1118,6 +1118,7 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
         get_navidrome_repository,
         get_jellyfin_repository,
         get_enrichment_history_store(),
+        get_genre_normalizer(),
     )
 
 

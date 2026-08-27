@@ -6,6 +6,7 @@ import pytest
 
 from api.v1.schemas.settings import (
     DownloadEnrichmentSettings,
+    DownloadGenreSettings,
     DownloadLyricsSettings,
     DownloadRefreshSettings,
     DownloadReplayGainSettings,
@@ -233,11 +234,30 @@ def _document(fmt: str = "flac"):  # noqa: ANN202
     return SimpleNamespace(probe=SimpleNamespace(detected_format=fmt))
 
 
-def _fields(candidate, gain, settings):  # noqa: ANN001, ANN202
+def _bare_service(genres=None):  # noqa: ANN001, ANN202
+    """No genre normalizer by default, so _desired_fields covers only the field
+    under test."""
+    return PostImportEnrichmentService(
+        lambda: DownloadEnrichmentSettings(),
+        SimpleNamespace(get_exact_lyrics=None),
+        SimpleNamespace(read=None),
+        None,
+        None,
+        None,
+        None,
+        genres,
+    )
+
+
+def _fields(candidate, gain, settings, genre_settings=None):  # noqa: ANN001, ANN202
     return {
         field.name: field.value
-        for field in PostImportEnrichmentService._desired_fields(
-            _document(), candidate, gain, settings
+        for field in _bare_service()._desired_fields(
+            _document(),
+            candidate,
+            gain,
+            settings,
+            genre_settings or DownloadGenreSettings(),
         )
     }
 
@@ -283,11 +303,12 @@ def test_synced_lyrics_are_skipped_for_a_container_that_cannot_hold_them() -> No
     write plan come back blocked."""
     fields = {
         field.name: field.value
-        for field in PostImportEnrichmentService._desired_fields(
+        for field in _bare_service()._desired_fields(
             _document("m4a"),
             _candidate(),
             None,
             DownloadLyricsSettings(enabled=True, embed_in_tags=True),
+            DownloadGenreSettings(),
         )
     }
 
@@ -532,3 +553,88 @@ async def test_replaygain_really_lands_in_the_file(tmp_path: Path) -> None:
     assert "replaygain_album_gain" not in tags
     # the staged copy is cleaned up either way
     assert list(tmp_path.glob(".songseek-enrich*")) == []
+
+
+def _genre_document(*values: str):  # noqa: ANN202
+    return SimpleNamespace(
+        probe=SimpleNamespace(detected_format="flac"),
+        metadata=SimpleNamespace(strings_for=lambda _name: list(values)),
+    )
+
+
+def _tidy(*values: str, settings=None, normalizer=None):  # noqa: ANN001, ANN202
+    from services.native.genre_normalizer import GenreNormalizer
+
+    service = _bare_service(normalizer or GenreNormalizer())
+    return service._tidy_genres(
+        _genre_document(*values),
+        settings or DownloadGenreSettings(enabled=True),
+    )
+
+
+def test_an_alias_is_mapped_to_its_canonical_genre() -> None:
+    """Uploaders write the same genre several ways; the inconsistency is what
+    makes a library hard to browse."""
+    assert _tidy("alt rock") == ("alternative rock",)
+    assert _tidy("dnb") == ("drum and bass",)
+
+
+def test_casing_is_canonicalised() -> None:
+    """The vocabulary is MusicBrainz's, which is lowercase by convention, so
+    that is what lands in the file."""
+    assert _tidy("Hard Rock") == ("hard rock",)
+
+
+def test_duplicates_that_differ_only_in_casing_collapse() -> None:
+    assert _tidy("Rock", "ROCK", "rock") == ("rock",)
+
+
+def test_values_outside_the_vocabulary_are_dropped() -> None:
+    """Years and rip notes end up in genre tags constantly."""
+    result = _tidy("Rock", "1982")
+
+    assert result == ("rock",)
+
+
+def test_the_genre_count_is_capped() -> None:
+    result = _tidy(
+        "Rock",
+        "Metal",
+        "Pop",
+        "Jazz",
+        "Blues",
+        "Folk",
+        settings=DownloadGenreSettings(enabled=True, maximum_count=2),
+    )
+
+    assert result is not None and len(result) == 2
+
+
+def test_a_track_whose_genres_all_fail_keeps_what_it_had() -> None:
+    """Stripping a track to no genres because its vocabulary is unusual is worse
+    than leaving it alone."""
+    assert _tidy("Zzzzz Not A Genre") is None
+
+
+def test_genres_already_canonical_are_left_untouched() -> None:
+    """No write, so no needless rewrite of a file that is already correct."""
+    assert _tidy("rock") is None
+
+
+def test_a_file_with_no_genres_is_left_alone() -> None:
+    assert _tidy() is None
+
+
+def test_tidying_is_skipped_when_the_setting_is_off() -> None:
+    assert _tidy("alt rock", settings=DownloadGenreSettings()) is None
+
+
+def test_tidying_is_skipped_without_a_normalizer() -> None:
+    service = _bare_service(None)
+
+    assert (
+        service._tidy_genres(
+            _genre_document("alt rock"), DownloadGenreSettings(enabled=True)
+        )
+        is None
+    )
