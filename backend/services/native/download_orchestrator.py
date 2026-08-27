@@ -2168,6 +2168,10 @@ class DownloadOrchestrator:
             )
         manifest = DownloadManifest(
             task_id=task.id,
+            # Carries the requester through to import, where a per-user library
+            # root is resolved from it. Without it every download lands in
+            # whichever root happens to be first.
+            requested_by_user_id=task.user_id,
             source_username=candidate.username,
             release_group_mbid=task.release_group_mbid,
             release_mbid=release_mbid,

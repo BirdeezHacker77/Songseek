@@ -408,6 +408,10 @@ class SoulseekStrategy:
         )
         manifest = DownloadManifest(
             task_id=task.id,
+            # Carries the requester through to import, where a per-user library
+            # root is resolved from it. Without it every download lands in
+            # whichever root happens to be first.
+            requested_by_user_id=task.user_id,
             source_username=candidate.username,
             handle=initial_handle,
             origin=task.origin,
@@ -703,6 +707,9 @@ class UsenetStrategy:
         )
         manifest = DownloadManifest(
             task_id=task.id,
+            # Carries the requester through to import, where a per-user library
+            # root is resolved from it.
+            requested_by_user_id=task.user_id,
             handle=initial_handle,
             origin=task.origin,
             release_group_mbid=task.release_group_mbid,

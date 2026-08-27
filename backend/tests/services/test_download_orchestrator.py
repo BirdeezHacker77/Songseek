@@ -3303,3 +3303,27 @@ async def test_partial_album_and_completed_track_do_not_fulfil_wanted_watch(
     )
 
     wanted_store.mark_fulfilled.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manifest_carries_the_requesting_user_to_import(tmp_path: Path):
+    """Import resolves a per-user library root from this field.
+
+    The resolver and its tests were correct all along; nothing ever put a user
+    on the manifest, so every download fell back to whichever root happened to
+    be first and quietly landed in the wrong person's library.
+    """
+    store, orch, fp, _lib = _build(
+        tmp_path,
+        scorer_result=[_candidate(0.9)],
+        fp_result=ProcessResult(
+            succeeded=[str(tmp_path / "lib" / "a.flac")], failed=[]
+        ),
+        imported_rows=[{"file_path": "a"}],
+    )
+    task = await _new_task(store, user_id="user-b")
+
+    await orch.process_task(task.id)
+
+    manifest = fp.process_downloaded.await_args.args[0]
+    assert manifest.requested_by_user_id == "user-b"
