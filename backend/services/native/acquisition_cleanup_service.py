@@ -37,6 +37,11 @@ _RECONCILIATION_BATCH = 100
 _MAX_TREE_ENTRIES = 100_000
 _ATTENTION_RECHECK_SECONDS = 3600.0
 _UNRESOLVED_JOB_RETRIES = 4
+# A terminally failed download keeps its source files so a manual reimport can
+# finish without fetching them again. That is only worth a day: after it, the
+# bytes are dead weight in the download client's completed folder, and nothing
+# else ever removed them.
+PRESERVED_SOURCE_RETENTION_SECONDS = 24 * 60 * 60
 
 
 class _RetryableCleanup(Exception):
@@ -72,6 +77,14 @@ class AcquisitionCleanupService:
         self._clock = clock
 
     async def run_once(self, worker_id: str) -> int:
+        expired = await self._store.expire_preserved_download_attempts(
+            older_than_seconds=PRESERVED_SOURCE_RETENTION_SECONDS
+        )
+        if expired:
+            logger.info(
+                "acquisition_cleanup.preserved_expired",
+                extra={"count": expired, "worker_id": worker_id},
+            )
         attempts = await self._store.claim_download_cleanup_attempts(
             worker_id, now=self._clock(), limit=25, lease_seconds=300.0
         )

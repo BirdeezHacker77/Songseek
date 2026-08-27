@@ -1271,3 +1271,112 @@ async def test_held_import_pause_and_resolve(store):
     assert await store.has_unresolved_held_for_task("task-9") is False
     assert await store.task_ids_with_unresolved_held("user-a", "user") == set()
     assert await store.list_held_imports("user-a", "user") == []
+
+
+def _insert_attempt(
+    db_path: Path,
+    attempt_id: str,
+    *,
+    state: str,
+    disposition: str,
+    completed_at: float | None,
+    now: float,
+) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO download_attempts "
+            "(id,task_id,source,candidate_index,job_name,handle_json,state,"
+            " disposition,created_at,updated_at,completed_at) "
+            "VALUES (?,?,'soulseek',0,'songseek-job','{}',?,?,?,?,?)",
+            (
+                attempt_id,
+                f"task-{attempt_id}",
+                state,
+                disposition,
+                now,
+                now,
+                completed_at,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _attempt_row(db_path: Path, attempt_id: str) -> sqlite3.Row:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return conn.execute(
+            "SELECT state, disposition FROM download_attempts WHERE id=?", (attempt_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_preserved_sources_expire_into_the_cleanup_queue(store: DownloadStore):
+    """A failed download keeps its files so a manual reimport can still use them,
+    but only for the retention window - nothing else ever expired them."""
+    db_path = store.db_path
+    now = 1_000_000.0
+    day = 24 * 60 * 60
+    _insert_attempt(
+        db_path,
+        "stale",
+        state="preserved",
+        disposition="preserve",
+        completed_at=now - day - 60,
+        now=now,
+    )
+    _insert_attempt(
+        db_path,
+        "fresh",
+        state="preserved",
+        disposition="preserve",
+        completed_at=now - 60,
+        now=now,
+    )
+
+    expired = await store.expire_preserved_download_attempts(
+        older_than_seconds=day, now=now
+    )
+
+    assert expired == 1
+    stale = _attempt_row(db_path, "stale")
+    assert stale["state"] == "cleanup_pending"
+    # Routed into the worker rather than deleted here, so its mount and
+    # fingerprint checks still gate the actual removal.
+    assert stale["disposition"] == "discard"
+    assert _attempt_row(db_path, "fresh")["state"] == "preserved"
+
+
+@pytest.mark.asyncio
+async def test_expiry_leaves_attempts_that_are_not_preserved_alone(
+    store: DownloadStore,
+):
+    db_path = store.db_path
+    now = 1_000_000.0
+    day = 24 * 60 * 60
+    for attempt_id, state in [
+        ("in-use", "in_use"),
+        ("attention", "needs_attention"),
+        ("done", "complete"),
+    ]:
+        _insert_attempt(
+            db_path,
+            attempt_id,
+            state=state,
+            disposition="preserve",
+            completed_at=now - day * 30,
+            now=now,
+        )
+
+    assert (
+        await store.expire_preserved_download_attempts(older_than_seconds=day, now=now)
+        == 0
+    )
+    # needs_attention already failed a safety check; re-queueing it would loop.
+    assert _attempt_row(db_path, "attention")["state"] == "needs_attention"
+    assert _attempt_row(db_path, "in-use")["state"] == "in_use"

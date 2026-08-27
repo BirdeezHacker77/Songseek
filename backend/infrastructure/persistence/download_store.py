@@ -1446,6 +1446,38 @@ class DownloadStore(PersistenceBase):
 
         return await self._write(operation)
 
+    async def expire_preserved_download_attempts(
+        self,
+        *,
+        older_than_seconds: float,
+        now: float | None = None,
+    ) -> int:
+        """Hand preserved sources older than the retention window to cleanup.
+
+        A terminally failed download keeps its files so a manual reimport can
+        finish the job without downloading them again. Nothing ever expired that,
+        though - the cleanup worker only claims `cleanup_pending` - so a client's
+        completed folder grew by every failure forever. These are moved into the
+        normal cleanup queue rather than deleted here, so the worker's mount and
+        fingerprint checks still decide whether a file is actually safe to remove.
+        """
+        timestamp = time.time() if now is None else now
+        cutoff = timestamp - older_than_seconds
+
+        def operation(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                """UPDATE download_attempts
+                   SET state='cleanup_pending',disposition='discard',next_retry_at=0,
+                       lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,
+                       updated_at=?,row_revision=row_revision+1
+                   WHERE state='preserved'
+                     AND COALESCE(completed_at,updated_at)<=?
+                     AND (lease_expires_at IS NULL OR lease_expires_at<=?)""",
+                (timestamp, cutoff, timestamp),
+            ).rowcount
+
+        return await self._write(operation)
+
     async def claim_download_cleanup_attempt(
         self,
         attempt_id: str,
