@@ -8,7 +8,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/BirdeezHacker77/Songseek?label=stars&logo=github&logoColor=white)](https://github.com/BirdeezHacker77/Songseek)
-[![Docker Hub](https://img.shields.io/badge/docker-hub-blue?logo=docker&logoColor=white)](https://hub.docker.com/r/birdeezhacker77/songseek)
+[![Built from source](https://img.shields.io/badge/image-build%20from%20source-blue?logo=docker&logoColor=white)](#1-create-a-docker-composeyml)
 
 </div>
 
@@ -98,6 +98,24 @@ services:
 ```bash
 docker compose up -d
 ```
+
+### Deploying with Portainer
+
+`docker-compose.portainer.yml` builds the image on the host from this repository, so
+there is nothing to pull and no registry account is needed. In Portainer choose
+**Stacks > Add stack > Repository**, point it at your fork, set the compose path to
+`docker-compose.portainer.yml`, and set the stack environment variables it documents -
+`MEDIA_PATH`, `PUID`, `PGID`, `TZ`, `HOST_PORT` and the rest. Every setting lives in
+those variables; the file itself does not need editing.
+
+To update, use the stack's own **Pull and redeploy**, which re-clones the repository and
+rebuilds. Do **not** use *Re-pull image*: there is no published image to pull, so it
+fails with `pull access denied`. If a redeploy leaves you on the old build, remove the
+tag with `docker rmi -f songseek:local` and redeploy so Compose has to rebuild.
+
+Config, cache and plugins are named volumes and survive redeploys. `/app/config` is not
+optional - it holds `config.json` with your library roots, download-client credentials
+and instance id, and an unmounted one loses all of them on every recreate.
 
 ### Updating
 
@@ -331,7 +349,33 @@ The page shows whether the downloads path is writable and shares a rename bounda
 
 On **Settings > Library**, click **Scan** (or `POST /api/v1/library/scan/start`). The scan walks your paths, reads tags, identifies files through the tiered strategy, and populates the catalog. It does not edit tags or move music files. Progress streams live. Files it cannot confidently identify land in manual review.
 
-### 4. Optional: configure Library Management
+### 4. Optional: lyrics and ReplayGain on new downloads
+
+**Settings > Enrichment** decides what gets added to a track on its way into your
+library. It applies to new downloads only - existing files are never touched - and
+changing it needs no dry run.
+
+Lyrics come from LRCLIB, matched on artist, title and duration so a track only ever
+gets lyrics that belong to it. You choose independently whether to save a `.lrc`
+file beside the song, whether to embed the lyrics in the file's own tags, and
+whether to prefer time-synced lyrics that scroll with playback. A `.lrc` sidecar is
+what most players and scanners look for, and it is the only place synchronized
+lyrics can live for a format whose tags cannot hold them.
+
+ReplayGain measures perceived loudness so albums play at an even volume. It does not
+re-encode or alter the audio; it only records recommended gain and peak values in
+tags. Analysis is CPU-bound per track, so a large download takes noticeably longer.
+
+Neither is ever *required*: a track with no lyrics on LRCLIB, or a loudness analysis
+that fails, imports normally rather than holding up the queue. Both preserve values a
+file already carries instead of replacing them.
+
+> These settings live outside Library Management profiles on purpose. A profile
+> describes what an organization pass would do to the library you already have, so
+> changing one invalidates a root's activation and requires a fresh dry run over every
+> existing file. Enrichment on the way in has no existing state to preview.
+
+### 5. Optional: configure Library Management
 
 Library Management is the administrator-only write system for tags, artwork, filenames, and folders. It is off by default and separate from Library Scanning.
 
@@ -340,6 +384,10 @@ Open **Library Management** from the administrator sidebar. The action desk puts
 Profiles control managed tag fields, genres, artwork, naming, sidecars, format compatibility, lyrics, ReplayGain, retention, and media-server refresh. Choose a library default, let a root inherit it or assign an override, then enable automatic triggers independently for acquisitions, Drop/Free imports, and files found by a scan. Creating or assigning a profile does not enable automatic writes.
 
 The built-in **Picard-style Organizer** profile is the recommended starting point. It manages canonical MusicBrainz tags, normalized genres, front artwork, same-root naming and moves, and recognized sidecars while preserving custom tags, timestamps, and permissions. Lyrics, ReplayGain, tag scrubbing, and scan-discovered automation start disabled. Organization stays within the source root unless an administrator chooses a manual cross-root destination. Copy the profile before adding those policies if you want to keep the preset available for comparison. **Existing naming template** is a path-only compatibility profile for installations that only want their previous naming rule.
+
+A profile's own lyrics and ReplayGain settings apply when you organize files you
+already have. For new downloads, use **Settings > Enrichment** above instead - it
+does the same work without invalidating a root's activation.
 
 Lyrics use LRCLIB and are accepted only when title, artist, album, and duration agree; SongSeek does not guess from ambiguous search results. Plain lyrics have verified mappings for every admitted container when that container's writable tag mode is selected. Synchronized lyrics are supported in MP3, FLAC, Ogg, Opus, WMA, and ID3-tagged WAV. When both outputs are selected, M4A and raw AAC safely use plain lyrics as the fallback. A synchronized-only profile blocks formats that cannot represent them.
 
@@ -367,9 +415,9 @@ Operation controls have distinct meanings:
 
 The control room shows recovery state and any post-commit media-server refresh delivery. A failed external refresh does not roll back files that were already committed.
 
-### 5. Request and watch
+### 6. Request and watch
 
-Browse or search the MusicBrainz catalogue, open an album, and click **Request**. You can also request a single track from an album's track list. Admin and trusted users' requests start immediately; standard users' requests wait for admin approval. On the **Downloads** page the task moves through `searching -> downloading -> processing -> completed` live over SSE, and on completion the files appear under **Library**.
+Browse or search the MusicBrainz catalogue, open an album, and click **Request**. You can also request a single track from an album's track list. Admin and trusted users' requests start immediately; standard users' requests wait for admin approval. On **Requests > Activity** the task moves through `searching -> downloading -> processing -> completed` live over SSE, and on completion the files appear under **Library**.
 
 ---
 
@@ -517,11 +565,11 @@ A session lasts 30 days from login and is not extended by activity. Signing out 
 
 ### Search and Request
 
-Search the full MusicBrainz catalogue for any artist or album. Request a whole album or an individual track, and the native engine handles the download: it searches your download client, preflight-scores the candidates, picks the best, verifies the files, and imports them into your library. Admin and trusted users' requests start immediately; requests from standard users are held in an approval queue until an admin approves or rejects them. A persistent queue tracks all requests, and you can browse pending and fulfilled requests on a dedicated page with retry and cancel support.
+Search the full MusicBrainz catalogue for any artist or album. Request a whole album or an individual track, and the native engine handles the download: it searches your download client, preflight-scores the candidates, picks the best, verifies the files, and imports them into your library. Admin and trusted users' requests start immediately; requests from standard users are held in an approval queue until an admin approves or rejects them. A persistent queue tracks all requests. The **Requests** page covers the whole lifecycle in four tabs: **Activity** (what is transferring now, drag-and-drop imports, and request history), **Wanted** (albums the watcher is still hunting), **Approvals** (requests awaiting an admin), and **Automation** (standing auto-download rules and quality upgrades), with retry and cancel support throughout.
 
 Downloads the engine cannot confidently auto-accept land in a held-import review queue. An admin can preview the audio, accept or reject the import, and supply a MusicBrainz ID before the file is moved into the library.
 
-When a download completes in your download client but SongSeek cannot locate the file, you can trigger a manual reimport from the downloads page to finish the job.
+When a download completes in your download client but SongSeek cannot locate the file, you can trigger a manual reimport from Requests > Activity to finish the job.
 
 ### Wanted
 
@@ -589,7 +637,7 @@ Nothing else is offered. An item with no licence, or an all-rights-reserved one,
 
 ### Import Your Purchases
 
-Buy music wherever you like - Bandcamp, the Qobuz store, a label's own shop - then hand the zip or the loose files to SongSeek. Drag them onto the card on your home page or the Import tab on the Downloads page, or click either one to browse. Archives are extracted, and every album is identified by the same pipeline the library scanner uses: MusicBrainz tags first, then AcoustID fingerprints. The files are tagged, organised into your library under your naming template, and if anyone had requested that album, their request is resolved and they get a notification.
+Buy music wherever you like - Bandcamp, the Qobuz store, a label's own shop - then hand the zip or the loose files to SongSeek. Drag them onto the card on your home page or the Imports section of Requests > Activity, or click either one to browse. Archives are extracted, and every album is identified by the same pipeline the library scanner uses: MusicBrainz tags first, then AcoustID fingerprints. The files are tagged, organised into your library under your naming template, and if anyone had requested that album, their request is resolved and they get a notification.
 
 Anything SongSeek cannot identify waits under "Needs a match", where you search for the right album and assign it, or discard it.
 
