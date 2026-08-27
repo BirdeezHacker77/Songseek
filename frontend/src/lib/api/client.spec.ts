@@ -75,14 +75,56 @@ describe('api client', () => {
 			expect(result).toEqual({ name: 'test' });
 		});
 
-		it('passes signal through', async () => {
+		it('passes caller cancellation through to the request', async () => {
 			const controller = new AbortController();
 			mockPageFetch.mockResolvedValue(jsonResponse({ ok: true }));
+
 			await api.get('/api/v1/test', { signal: controller.signal });
-			expect(mockPageFetch).toHaveBeenCalledWith(
-				'/api/v1/test',
-				expect.objectContaining({ signal: controller.signal })
+
+			// Not the caller's signal object: every request now carries a default
+			// deadline, so the two are combined. Cancellation still propagates.
+			const init = mockPageFetch.mock.calls[0]![1]!;
+			expect(init.signal).toBeDefined();
+			controller.abort();
+			expect(init.signal?.aborted).toBe(true);
+		});
+
+		it('gives every request a deadline so a stalled one cannot hang forever', async () => {
+			mockPageFetch.mockResolvedValue(jsonResponse({ ok: true }));
+
+			await api.get('/api/v1/test');
+
+			const init = mockPageFetch.mock.calls[0]![1]!;
+			expect(init.signal).toBeInstanceOf(AbortSignal);
+			expect(init.signal?.aborted).toBe(false);
+		});
+
+		it('lets a caller opt out of the deadline with timeoutMs: 0', async () => {
+			const controller = new AbortController();
+			mockPageFetch.mockResolvedValue(jsonResponse({ ok: true }));
+
+			await api.get('/api/v1/test', { signal: controller.signal, timeoutMs: 0 });
+
+			// Nothing to combine with, so the caller's signal is used as-is.
+			const init = mockPageFetch.mock.calls[0]![1]!;
+			expect(init.signal).toBe(controller.signal);
+		});
+
+		it('reports a lapsed deadline as a timeout, not a caller abort', async () => {
+			mockPageFetch.mockImplementation(
+				(_url, init) =>
+					new Promise((_resolve, reject) => {
+						const signal = (init as RequestInit).signal!;
+						signal.addEventListener('abort', () =>
+							reject(new DOMException('aborted', 'AbortError'))
+						);
+					})
 			);
+
+			const failure = api.get('/api/v1/test', { timeoutMs: 1 });
+
+			await expect(failure).rejects.toBeInstanceOf(TransportError);
+			await expect(failure).rejects.toMatchObject({ code: 'TRANSPORT_TIMEOUT' });
 		});
 
 		it('combines caller cancellation with a request deadline', async () => {

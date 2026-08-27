@@ -1,4 +1,27 @@
 import { pageFetch } from '$lib/utils/navigationAbort';
+
+/**
+ * Every request gets a deadline unless it explicitly opts out with `timeoutMs: 0`.
+ *
+ * Without one, a connection that stalls without closing leaves the promise
+ * pending forever. Nothing upstream rescues it: the query stays `pending`, so
+ * `isPending` skeletons never clear, `retry: false` means it is never retried,
+ * and there is no error for a page to show a retry button for. The request just
+ * hangs until the tab regains focus and `refetchOnWindowFocus` happens to start
+ * a fresh one - which is why it reads as an intermittent, self-healing hang.
+ *
+ * A minute is deliberately generous: long work in this app is job-based (start,
+ * then poll), so no legitimate request should come near it. The point is to turn
+ * "forever" into a normal error that the existing retry paths already handle.
+ */
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * Transfers that move real bytes get much longer: uploads, and any `raw`
+ * response whose body the caller streams itself after this function returns -
+ * the deadline still covers that read, because it aborts the whole request.
+ */
+const STREAMING_TIMEOUT_MS = 10 * 60_000;
 import { getApiUrl } from '$lib/api/api-utils';
 import { browser } from '$app/environment';
 import { authStore } from '$lib/stores/authStore.svelte';
@@ -54,6 +77,7 @@ interface RequestOptions extends Omit<RequestInit, 'method' | 'body'> {
 	signal?: AbortSignal;
 	raw?: boolean;
 	cache?: RequestCache;
+	/** Deadline in ms. Omit for the default; pass 0 to wait indefinitely. */
 	timeoutMs?: number;
 }
 
@@ -134,7 +158,16 @@ function createClient(fetchFn: FetchFn): ApiClient {
 	): Promise<T> {
 		const { raw, timeoutMs, signal, ...fetchOpts } = opts ?? {};
 		// credentials: 'include' sends the httpOnly session cookie cross-origin (dev proxy)
-		const deadlineSignal = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+		// An explicit controller rather than AbortSignal.timeout, because that one
+		// keeps a live timer for its full duration whether or not the request is
+		// still running. At one per request that accumulates fast; this version is
+		// cleared the moment the response is consumed.
+		const deadline = timeoutMs ?? (raw ? STREAMING_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+		const deadlineController = deadline > 0 ? new AbortController() : undefined;
+		const deadlineTimer = deadlineController
+			? setTimeout(() => deadlineController.abort(), deadline)
+			: undefined;
+		const deadlineSignal = deadlineController?.signal;
 		const requestSignal =
 			signal && deadlineSignal
 				? AbortSignal.any([signal, deadlineSignal])
@@ -160,24 +193,30 @@ function createClient(fetchFn: FetchFn): ApiClient {
 
 		const requestUrl = getApiUrl(url);
 
-		let res: Response;
 		try {
-			res = await fetchFn(requestUrl, init);
-		} catch (cause) {
-			const timedOut = deadlineSignal?.aborted === true && signal?.aborted !== true;
-			const aborted =
-				!timedOut &&
-				((cause instanceof DOMException && cause.name === 'AbortError') ||
-					requestSignal?.aborted === true);
-			throw new TransportError(
-				timedOut ? 'TRANSPORT_TIMEOUT' : aborted ? 'TRANSPORT_ABORTED' : 'TRANSPORT_NETWORK',
-				method,
-				transportPath(url)
-			);
-		}
+			let res: Response;
+			try {
+				res = await fetchFn(requestUrl, init);
+			} catch (cause) {
+				const timedOut = deadlineSignal?.aborted === true && signal?.aborted !== true;
+				const aborted =
+					!timedOut &&
+					((cause instanceof DOMException && cause.name === 'AbortError') ||
+						requestSignal?.aborted === true);
+				throw new TransportError(
+					timedOut ? 'TRANSPORT_TIMEOUT' : aborted ? 'TRANSPORT_ABORTED' : 'TRANSPORT_NETWORK',
+					method,
+					transportPath(url)
+				);
+			}
 
-		if (raw) return res as unknown as T;
-		return handleResponse<T>(res);
+			// A raw response hands the undrained body to the caller, so its deadline
+			// has to outlive this function - that read is exactly what it guards.
+			if (raw) return res as unknown as T;
+			return await handleResponse<T>(res);
+		} finally {
+			if (!raw && deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+		}
 	}
 
 	return {
@@ -196,7 +235,7 @@ function createClient(fetchFn: FetchFn): ApiClient {
 		head: (url: string, opts?: RequestOptions) =>
 			request<Response>('HEAD', url, undefined, { ...opts, raw: true }),
 		upload: <T = unknown>(url: string, body: FormData, opts?: RequestOptions) =>
-			request<T>('POST', url, body, opts)
+			request<T>('POST', url, body, { timeoutMs: STREAMING_TIMEOUT_MS, ...opts })
 	};
 }
 
