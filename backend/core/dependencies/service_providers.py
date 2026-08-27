@@ -1123,6 +1123,7 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
 
 @singleton
 def get_enrichment_history_store() -> "EnrichmentHistoryStore":
+    from core.config import get_settings
     from infrastructure.persistence.enrichment_history_store import (
         EnrichmentHistoryStore,
     )
