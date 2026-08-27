@@ -14,7 +14,8 @@ const h = vi.hoisted(() => {
 				prefer_synced: true,
 				write_lrc_file: true
 			},
-			replaygain: { enabled: false, album_aware: true }
+			replaygain: { enabled: false, album_aware: true },
+			refresh: { enabled: false, navidrome_enabled: false, jellyfin_enabled: false }
 		}
 	};
 	return state;
@@ -61,7 +62,8 @@ describe('Settings > Enrichment', () => {
 				prefer_synced: true,
 				write_lrc_file: true
 			},
-			replaygain: { enabled: false, album_aware: true }
+			replaygain: { enabled: false, album_aware: true },
+			refresh: { enabled: false, navidrome_enabled: false, jellyfin_enabled: false }
 		};
 	});
 
@@ -103,5 +105,12 @@ describe('Settings > Enrichment', () => {
 		await expect
 			.element(page.getByText('Only an administrator can change enrichment settings.'))
 			.toBeVisible();
+	});
+
+	it('offers a media server refresh that does not need Library Management', async () => {
+		render(SettingsDownloadEnrichment);
+
+		await expect.element(page.getByText('Refresh after a download is imported')).toBeVisible();
+		await expect.element(page.getByText('Navidrome')).toBeVisible();
 	});
 });

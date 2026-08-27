@@ -336,6 +336,15 @@ class DownloadReplayGainSettings(AppStruct):
     album_aware: bool = True
 
 
+class DownloadRefreshSettings(AppStruct):
+    """Tell the media servers a new album landed, so it shows up without waiting
+    for their own scan schedule."""
+
+    enabled: bool = False
+    navidrome_enabled: bool = False
+    jellyfin_enabled: bool = False
+
+
 class DownloadEnrichmentSettings(AppStruct):
     """What gets added to a track on its way into the library."""
 
@@ -344,6 +353,9 @@ class DownloadEnrichmentSettings(AppStruct):
     )
     replaygain: DownloadReplayGainSettings = msgspec.field(
         default_factory=DownloadReplayGainSettings
+    )
+    refresh: DownloadRefreshSettings = msgspec.field(
+        default_factory=DownloadRefreshSettings
     )
 
 

@@ -2202,9 +2202,16 @@ export interface DownloadReplayGainSettings {
 	album_aware: boolean;
 }
 
+export interface DownloadRefreshSettings {
+	enabled: boolean;
+	navidrome_enabled: boolean;
+	jellyfin_enabled: boolean;
+}
+
 export interface DownloadEnrichmentSettings {
 	lyrics: DownloadLyricsSettings;
 	replaygain: DownloadReplayGainSettings;
+	refresh: DownloadRefreshSettings;
 }
 
 export interface DownloadPolicySettings {

@@ -1115,6 +1115,8 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
         get_lrclib_repository(),
         get_audio_metadata_engine(),
         get_replaygain_analysis_service(),
+        get_navidrome_repository,
+        get_jellyfin_repository,
     )
 
 

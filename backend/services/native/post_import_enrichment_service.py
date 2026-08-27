@@ -27,6 +27,7 @@ from pathlib import Path
 from api.v1.schemas.settings import (
     DownloadEnrichmentSettings,
     DownloadLyricsSettings,
+    DownloadRefreshSettings,
     DownloadReplayGainSettings,
 )
 from infrastructure.audio.lyrics import normalize_lrc
@@ -59,11 +60,15 @@ class PostImportEnrichmentService:
         lrclib: LrclibRepositoryProtocol,
         audio: AudioMetadataEngine,
         replaygain: ReplayGainAnalysisService | None = None,
+        navidrome_getter: Callable[[], object] | None = None,
+        jellyfin_getter: Callable[[], object] | None = None,
     ) -> None:
         self._settings_getter = settings_getter
         self._lrclib = lrclib
         self._audio = audio
         self._replaygain = replaygain
+        self._navidrome_getter = navidrome_getter
+        self._jellyfin_getter = jellyfin_getter
 
     async def enrich(self, paths: Sequence[str]) -> None:
         try:
@@ -72,7 +77,12 @@ class PostImportEnrichmentService:
             logger.warning("post_import_enrichment.settings_unavailable")
             return
         lyrics_settings, replaygain_settings = settings.lyrics, settings.replaygain
-        if not lyrics_settings.enabled and not replaygain_settings.enabled:
+        refresh_settings = settings.refresh
+        if (
+            not lyrics_settings.enabled
+            and not replaygain_settings.enabled
+            and not refresh_settings.enabled
+        ):
             return
 
         tracks = [Path(value) for value in paths]
@@ -98,6 +108,45 @@ class PostImportEnrichmentService:
                 logger.warning(
                     "post_import_enrichment.tags_failed", extra={"path": str(track)}
                 )
+        # Last, so the servers are told about finished files rather than ones
+        # still being rewritten - and once per publication, not once per track.
+        if refresh_settings.enabled and tracks:
+            await self._refresh_media_servers(refresh_settings)
+
+    # --- media servers --------------------------------------------------------
+
+    async def _refresh_media_servers(self, settings: DownloadRefreshSettings) -> None:
+        targets = (
+            ("navidrome", settings.navidrome_enabled, self._navidrome_getter),
+            ("jellyfin", settings.jellyfin_enabled, self._jellyfin_getter),
+        )
+        for name, enabled, getter in targets:
+            if not enabled or getter is None:
+                continue
+            try:
+                repository = getter()
+                if not repository.is_configured():
+                    logger.info(
+                        "post_import_enrichment.refresh_skipped", extra={"target": name}
+                    )
+                    continue
+                await self._start_scan(name, repository)
+                logger.info(
+                    "post_import_enrichment.refresh_requested", extra={"target": name}
+                )
+            except Exception:  # noqa: BLE001 - a refresh failing is not an import failing
+                logger.warning(
+                    "post_import_enrichment.refresh_failed", extra={"target": name}
+                )
+
+    @staticmethod
+    async def _start_scan(name: str, repository) -> None:  # noqa: ANN001
+        # Both are fire-and-forget on the server side: a request only means the
+        # scan was accepted, so there is nothing useful to wait for.
+        if name == "navidrome":
+            await repository.start_scan()
+        else:
+            await repository.refresh_library()
 
     # --- lyrics ---------------------------------------------------------------
 

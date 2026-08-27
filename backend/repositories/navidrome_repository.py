@@ -286,6 +286,19 @@ class NavidromeRepository:
             raise NavidromeApiError(f"Navidrome returned invalid JSON for {endpoint}") from exc
         return parse_subsonic_response(data)
 
+    async def start_scan(self) -> bool:
+        """Ask Navidrome to rescan its music folders.
+
+        Subsonic's startScan is asynchronous: a 200 means the scan was accepted,
+        not that it has finished, so there is nothing useful to wait for.
+        """
+        try:
+            await self._request("/rest/startScan")
+            return True
+        except Exception:  # noqa: BLE001 - a refresh failing is not an import failing
+            _record_degradation("Navidrome scan request failed")
+            return False
+
     async def ping(self) -> bool:
         try:
             await self._request("/rest/ping")

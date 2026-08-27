@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.v1.schemas.settings import DownloadEnrichmentSettings, DownloadLyricsSettings
+from api.v1.schemas.settings import (
+    DownloadEnrichmentSettings,
+    DownloadLyricsSettings,
+    DownloadRefreshSettings,
+)
 from models.audio import AudioInfo, AudioTag
 from models.library_management_enrichment import LyricsCandidate, LyricsLookupResult
 from services.native import post_import_enrichment_service as module
@@ -321,3 +325,114 @@ async def test_no_tag_write_is_attempted_when_there_is_nothing_to_write(
     assert track.read_bytes() == before
     assert not track.with_name(f"{track.name}.songseek-enrich").exists()
     assert track.with_suffix(".lrc").exists()
+
+
+class _Server:
+    def __init__(self, *, configured: bool = True) -> None:
+        self._configured = configured
+        self.scans = 0
+
+    def is_configured(self) -> bool:
+        return self._configured
+
+    async def start_scan(self) -> bool:
+        self.scans += 1
+        return True
+
+    async def refresh_library(self) -> None:
+        self.scans += 1
+
+
+def _refresh_service(navidrome, jellyfin, refresh):  # noqa: ANN001, ANN202
+    return PostImportEnrichmentService(
+        lambda: DownloadEnrichmentSettings(refresh=refresh),
+        SimpleNamespace(get_exact_lyrics=None),
+        SimpleNamespace(read=None),
+        None,
+        lambda: navidrome,
+        lambda: jellyfin,
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_the_selected_media_servers_are_refreshed(tmp_path: Path) -> None:
+    navidrome, jellyfin = _Server(), _Server()
+    service = _refresh_service(
+        navidrome,
+        jellyfin,
+        DownloadRefreshSettings(enabled=True, navidrome_enabled=True),
+    )
+
+    await service.enrich([str(_track(tmp_path))])
+
+    assert (navidrome.scans, jellyfin.scans) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_refresh_happens_once_per_publication_not_per_track(
+    tmp_path: Path,
+) -> None:
+    """An album is one import; scanning per track would hammer the server."""
+    navidrome = _Server()
+    service = _refresh_service(
+        navidrome,
+        _Server(),
+        DownloadRefreshSettings(enabled=True, navidrome_enabled=True),
+    )
+    tracks = [str(tmp_path / f"{index}.flac") for index in range(4)]
+    for path in tracks:
+        Path(path).write_bytes(b"audio")
+
+    await service.enrich(tracks)
+
+    assert navidrome.scans == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unconfigured_server_is_skipped(tmp_path: Path) -> None:
+    navidrome = _Server(configured=False)
+    service = _refresh_service(
+        navidrome,
+        _Server(),
+        DownloadRefreshSettings(enabled=True, navidrome_enabled=True),
+    )
+
+    await service.enrich([str(_track(tmp_path))])
+
+    assert navidrome.scans == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failing_refresh_does_not_raise(tmp_path: Path) -> None:
+    """The music is already imported; a server that will not answer must not
+    turn a finished import into an error."""
+
+    class _Broken(_Server):
+        async def start_scan(self) -> bool:
+            raise RuntimeError("unreachable")
+
+    jellyfin = _Server()
+    service = _refresh_service(
+        _Broken(),
+        jellyfin,
+        DownloadRefreshSettings(
+            enabled=True, navidrome_enabled=True, jellyfin_enabled=True
+        ),
+    )
+
+    await service.enrich([str(_track(tmp_path))])
+
+    # The second target still gets its refresh.
+    assert jellyfin.scans == 1
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_refreshed_when_the_setting_is_off(tmp_path: Path) -> None:
+    navidrome = _Server()
+    service = _refresh_service(
+        navidrome, _Server(), DownloadRefreshSettings(navidrome_enabled=True)
+    )
+
+    await service.enrich([str(_track(tmp_path))])
+
+    assert navidrome.scans == 0

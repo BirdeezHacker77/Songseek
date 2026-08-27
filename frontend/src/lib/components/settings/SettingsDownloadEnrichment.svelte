@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AudioLines, Mic2 } from 'lucide-svelte';
+	import { AudioLines, Mic2, RefreshCw } from 'lucide-svelte';
 
 	import {
 		getDownloadEnrichmentQuery,
@@ -182,6 +182,54 @@
 				<p class="text-base-content/40 text-xs">
 					Analysis runs per track and is CPU-heavy, so a large download takes noticeably longer.
 					Gains already present on a file are kept.
+				</p>
+			</div>
+		</section>
+
+		<section class="card border border-base-300 bg-base-200/55">
+			<div class="card-body gap-4">
+				<div class="flex items-start gap-3">
+					<RefreshCw class="mt-0.5 h-5 w-5 text-primary" aria-hidden="true" />
+					<div class="min-w-0 flex-1">
+						<h3 class="font-semibold">Media server refresh</h3>
+						<p class="text-base-content/50 text-sm">
+							Tells your media server a new album landed, so it appears without waiting for its own
+							scan schedule.
+						</p>
+					</div>
+				</div>
+
+				<label class="flex cursor-pointer items-center gap-3">
+					<input
+						type="checkbox"
+						class="toggle toggle-primary toggle-sm"
+						bind:checked={draft.refresh.enabled}
+					/>
+					<span class="font-medium">Refresh after a download is imported</span>
+				</label>
+
+				<fieldset class="grid gap-3 pl-1" disabled={!draft.refresh.enabled}>
+					<label class="flex cursor-pointer items-center gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm"
+							bind:checked={draft.refresh.navidrome_enabled}
+						/>
+						<span class="text-sm font-medium">Navidrome</span>
+					</label>
+					<label class="flex cursor-pointer items-center gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm"
+							bind:checked={draft.refresh.jellyfin_enabled}
+						/>
+						<span class="text-sm font-medium">Jellyfin</span>
+					</label>
+				</fieldset>
+
+				<p class="text-base-content/40 text-xs">
+					One refresh per import, not per track. Plex is not listed because it has no refresh
+					support here yet. A server that is unreachable is skipped without failing the import.
 				</p>
 			</div>
 		</section>
