@@ -72,6 +72,8 @@ def planned_lyrics_outputs(
 def lyrics_sidecar_content(
     settings: LyricsManagementSettings,
     projection: LyricsProjection,
+    *,
+    prefer_synced: bool | None = None,
 ) -> str | None:
     """Text for a .lrc file beside the track, or None to write no sidecar.
 
@@ -80,18 +82,27 @@ def lyrics_sidecar_content(
     A .lrc is therefore the only way synchronized lyrics survive alongside a
     format that cannot embed them, which is precisely when it is most useful.
 
-    Synchronized text wins when it is available, because a timestamped .lrc
-    degrades gracefully - players that cannot use the timings just show the
-    lines - whereas plain text cannot be upgraded back into a synced one.
+    Nor is the content tied to which forms get written into tags. A sidecar is a
+    lyrics file in its own right, and wanting a .lrc while embedding nothing is a
+    perfectly ordinary choice - reading `write_synced`/`write_plain` here would
+    silently produce no file at all in that case. `write_sidecar` alone decides
+    whether one is written; `prefer_synced` overrides which form is preferred
+    for callers whose embedding choice says nothing about it.
+
+    Synchronized text wins by default, because a timestamped .lrc degrades
+    gracefully - players that cannot use the timings just show the lines -
+    whereas plain text cannot be upgraded back into a synced one.
     """
     if not settings.write_sidecar or projection.status != "available":
         return None
-    candidates = (
-        (settings.write_synced, projection.synced_lyrics),
-        (settings.write_plain, projection.plain_lyrics),
+    prefer = settings.write_synced if prefer_synced is None else prefer_synced
+    ordered = (
+        (projection.synced_lyrics, projection.plain_lyrics)
+        if prefer
+        else (projection.plain_lyrics, projection.synced_lyrics)
     )
-    for selected, value in candidates:
-        if selected and isinstance(value, str) and value.strip():
+    for value in ordered:
+        if isinstance(value, str) and value.strip():
             return value if value.endswith("\n") else f"{value}\n"
     return None
 

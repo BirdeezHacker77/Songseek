@@ -34,6 +34,7 @@ from api.v1.schemas.settings import (
     INDEXER_API_KEY_MASK,
     SABNZBD_API_KEY_MASK,
     LIDARR_IMPORT_API_KEY_MASK,
+    DownloadEnrichmentSettings,
     DownloadPolicySettings,
     LidarrImportConnectionSettings,
     NewznabIndexerSettings,
@@ -316,6 +317,20 @@ class PreferencesService:
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to save download policy: %s", e)
             raise ConfigurationError(f"Failed to save download policy: {e}")
+
+    # --- Download enrichment (lyrics / ReplayGain for incoming files) ----------------
+
+    def get_download_enrichment(self) -> DownloadEnrichmentSettings:
+        return self._get_section("download_enrichment", DownloadEnrichmentSettings)
+
+    def save_download_enrichment(self, settings: DownloadEnrichmentSettings) -> None:
+        try:
+            self._save_section("download_enrichment", settings)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to save download enrichment settings: %s", e)
+            raise ConfigurationError(
+                f"Failed to save download enrichment settings: {e}"
+            )
 
     # --- Wanted watcher (Wanted plan §5.4) - mask-free, no secrets -------------------
 

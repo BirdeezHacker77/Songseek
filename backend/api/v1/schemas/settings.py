@@ -307,6 +307,46 @@ class DownloadPolicySettings(AppStruct):
             self.quality_cutoff = self.quality_max
 
 
+class DownloadLyricsSettings(AppStruct):
+    """Lyrics fetched for newly downloaded tracks.
+
+    Deliberately separate from a Library Management profile's lyrics settings.
+    Those describe what an organization pass would do to the library you already
+    have, so changing them invalidates a root's activation and demands a fresh
+    dry run over every existing file. This only ever applies to files arriving
+    now, which have no existing state to preview, so it is a plain setting.
+    """
+
+    enabled: bool = False
+    # One provider today; the field exists so adding a second is not a migration.
+    provider: Literal["lrclib"] = "lrclib"
+    # Into the file's own tags, where a player that ignores sidecars still finds them.
+    embed_in_tags: bool = True
+    # Timestamped lyrics that scroll with playback, when the provider has them.
+    prefer_synced: bool = True
+    # A .lrc beside the track, which is what most scanners and players look for.
+    write_lrc_file: bool = True
+
+
+class DownloadReplayGainSettings(AppStruct):
+    """Loudness analysis for newly downloaded tracks, so albums play at an even
+    volume. Analysis is CPU-bound per track, which is why it is opt-in."""
+
+    enabled: bool = False
+    album_aware: bool = True
+
+
+class DownloadEnrichmentSettings(AppStruct):
+    """What gets added to a track on its way into the library."""
+
+    lyrics: DownloadLyricsSettings = msgspec.field(
+        default_factory=DownloadLyricsSettings
+    )
+    replaygain: DownloadReplayGainSettings = msgspec.field(
+        default_factory=DownloadReplayGainSettings
+    )
+
+
 class WantedWatcherSettings(AppStruct):
     """The wanted watcher (Wanted plan §5.4): granular opt-out toggles, no secrets.
     Cadence stays code constants on purpose - fewer knobs."""

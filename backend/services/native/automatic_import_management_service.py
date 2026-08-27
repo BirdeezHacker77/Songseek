@@ -9,11 +9,18 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import unicodedata
+from typing import Callable
 import uuid
 
 import msgspec
 
-from api.v1.schemas.library_management import profile_revision, settings_revision
+from api.v1.schemas.library_management import (
+    LyricsManagementSettings,
+    ReplayGainManagementSettings,
+    profile_revision,
+    settings_revision,
+)
+from api.v1.schemas.settings import DownloadEnrichmentSettings
 from core.exceptions import (
     AudioFormatError,
     AutomaticManagementHoldError,
@@ -83,6 +90,7 @@ from services.native.library_management_naming_policy import (
 from services.native.library_management_profile_service import (
     LibraryManagementProfileService,
 )
+from services.native.download_enrichment_policy import import_enrichment
 from services.native.lyrics_management_policy import (
     lyrics_sidecar_content,
     planned_lyrics_outputs,
@@ -115,6 +123,7 @@ class AutomaticImportManagementService:
         tagging: TaggingScriptEngine,
         lyrics: LyricsProjectionService | None = None,
         replaygain: ReplayGainAnalysisService | None = None,
+        download_enrichment: Callable[[], DownloadEnrichmentSettings] | None = None,
     ) -> None:
         self._profiles = profiles
         self._planner = planner
@@ -128,6 +137,20 @@ class AutomaticImportManagementService:
         self._tagging = tagging
         self._lyrics = lyrics
         self._replaygain = replaygain
+        self._download_enrichment = download_enrichment
+
+    def _enrichment(
+        self, profile
+    ) -> tuple[LyricsManagementSettings, ReplayGainManagementSettings]:  # noqa: ANN001
+        """Enrichment for files arriving now.
+
+        Plain settings when they are wired up, otherwise the profile's own - which
+        keeps manual organization runs and any deployment without the setting
+        behaving exactly as before.
+        """
+        if self._download_enrichment is None:
+            return profile.enrichment.lyrics, profile.enrichment.replaygain
+        return import_enrichment(self._download_enrichment())
 
     async def prepare(
         self, bundle: LibraryManagementImportBundle
@@ -263,7 +286,7 @@ class AutomaticImportManagementService:
                 }
                 replaygain_analysis: ReplayGainAnalysis | None = None
                 replaygain_by_path: dict[str, ReplayGainTrackResult] = {}
-                replaygain_settings = profile.enrichment.replaygain
+                enrichment_lyrics, replaygain_settings = self._enrichment(profile)
                 if (
                     replaygain_settings.enabled
                     and replaygain_settings.mode != "preserve"
@@ -323,6 +346,8 @@ class AutomaticImportManagementService:
                         canonical_track=canonical_track,
                         profile=profile,
                         pinned=pinned,
+                        lyrics_settings=enrichment_lyrics,
+                        replaygain_settings=replaygain_settings,
                         replaygain_result=replaygain_by_path.get(request.input_path),
                         replaygain_analysis=replaygain_analysis,
                     )
@@ -348,7 +373,10 @@ class AutomaticImportManagementService:
                         destination_relative
                     )
                     sidecar_text = lyrics_sidecar_content(
-                        profile.enrichment.lyrics, lyrics_projection
+                        enrichment_lyrics,
+                        lyrics_projection,
+                        prefer_synced=enrichment_lyrics.write_synced
+                        or not enrichment_lyrics.write_plain,
                     )
                     if sidecar_text is not None:
                         sidecar_content = sidecar_text.encode("utf-8")
@@ -426,7 +454,7 @@ class AutomaticImportManagementService:
                 artifacts = self._merge_lyrics_sidecars(
                     artifacts,
                     lyrics_sidecars,
-                    preserve_existing=profile.enrichment.lyrics.preserve_existing,
+                    preserve_existing=enrichment_lyrics.preserve_existing,
                 )
                 by_ordinal[first_output_ordinal] = msgspec.structs.replace(
                     by_ordinal[first_output_ordinal],
@@ -516,6 +544,8 @@ class AutomaticImportManagementService:
         canonical_track,
         profile,
         pinned,
+        lyrics_settings: LyricsManagementSettings,
+        replaygain_settings: ReplayGainManagementSettings,
         replaygain_result: ReplayGainTrackResult | None = None,
         replaygain_analysis: ReplayGainAnalysis | None = None,
     ) -> tuple[
@@ -531,14 +561,14 @@ class AutomaticImportManagementService:
             canonical_release=canonical_release,
             existing_genres=current.metadata.strings_for("genre"),
         )
-        if profile.enrichment.lyrics.enabled and self._lyrics is not None:
+        if lyrics_settings.enabled and self._lyrics is not None:
             lyrics_projection = await self._lyrics.project(
-                settings=profile.enrichment.lyrics,
+                settings=lyrics_settings,
                 canonical_release=canonical_release,
                 canonical_track=canonical_track,
                 duration_seconds=current.technical.duration_seconds,
             )
-        elif profile.enrichment.lyrics.enabled:
+        elif lyrics_settings.enabled:
             lyrics_projection = LyricsProjection(
                 status="deferred",
                 reason="The lyrics provider is not available.",
@@ -550,10 +580,10 @@ class AutomaticImportManagementService:
             wav_tag_policy=profile.metadata.format_compatibility.wav_tag_policy,
         )
         if (
-            profile.enrichment.lyrics.enabled
-            and profile.enrichment.lyrics.required
+            lyrics_settings.enabled
+            and lyrics_settings.required
             and not required_lyrics_outputs_available(
-                profile.enrichment.lyrics,
+                lyrics_settings,
                 lyrics_projection,
                 existing,
                 synchronized_supported=synced_lyrics_supported,
@@ -563,7 +593,6 @@ class AutomaticImportManagementService:
                 METADATA_UNAVAILABLE,
                 "Required lyrics are unavailable for this import.",
             )
-        replaygain_settings = profile.enrichment.replaygain
         replaygain_values: tuple[tuple[str, float | None], ...] = (
             (
                 "replaygain_track_gain",
@@ -659,7 +688,7 @@ class AutomaticImportManagementService:
             self._desired_fields(profile, current.metadata, desired_metadata)
         )
         for name, value in planned_lyrics_outputs(
-            profile.enrichment.lyrics,
+            lyrics_settings,
             lyrics_projection,
             existing,
             synchronized_supported=synced_lyrics_supported,

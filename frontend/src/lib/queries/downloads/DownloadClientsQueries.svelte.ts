@@ -5,6 +5,7 @@ import { API, CACHE_TTL } from '$lib/constants';
 import { HomeQueryKeyFactory } from '$lib/queries/HomeQueryKeyFactory';
 import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 import type {
+	DownloadEnrichmentSettings,
 	DownloadPolicySettings,
 	SabnzbdConnectionSettings,
 	SabnzbdTestResult,
@@ -84,6 +85,26 @@ export function saveDownloadPolicy() {
 		mutationFn: (policy: DownloadPolicySettings) =>
 			api.global.put<DownloadPolicySettings>(API.downloadClients.policy(), policy),
 		onSuccess: () => invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.policy() })
+	}));
+}
+
+const enrichmentOptions = () =>
+	queryOptions({
+		staleTime: CACHE_TTL.LIBRARY_NATIVE,
+		queryKey: DownloadQueryKeyFactory.enrichment(),
+		queryFn: ({ signal }) =>
+			api.global.get<DownloadEnrichmentSettings>(API.downloadClients.enrichment(), { signal })
+	});
+
+export const getDownloadEnrichmentQuery = (getEnabled: () => boolean = () => true) =>
+	createQuery(() => ({ ...enrichmentOptions(), enabled: getEnabled() }));
+
+export function saveDownloadEnrichment() {
+	return createMutation(() => ({
+		mutationFn: (settings: DownloadEnrichmentSettings) =>
+			api.global.put<DownloadEnrichmentSettings>(API.downloadClients.enrichment(), settings),
+		onSuccess: () =>
+			invalidateQueriesWithPersister({ queryKey: DownloadQueryKeyFactory.enrichment() })
 	}));
 }
 

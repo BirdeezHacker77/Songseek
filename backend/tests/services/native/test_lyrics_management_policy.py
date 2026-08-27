@@ -197,8 +197,12 @@ def test_sidecar_is_skipped_when_disabled_or_unavailable() -> None:
     )
 
 
-def test_sidecar_respects_the_output_forms_the_profile_selected() -> None:
-    """Both forms deselected means no sidecar, even with text available."""
+def test_sidecar_is_written_even_when_no_lyrics_are_embedded() -> None:
+    """Wanting a .lrc and no embedded lyrics is an ordinary choice.
+
+    The tag-output flags must not gate the sidecar, or that combination would
+    silently produce no file at all.
+    """
     projection = LyricsProjection(
         status="available",
         plain_lyrics="Provider plain",
@@ -211,13 +215,46 @@ def test_sidecar_respects_the_output_forms_the_profile_selected() -> None:
                 enabled=True, write_synced=False, write_plain=False
             ),
             projection,
+            prefer_synced=True,
         )
-        is None
+        == "[00:01.000]Provider synced\n"
+    )
+
+
+def test_sidecar_preference_follows_the_tag_choice_unless_overridden() -> None:
+    projection = LyricsProjection(
+        status="available",
+        plain_lyrics="Provider plain",
+        synced_lyrics="[00:01.000]Provider synced",
+    )
+
+    assert (
+        lyrics_sidecar_content(
+            LyricsManagementSettings(enabled=True, write_synced=False), projection
+        )
+        == "Provider plain\n"
     )
     assert (
         lyrics_sidecar_content(
-            LyricsManagementSettings(enabled=True, write_synced=False),
+            LyricsManagementSettings(enabled=True, write_synced=True),
             projection,
+            prefer_synced=False,
         )
         == "Provider plain\n"
+    )
+
+
+def test_sidecar_falls_back_to_the_other_form_when_the_preferred_one_is_missing() -> (
+    None
+):
+    """A caller who prefers plain still gets a synced .lrc rather than none."""
+    assert (
+        lyrics_sidecar_content(
+            LyricsManagementSettings(enabled=True),
+            LyricsProjection(
+                status="available", synced_lyrics="[00:01.000]Provider synced"
+            ),
+            prefer_synced=False,
+        )
+        == "[00:01.000]Provider synced\n"
     )

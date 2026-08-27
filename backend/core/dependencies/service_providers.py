@@ -829,6 +829,9 @@ def get_automatic_import_management_service() -> "AutomaticImportManagementServi
         get_tagging_script_engine(),
         lyrics=get_lyrics_projection_service(),
         replaygain=get_replaygain_analysis_service(),
+        # Read per bundle rather than captured once, so toggling enrichment takes
+        # effect on the next download instead of the next restart.
+        download_enrichment=lambda: get_preferences_service().get_download_enrichment(),
     )
 
 

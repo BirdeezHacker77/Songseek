@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends
 from api.v1.schemas.download import SabnzbdTestResponse, SourcePriority
 from api.v1.schemas.settings import (
     SABNZBD_API_KEY_MASK,
+    DownloadEnrichmentSettings,
     DownloadPolicySettings,
     SabnzbdConnectionSettings,
     WantedWatcherSettings,
@@ -145,6 +146,23 @@ async def update_policy(
     preferences.save_download_policy(policy)
     _clear_download_client_cache()
     return preferences.get_download_policy()
+
+
+@router.get("/enrichment", response_model=DownloadEnrichmentSettings)
+async def get_download_enrichment(
+    _: CurrentAdminDep, preferences=Depends(get_preferences_service)
+):
+    return preferences.get_download_enrichment()
+
+
+@router.put("/enrichment", response_model=DownloadEnrichmentSettings)
+async def update_download_enrichment(
+    _: CurrentAdminDep,
+    settings: DownloadEnrichmentSettings = MsgSpecBody(DownloadEnrichmentSettings),
+    preferences=Depends(get_preferences_service),
+):
+    preferences.save_download_enrichment(settings)
+    return preferences.get_download_enrichment()
 
 
 @router.get("/wanted", response_model=WantedWatcherSettings)

@@ -6,6 +6,7 @@ type SettingsLoader = () => Promise<SettingsModule>;
 const adminTabs = new Set([
 	'free-music',
 	'download-client',
+	'enrichment',
 	'indexers',
 	'lidarr-import',
 	'lastfm',
@@ -22,6 +23,7 @@ const settingsTabLoaders: Record<string, SettingsLoader> = {
 	library: () => import('./SettingsLibrary.svelte'),
 	'free-music': () => import('./SettingsFreeMusic.svelte'),
 	'download-client': () => import('./SettingsDownloadClients.svelte'),
+	enrichment: () => import('./SettingsDownloadEnrichment.svelte'),
 	indexers: () => import('./SettingsIndexers.svelte'),
 	'lidarr-import': () => import('./SettingsLidarrImport.svelte'),
 	'connect-apps': () => import('./SettingsConnectApps.svelte'),

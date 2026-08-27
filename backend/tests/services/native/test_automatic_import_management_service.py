@@ -8,6 +8,10 @@ from unittest.mock import AsyncMock
 import msgspec
 import pytest
 
+from api.v1.schemas.settings import (
+    DownloadEnrichmentSettings,
+    DownloadLyricsSettings,
+)
 from api.v1.schemas.library_management import (
     PICARD_ORGANIZER_PROFILE_ID,
     LibraryManagementRootAssignment,
@@ -59,7 +63,13 @@ from tests.services.native.test_library_management_planner import (
 
 
 def _service(  # noqa: ANN001, ANN202
-    tmp_path: Path, preferences, store, *, lyrics=None, replaygain=None
+    tmp_path: Path,
+    preferences,
+    store,
+    *,
+    lyrics=None,
+    replaygain=None,
+    download_enrichment=None,
 ):
     planner = _planner(tmp_path, store, preferences)
     profiles = LibraryManagementProfileService(preferences)
@@ -77,6 +87,7 @@ def _service(  # noqa: ANN001, ANN202
             planner._tagging,
             lyrics=lyrics,
             replaygain=replaygain,
+            download_enrichment=download_enrichment,
         ),
         planner,
     )
@@ -689,3 +700,55 @@ async def test_preserve_existing_decides_between_shipped_and_fetched_lyrics(
         assert sidecars[0].content is None
     else:
         assert sidecars[0].content == b"[00:01.000]Fetched\n"
+
+
+@pytest.mark.asyncio
+async def test_download_settings_drive_lyrics_instead_of_the_profile(
+    tmp_path: Path,
+) -> None:
+    """The point of the plain settings: enrichment on the way in is configured
+    without touching a profile, so nothing invalidates a root's activation."""
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(
+        tmp_path,
+        preferences,
+        store,
+        lyrics=_lyrics_service(synced_lyrics="[00:01.000]From settings"),
+        download_enrichment=lambda: DownloadEnrichmentSettings(
+            lyrics=DownloadLyricsSettings(
+                enabled=True, embed_in_tags=False, write_lrc_file=True
+            )
+        ),
+    )
+
+    prepared = await service.prepare(_bundle(tmp_path, source, policy_revision))
+
+    # The profile ships with lyrics disabled and was never edited.
+    sidecars = _sidecars(prepared)
+    assert [value.content for value in sidecars] == [b"[00:01.000]From settings\n"]
+
+
+@pytest.mark.asyncio
+async def test_download_settings_off_write_no_lyrics_even_with_a_provider(
+    tmp_path: Path,
+) -> None:
+    _root, source, preferences, store, _settings, policy_revision = _configured(
+        tmp_path
+    )
+    _enable_lyrics(preferences)
+    _activate(preferences, policy_revision)
+    service, _planner_value = _service(
+        tmp_path,
+        preferences,
+        store,
+        lyrics=_lyrics_service(synced_lyrics="[00:01.000]Unwanted"),
+        # Settings win over the profile, so the profile's enabled lyrics are ignored.
+        download_enrichment=DownloadEnrichmentSettings,
+    )
+
+    prepared = await service.prepare(_bundle(tmp_path, source, policy_revision))
+
+    assert _sidecars(prepared) == []

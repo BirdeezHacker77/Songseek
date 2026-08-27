@@ -2189,6 +2189,24 @@ export interface SourcePriority {
 	order: string[];
 }
 
+export interface DownloadLyricsSettings {
+	enabled: boolean;
+	provider: 'lrclib';
+	embed_in_tags: boolean;
+	prefer_synced: boolean;
+	write_lrc_file: boolean;
+}
+
+export interface DownloadReplayGainSettings {
+	enabled: boolean;
+	album_aware: boolean;
+}
+
+export interface DownloadEnrichmentSettings {
+	lyrics: DownloadLyricsSettings;
+	replaygain: DownloadReplayGainSettings;
+}
+
 export interface DownloadPolicySettings {
 	quality_min: string;
 	quality_max: string;

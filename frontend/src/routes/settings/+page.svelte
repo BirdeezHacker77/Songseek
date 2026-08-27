@@ -14,6 +14,7 @@
 		Database,
 		Settings,
 		Radio,
+		Mic2,
 		Search,
 		BarChart3,
 		Info,
@@ -72,6 +73,7 @@
 						tier: 'setup',
 						icon: HardDriveDownload
 					},
+					{ id: 'enrichment', label: 'Enrichment', tier: 'setup', icon: Mic2 },
 					{ id: 'indexers', label: 'Indexers', tier: 'setup', icon: Search },
 					{ id: 'lidarr-import', label: 'Lidarr Import', tier: 'setup', icon: DownloadCloud }
 				]
