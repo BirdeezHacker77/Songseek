@@ -58,6 +58,9 @@ if TYPE_CHECKING:
     from infrastructure.persistence.native_library_store import NativeLibraryStore
     from models.audio import AudioInfo, AudioTag
     from services.native.identification_queue_service import IdentificationQueueService
+    from services.native.post_import_enrichment_service import (
+        PostImportEnrichmentService,
+    )
     from services.native.automatic_import_management_service import (
         AutomaticImportManagementService,
     )
@@ -93,6 +96,7 @@ class TargetImportLibraryService:
         filesystem_coordinator: "LibraryFilesystemCoordinator | None" = None,
         management_publisher: "LibraryManagementPublisher | None" = None,
         automatic_management: "AutomaticImportManagementService | None" = None,
+        post_import_enrichment: "PostImportEnrichmentService | None" = None,
     ) -> None:
         self._store = store
         self._resolver_getter = resolver_getter
@@ -101,6 +105,7 @@ class TargetImportLibraryService:
         self._filesystem = filesystem_coordinator
         self._management_publisher = management_publisher
         self._automatic_management = automatic_management
+        self._post_import_enrichment = post_import_enrichment
 
     def is_configured(self) -> bool:
         return bool(self._resolver_getter().settings.library_roots)
@@ -127,9 +132,15 @@ class TargetImportLibraryService:
 
         automatic = any(value.pinned_profile is not None for value in bundle.files)
         try:
-            return await self._management_publisher.publish_import_bundle(
+            result = await self._management_publisher.publish_import_bundle(
                 bundle, commit
             )
+            # Library Management enriches what it imports, but it only runs when a
+            # root has an automatic trigger enabled. An unmanaged publication would
+            # otherwise ignore the enrichment settings entirely.
+            if not automatic and self._post_import_enrichment is not None:
+                await self._post_import_enrichment.enrich(result.paths)
+            return result
         except AutomaticManagementHoldError:
             raise
         except LibraryManagementPolicyChangedError as error:

@@ -1098,6 +1098,22 @@ def get_target_import_library_service() -> "TargetImportLibraryService":
         filesystem_coordinator=get_library_filesystem_coordinator(),
         management_publisher=get_library_management_publisher(),
         automatic_management=get_automatic_import_management_service(),
+        post_import_enrichment=get_post_import_enrichment_service(),
+    )
+
+
+@singleton
+def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
+    from services.native.post_import_enrichment_service import (
+        PostImportEnrichmentService,
+    )
+
+    return PostImportEnrichmentService(
+        # Read per import rather than captured once, so a toggle takes effect on
+        # the next download instead of the next restart.
+        lambda: get_preferences_service().get_download_enrichment(),
+        get_lrclib_repository(),
+        get_audio_metadata_engine(),
     )
 
 
