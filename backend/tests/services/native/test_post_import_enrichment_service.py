@@ -201,7 +201,9 @@ async def test_one_failing_track_does_not_stop_the_others(
 
     service = PostImportEnrichmentService(
         lambda: DownloadEnrichmentSettings(
-            lyrics=DownloadLyricsSettings(enabled=True, write_lrc_file=True)
+            lyrics=DownloadLyricsSettings(
+                enabled=True, write_lrc_file=True, embed_in_tags=False
+            )
         ),
         SimpleNamespace(get_exact_lyrics=get_exact_lyrics),
         SimpleNamespace(read=read),
@@ -211,3 +213,111 @@ async def test_one_failing_track_does_not_stop_the_others(
 
     assert reads == [missing, good]
     assert good.with_suffix(".lrc").exists()
+
+
+class _Gain:
+    def __init__(self, **values) -> None:  # noqa: ANN003
+        self.track_gain_db = values.get("track_gain_db")
+        self.track_peak = values.get("track_peak")
+        self.album_gain_db = values.get("album_gain_db")
+        self.album_peak = values.get("album_peak")
+
+
+def _document(fmt: str = "flac"):  # noqa: ANN202
+    return SimpleNamespace(probe=SimpleNamespace(detected_format=fmt))
+
+
+def _fields(candidate, gain, settings):  # noqa: ANN001, ANN202
+    return {
+        field.name: field.value
+        for field in PostImportEnrichmentService._desired_fields(
+            _document(), candidate, gain, settings
+        )
+    }
+
+
+def test_loudness_is_written_as_the_four_replaygain_fields() -> None:
+    fields = _fields(
+        None,
+        _Gain(track_gain_db=-7.5, track_peak=0.98, album_gain_db=-8.0, album_peak=1.0),
+        DownloadLyricsSettings(enabled=True),
+    )
+
+    assert fields == {
+        "replaygain_track_gain": -7.5,
+        "replaygain_track_peak": 0.98,
+        "replaygain_album_gain": -8.0,
+        "replaygain_album_peak": 1.0,
+    }
+
+
+def test_per_track_only_analysis_writes_no_album_fields() -> None:
+    """album_aware off leaves the album gains unset rather than writing nulls."""
+    fields = _fields(
+        None,
+        _Gain(track_gain_db=-7.5, track_peak=0.98),
+        DownloadLyricsSettings(enabled=True),
+    )
+
+    assert set(fields) == {"replaygain_track_gain", "replaygain_track_peak"}
+
+
+def test_lyrics_are_embedded_only_when_the_setting_asks_for_it() -> None:
+    candidate = _candidate()
+
+    embedded = _fields(
+        candidate, None, DownloadLyricsSettings(enabled=True, embed_in_tags=True)
+    )
+    assert embedded["lyrics_plain"] == "Plain words"
+    assert embedded["lyrics_synced"] == "[00:01.000]Synced words"
+
+
+def test_synced_lyrics_are_skipped_for_a_container_that_cannot_hold_them() -> None:
+    """The managed path gates on the same capability rather than letting the
+    write plan come back blocked."""
+    fields = {
+        field.name: field.value
+        for field in PostImportEnrichmentService._desired_fields(
+            _document("m4a"),
+            _candidate(),
+            None,
+            DownloadLyricsSettings(enabled=True, embed_in_tags=True),
+        )
+    }
+
+    assert "lyrics_synced" not in fields
+    assert fields["lyrics_plain"] == "Plain words"
+
+
+def test_plain_only_when_synced_is_not_preferred() -> None:
+    fields = _fields(
+        _candidate(),
+        None,
+        DownloadLyricsSettings(enabled=True, embed_in_tags=True, prefer_synced=False),
+    )
+
+    assert set(fields) == {"lyrics_plain"}
+
+
+@pytest.mark.asyncio
+async def test_no_tag_write_is_attempted_when_there_is_nothing_to_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """embed_in_tags off with no loudness result must not touch the audio file."""
+    track = _track(tmp_path)
+    before = track.read_bytes()
+    service = _service(
+        monkeypatch,
+        candidate=_candidate(),
+        settings=DownloadEnrichmentSettings(
+            lyrics=DownloadLyricsSettings(
+                enabled=True, write_lrc_file=True, embed_in_tags=False
+            )
+        ),
+    )
+
+    await service.enrich([str(track)])
+
+    assert track.read_bytes() == before
+    assert not track.with_name(f"{track.name}.songseek-enrich").exists()
+    assert track.with_suffix(".lrc").exists()

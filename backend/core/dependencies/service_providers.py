@@ -1114,6 +1114,7 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
         lambda: get_preferences_service().get_download_enrichment(),
         get_lrclib_repository(),
         get_audio_metadata_engine(),
+        get_replaygain_analysis_service(),
     )
 
 

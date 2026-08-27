@@ -403,3 +403,127 @@ async def test_reconcile_walks_once_and_scopes_literal_wildcard_paths(
         "availability"
     ] == "missing"
     assert (await store.get_target_track(sibling_id))["availability"] == "indexed"
+
+
+class _Publisher:
+    """Stands in for the management publisher; the commit closure is never run."""
+
+    def __init__(self, result) -> None:  # noqa: ANN001
+        self._result = result
+        self.calls = 0
+
+    async def publish_import_bundle(self, bundle, commit):  # noqa: ANN001, ANN202
+        self.calls += 1
+        return self._result
+
+
+class _Enrichment:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def enrich(self, paths) -> None:  # noqa: ANN001
+        self.calls.append(list(paths))
+
+
+class _Automatic:
+    """`prepare` pins a profile when Library Management would manage the bundle."""
+
+    def __init__(self, *, managed: bool) -> None:
+        self._managed = managed
+
+    async def prepare(self, bundle):  # noqa: ANN001, ANN202
+        if not self._managed:
+            return bundle
+        import msgspec
+
+        return msgspec.structs.replace(
+            bundle,
+            files=tuple(
+                msgspec.structs.replace(value, pinned_profile=object())
+                for value in bundle.files
+            ),
+        )
+
+
+def _import_bundle():  # noqa: ANN202
+    from models.library_management import (
+        LibraryManagementImportBundle,
+        LibraryManagementImportFile,
+    )
+
+    return LibraryManagementImportBundle(
+        idempotency_key="key",
+        origin="acquisition",
+        policy_revision="rev",
+        files=(
+            LibraryManagementImportFile(
+                ordinal=0,
+                input_path="/incoming/track.flac",
+                destination_root_id="root-1",
+                destination_relative_path="Artist/Album/01 - Track.flac",
+                tag=AudioTag(
+                    title="Track", artist="Artist", album="Album", track_number=1
+                ),
+                info=AudioInfo(
+                    duration_seconds=180.0,
+                    bitrate=1000,
+                    sample_rate=44100,
+                    channels=2,
+                    file_format="flac",
+                    file_size_bytes=1024,
+                ),
+                release_group_mbid=None,
+                release_mbid=None,
+                recording_mbid=None,
+                confidence=1.0,
+                source="download",
+            ),
+        ),
+    )
+
+
+def _publish_service(tmp_path: Path, *, managed: bool):  # noqa: ANN202
+    from models.library_management import LibraryManagementImportResult
+
+    db = tmp_path / "library.db"
+    _seed_database(db)
+    store = NativeLibraryStore(db_path=db, write_lock=threading.Lock())
+    resolver = LibraryPolicyResolver(
+        TypedLibrarySettings(library_roots=[], staging_path="", naming_template="")
+    )
+    enrichment = _Enrichment()
+    service = TargetImportLibraryService(
+        store,
+        lambda: resolver,
+        IdentificationQueueService(store),
+        management_publisher=_Publisher(
+            LibraryManagementImportResult(
+                bundle_id="bundle-1",
+                paths=("/library/Artist/Album/01 - Track.flac",),
+                local_track_ids=("track-1",),
+            )
+        ),
+        automatic_management=_Automatic(managed=managed),
+        post_import_enrichment=enrichment,
+    )
+    return service, enrichment
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_publication_is_enriched(tmp_path: Path):
+    """Library Management off is exactly when nothing else would enrich."""
+    service, enrichment = _publish_service(tmp_path, managed=False)
+
+    await service.publish_import_bundle(_import_bundle())
+
+    assert enrichment.calls == [["/library/Artist/Album/01 - Track.flac"]]
+
+
+@pytest.mark.asyncio
+async def test_a_managed_publication_is_not_enriched_twice(tmp_path: Path):
+    """The managed path already enriched these files during preparation."""
+    service, enrichment = _publish_service(tmp_path, managed=True)
+
+    await service.publish_import_bundle(_import_bundle())
+
+    assert enrichment.calls == []
