@@ -53,7 +53,7 @@
 			return () => ro.disconnect();
 		}
 
-		const accent = cssVar('--color-accent', '#bbdb9b');
+		const accent = cssVar('--color-accent', '#c3b6f7');
 		const primary = cssVar('--color-primary', '#aed5f2');
 		const heights = new Float32Array(BARS);
 		let raf = 0;

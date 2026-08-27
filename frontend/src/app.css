@@ -6,13 +6,25 @@
 @plugin "daisyui/theme" {
 	name: 'dark';
 	default: true;
-	--color-base-300: #1f271b;
-	--color-base-200: #161d12;
-	--color-base-100: #0d120a;
+	/* Cool slate rather than the inherited green-black. Album art is the loudest
+	   thing on most of these pages, so the ground stays desaturated and lets it
+	   carry the colour; a green cast tinted every cover it sat behind.
+	   base-100 is the page, 200 cards, 300 borders and raised surfaces. */
+	--color-base-300: #272d3a;
+	--color-base-200: #191e29;
+	--color-base-100: #0e1118;
+	--color-base-content: #dce4f0;
+	/* Unchanged: this is the blue the logo is drawn in, so the mark and the UI
+	   stay one palette. */
 	--color-primary: #aed5f2;
-	--color-primary-content: #071520;
-	--color-accent: #bbdb9b;
-	--color-accent-content: #0f1a0a;
+	--color-primary-content: #0a1622;
+	/* Periwinkle picks up the primary rather than opposing it - the accent marks
+	   identification and discovery, which should read as related to it, not as a
+	   warning. */
+	--color-accent: #c3b6f7;
+	--color-accent-content: #171334;
+	--color-neutral: #1f2533;
+	--color-neutral-content: #cbd5e6;
 }
 
 /* Self-hosted (SIL OFL) so no external font calls; Latin + Latin-ext subsets */

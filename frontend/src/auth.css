@@ -9,13 +9,16 @@
 @plugin "daisyui/theme" {
 	name: 'dark';
 	default: true;
-	--color-base-300: #1f271b;
-	--color-base-200: #161d12;
-	--color-base-100: #0d120a;
+	--color-base-300: #272d3a;
+	--color-base-200: #191e29;
+	--color-base-100: #0e1118;
+	--color-base-content: #dce4f0;
 	--color-primary: #aed5f2;
-	--color-primary-content: #071520;
-	--color-accent: #bbdb9b;
-	--color-accent-content: #0f1a0a;
+	--color-primary-content: #0a1622;
+	--color-accent: #c3b6f7;
+	--color-accent-content: #171334;
+	--color-neutral: #1f2533;
+	--color-neutral-content: #cbd5e6;
 }
 
 /* Auth-free routes keep the established SongSeek type system without loading app.css. */
