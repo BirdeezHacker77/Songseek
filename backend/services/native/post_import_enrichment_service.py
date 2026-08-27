@@ -21,6 +21,9 @@ import asyncio
 import logging
 import os
 import shutil
+import time
+import uuid
+import msgspec
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -40,6 +43,7 @@ from models.audio_metadata import (
     DesiredAudioDocument,
     DesiredAudioField,
 )
+from models.enrichment_history import EnrichmentHistoryEntry
 from models.library_management_enrichment import LyricsCandidate
 from repositories.protocols.lrclib import LrclibRepositoryProtocol
 from services.native.lyrics_management_policy import synchronized_lyrics_supported
@@ -62,6 +66,7 @@ class PostImportEnrichmentService:
         replaygain: ReplayGainAnalysisService | None = None,
         navidrome_getter: Callable[[], object] | None = None,
         jellyfin_getter: Callable[[], object] | None = None,
+        history: object | None = None,
     ) -> None:
         self._settings_getter = settings_getter
         self._lrclib = lrclib
@@ -69,6 +74,7 @@ class PostImportEnrichmentService:
         self._replaygain = replaygain
         self._navidrome_getter = navidrome_getter
         self._jellyfin_getter = jellyfin_getter
+        self._history = history
 
     async def enrich(self, paths: Sequence[str]) -> None:
         try:
@@ -267,9 +273,22 @@ class PostImportEnrichmentService:
             candidate = None
             if gain is None:
                 return
-        await asyncio.to_thread(
+        entry = await asyncio.to_thread(
             self._write_tags_blocking, path, candidate, gain, lyrics_settings
         )
+        # Recorded from the async side: the write itself runs in a worker thread,
+        # and the store is async. Best-effort on purpose - the write already
+        # succeeded, and losing the undo entry is worth less than raising over a
+        # file that is now correct.
+        if entry is not None and self._history is not None:
+            try:
+                await self._history.record(entry)
+            except Exception:  # noqa: BLE001 - the write stands either way
+                logger.warning(
+                    "post_import_enrichment.history_not_recorded",
+                    extra={"path": str(path)},
+                    exc_info=True,
+                )
 
     def _write_tags_blocking(
         self,
@@ -287,7 +306,7 @@ class PostImportEnrichmentService:
             current = self._audio.read(staged)
             fields = self._desired_fields(current, candidate, gain, lyrics_settings)
             if not fields:
-                return
+                return None
             plan = self._audio.plan(
                 current, DesiredAudioDocument(fields=tuple(fields)), _WRITE_POLICY
             )
@@ -296,18 +315,40 @@ class PostImportEnrichmentService:
                     "post_import_enrichment.write_blocked",
                     extra={"path": str(path), "blockers": list(plan.blockers)},
                 )
-                return
+                return None
             if not plan.requires_write:
-                return
+                return None
+            # Captured from the untouched copy, immediately before the write, so
+            # the recorded state is exactly what the file had. Recording after
+            # the swap would snapshot the change instead of what preceded it.
+            snapshot = self._audio.snapshot(staged)
             self._audio.apply(staged, plan)
             os.replace(staged, path)
             staged = None  # consumed by the swap
             logger.info(
                 "post_import_enrichment.tags_written", extra={"path": str(path)}
             )
+            return self._history_entry(path, plan, snapshot, candidate, gain)
         finally:
             if staged is not None:
                 staged.unlink(missing_ok=True)
+
+    @staticmethod
+    def _history_entry(path: Path, plan, snapshot, candidate, gain):  # noqa: ANN001, ANN205
+        """What the file looked like before this write, ready to be restored."""
+        kinds: list[str] = []
+        if candidate is not None:
+            kinds.append("lyrics")
+        if gain is not None:
+            kinds.append("replaygain")
+        return EnrichmentHistoryEntry(
+            id=str(uuid.uuid4()),
+            file_path=str(path),
+            kinds=tuple(kinds),
+            changed_fields=tuple(sorted(value.name for value in plan.mutations)),
+            snapshot_json=msgspec.json.encode(snapshot).decode(),
+            created_at=time.time(),
+        )
 
     @staticmethod
     def _staged_path(path: Path) -> Path:

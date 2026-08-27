@@ -1117,6 +1117,30 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
         get_replaygain_analysis_service(),
         get_navidrome_repository,
         get_jellyfin_repository,
+        get_enrichment_history_store(),
+    )
+
+
+@singleton
+def get_enrichment_history_store() -> "EnrichmentHistoryStore":
+    from infrastructure.persistence.enrichment_history_store import (
+        EnrichmentHistoryStore,
+    )
+
+    from .cache_providers import get_persistence_write_lock
+
+    return EnrichmentHistoryStore(
+        db_path=get_settings().library_db_path,
+        write_lock=get_persistence_write_lock(),
+    )
+
+
+@singleton
+def get_enrichment_history_service() -> "EnrichmentHistoryService":
+    from services.native.enrichment_history_service import EnrichmentHistoryService
+
+    return EnrichmentHistoryService(
+        get_enrichment_history_store(), get_audio_metadata_engine()
     )
 
 
