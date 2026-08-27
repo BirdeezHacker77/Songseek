@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ from api.v1.schemas.settings import (
     DownloadEnrichmentSettings,
     DownloadLyricsSettings,
     DownloadRefreshSettings,
+    DownloadReplayGainSettings,
 )
 from models.audio import AudioInfo, AudioTag
 from models.library_management_enrichment import LyricsCandidate, LyricsLookupResult
@@ -436,3 +438,97 @@ async def test_nothing_is_refreshed_when_the_setting_is_off(tmp_path: Path) -> N
     await service.enrich([str(_track(tmp_path))])
 
     assert navidrome.scans == 0
+
+
+def test_the_staged_copy_keeps_an_extension_a_write_plan_will_accept() -> None:
+    """A plan is refused when a file's extension does not match its container,
+    so a staged name ending in anything but the real suffix fails before a
+    single tag is written."""
+    staged = PostImportEnrichmentService._staged_path(
+        Path("/data/Music/Artist/Album/0108 Hallowed Be Thy Name.flac")
+    )
+
+    assert staged.suffix == ".flac"
+    assert staged.parent == Path("/data/Music/Artist/Album")
+    # Hidden, so a media server scanning the folder mid-write skips it.
+    assert staged.name.startswith(".")
+    assert staged != Path("/data/Music/Artist/Album/0108 Hallowed Be Thy Name.flac")
+
+
+def test_the_staged_copy_survives_a_dotted_track_name() -> None:
+    staged = PostImportEnrichmentService._staged_path(Path("/m/A/B/01 - Track 1.5.mp3"))
+
+    assert staged.suffix == ".mp3"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "The audio writer fsyncs the staged file, which fails with EBADF on "
+        "Windows. The write path itself is platform-independent; only this "
+        "harness cannot exercise it."
+    ),
+)
+@pytest.mark.asyncio
+async def test_replaygain_really_lands_in_the_file(tmp_path: Path) -> None:
+    """End to end against a real FLAC, through the actual write pipeline.
+
+    The name-only checks above pass happily while the write still fails: the
+    first version of this staged to `<track>.flac.songseek-enrich`, whose
+    extension no longer matched its container, so every plan was refused before
+    a tag was written. Only writing and reading a real file catches that.
+    """
+    import shutil as _shutil
+
+    import mutagen
+
+    from infrastructure.audio.metadata_engine import AudioMetadataEngine
+
+    fixture = Path(__file__).parents[2] / "fixtures" / "library" / "flac_full_01.flac"
+    track = tmp_path / "0108 Hallowed Be Thy Name.flac"
+    _shutil.copy2(fixture, track)
+
+    class _Analysis:
+        status = "available"
+        reason = None
+        tracks = ()
+
+    class _ReplayGain:
+        async def analyze(self, paths, *, album_aware):  # noqa: ANN001, ANN202
+            self.album_aware = album_aware
+            return SimpleNamespace(
+                status="available",
+                reason=None,
+                tracks=(
+                    SimpleNamespace(
+                        source_path=str(paths[0]),
+                        track_gain_db=-7.5,
+                        track_peak=0.98,
+                        album_gain_db=None,
+                        album_peak=None,
+                    ),
+                ),
+            )
+
+    service = PostImportEnrichmentService(
+        lambda: DownloadEnrichmentSettings(
+            replaygain=DownloadReplayGainSettings(enabled=True, album_aware=False)
+        ),
+        SimpleNamespace(get_exact_lyrics=None),
+        AudioMetadataEngine(),
+        _ReplayGain(),
+    )
+
+    await service.enrich([str(track)])
+
+    tags = {
+        key.lower(): value
+        for key, value in dict(mutagen.File(track).tags).items()
+        if "replaygain" in key.lower()
+    }
+    assert "replaygain_track_gain" in tags
+    assert "replaygain_track_peak" in tags
+    # album_aware off must not invent album values
+    assert "replaygain_album_gain" not in tags
+    # the staged copy is cleaned up either way
+    assert list(tmp_path.glob(".songseek-enrich*")) == []

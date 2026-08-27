@@ -106,7 +106,9 @@ class PostImportEnrichmentService:
                 )
             except Exception:  # noqa: BLE001 - one bad track must not stop the rest
                 logger.warning(
-                    "post_import_enrichment.tags_failed", extra={"path": str(track)}
+                    "post_import_enrichment.tags_failed",
+                    extra={"path": str(track)},
+                    exc_info=True,
                 )
         # Last, so the servers are told about finished files rather than ones
         # still being rewritten - and once per publication, not once per track.
@@ -159,7 +161,9 @@ class PostImportEnrichmentService:
                 candidate = await self._lookup(track, settings)
             except Exception:  # noqa: BLE001 - one bad track must not stop the rest
                 logger.warning(
-                    "post_import_enrichment.failed", extra={"path": str(track)}
+                    "post_import_enrichment.failed",
+                    extra={"path": str(track)},
+                    exc_info=True,
                 )
                 continue
             if candidate is None:
@@ -277,7 +281,7 @@ class PostImportEnrichmentService:
         # Written to a copy beside the track and swapped in, so a failure midway
         # leaves the imported file exactly as it was. copy2 carries the mode and
         # timestamps across, matching what the managed writer preserves.
-        staged = path.with_name(f"{path.name}.songseek-enrich")
+        staged = self._staged_path(path)
         try:
             shutil.copy2(path, staged)
             current = self._audio.read(staged)
@@ -304,6 +308,19 @@ class PostImportEnrichmentService:
         finally:
             if staged is not None:
                 staged.unlink(missing_ok=True)
+
+    @staticmethod
+    def _staged_path(path: Path) -> Path:
+        """Where the rewritten copy lives before it is swapped in.
+
+        The suffix has to survive: a write plan is refused outright when a
+        file's extension does not match its detected container, so a staged name
+        ending in anything else fails before a single tag is written.
+
+        The leading dot keeps it out of the way of a media server scanning the
+        album folder during the moment it exists.
+        """
+        return path.with_name(f".songseek-enrich.{path.name}")
 
     @staticmethod
     def _desired_fields(
