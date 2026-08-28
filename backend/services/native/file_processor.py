@@ -220,7 +220,19 @@ def _slskd_expected_track(
     disc_match = _DISC_DIR_RE.search(source.parent.name)
     if disc_match and not tag.disc_number:
         disc_number = int(disc_match.group(1))
-    if not track_number and len(expected_tracks) == 1:
+    if len(expected_tracks) == 1:
+        # A single-track download has exactly one place the file can go, and the
+        # file's own number is its position on whatever release it was ripped
+        # from - not on the one we asked for. "02 - Paranoid Android.flac" off
+        # OK Computer carries position 2, while a single-track manifest holds
+        # only position 1, so matching the two rejects precisely the
+        # well-tagged sources and lets untagged ones through. That is backwards,
+        # and it fails every candidate identically because album rips all carry
+        # their album position.
+        #
+        # Position proves nothing when there is one slot. The recording MBID,
+        # title and duration checks below are the real verification, and they
+        # still reject a file that is genuinely a different song.
         track_number = expected_tracks[0].track_number
         disc_number = expected_tracks[0].disc_number
     matches = [
