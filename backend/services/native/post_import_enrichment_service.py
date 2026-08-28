@@ -104,6 +104,28 @@ class PostImportEnrichmentService:
         self._artwork_projection = artwork
 
     async def enrich(self, paths: Sequence[str]) -> None:
+        """Never raises.
+
+        The music is already published by the time this runs, and the caller
+        invokes it inside the publisher's own try block, where an unmanaged
+        import re-raises everything it catches. So anything escaping here fails
+        an import that had already succeeded - the orchestrator marks the source
+        bad, fails over to the next one, exhausts them, and reports that no
+        working source was found, leaving the downloaded files stranded.
+
+        The individual steps below guard themselves so one failing does not
+        cancel the others. This is the backstop for everything they miss.
+        """
+        try:
+            await self._enrich(paths)
+        except Exception:  # noqa: BLE001 - see above; the music is in the library
+            logger.warning(
+                "post_import_enrichment.failed",
+                extra={"tracks": len(paths)},
+                exc_info=True,
+            )
+
+    async def _enrich(self, paths: Sequence[str]) -> None:
         try:
             settings = self._settings_getter()
         except Exception:  # noqa: BLE001 - never fail a completed import
@@ -237,7 +259,17 @@ class PostImportEnrichmentService:
             None,
         )
         if settings.save_cover_file:
-            await self._write_cover_file(directory, projection.external)
+            try:
+                await self._write_cover_file(directory, projection.external)
+            except OSError:
+                # Same as the .lrc sidecar: the embedded cover below still goes
+                # in, and a cover file that could not be written is not a reason
+                # to disturb an import that already succeeded.
+                logger.warning(
+                    "post_import_enrichment.cover_failed",
+                    extra={"path": str(directory)},
+                    exc_info=True,
+                )
         return front
 
     async def _release_ids(
@@ -342,19 +374,31 @@ class PostImportEnrichmentService:
             if candidate is None:
                 continue
             found[track] = candidate
-            if settings.write_lrc_file:
-                text = self._sidecar_text(candidate, settings)
-                if text is not None:
-                    await asyncio.to_thread(
-                        track.with_suffix(".lrc").write_text,
-                        text,
-                        encoding="utf-8",
-                        newline="\n",
-                    )
-                    logger.info(
-                        "post_import_enrichment.lyrics_written",
-                        extra={"path": str(track)},
-                    )
+            if not settings.write_lrc_file:
+                continue
+            text = self._sidecar_text(candidate, settings)
+            if text is None:
+                continue
+            try:
+                await asyncio.to_thread(
+                    track.with_suffix(".lrc").write_text,
+                    text,
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            except OSError:
+                # A read-only mount or a full disk. The lyrics still go into the
+                # track's own tags, and the import stands either way.
+                logger.warning(
+                    "post_import_enrichment.sidecar_failed",
+                    extra={"path": str(track)},
+                    exc_info=True,
+                )
+                continue
+            logger.info(
+                "post_import_enrichment.lyrics_written",
+                extra={"path": str(track)},
+            )
         return found
 
     async def _lookup(

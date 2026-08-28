@@ -1116,3 +1116,120 @@ def test_no_artwork_is_desired_when_none_was_fetched() -> None:
     current = SimpleNamespace(artwork=())
 
     assert PostImportEnrichmentService._desired_artwork(current, None) is None
+
+
+# --- nothing escapes ----------------------------------------------------------
+
+
+class _Exploding:
+    """Fails whatever it is asked, the way an unreachable service would."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error or RuntimeError("boom")
+
+    def __getattr__(self, name: str):  # noqa: ANN204
+        async def _fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise self._error
+
+        return _fail
+
+
+def _everything_on():  # noqa: ANN202
+    from api.v1.schemas.settings import (
+        DownloadArtworkSettings,
+        DownloadTaggingSettings,
+    )
+
+    return DownloadEnrichmentSettings(
+        lyrics=DownloadLyricsSettings(enabled=True),
+        replaygain=DownloadReplayGainSettings(enabled=True),
+        refresh=DownloadRefreshSettings(enabled=True, navidrome_enabled=True),
+        genres=DownloadGenreSettings(enabled=True),
+        tagging=DownloadTaggingSettings(enabled=True),
+        artwork=DownloadArtworkSettings(enabled=True),
+    )
+
+
+@pytest.mark.asyncio
+async def test_enrichment_never_raises_however_badly_it_goes(tmp_path: Path) -> None:
+    """The contract the docstring states, asserted rather than assumed.
+
+    The caller runs this inside the publisher's try block, where an unmanaged
+    import re-raises everything. Anything escaping here fails an import that had
+    already succeeded: the orchestrator marks the source bad, fails over,
+    exhausts its candidates and reports that no working source was found, with
+    the downloaded files left stranded in the client's temp folder.
+    """
+    track = tmp_path / "01.flac"
+    track.write_bytes(b"not really audio")
+
+    service = PostImportEnrichmentService(
+        _everything_on,
+        _Exploding(),
+        _Exploding(),
+        _Exploding(),
+        _Exploding,
+        _Exploding,
+        _Exploding(),
+        _Exploding(),
+        _Exploding(),
+        _Exploding(),
+        _Exploding(),
+    )
+
+    await service.enrich([str(track)])
+
+
+@pytest.mark.asyncio
+async def test_settings_that_cannot_be_read_do_not_fail_the_import(
+    tmp_path: Path,
+) -> None:
+    def _broken():  # noqa: ANN202
+        raise RuntimeError("config.json is unreadable")
+
+    service = PostImportEnrichmentService(
+        _broken, _Exploding(), _Exploding(), _Exploding()
+    )
+
+    await service.enrich([str(tmp_path / "01.flac")])
+
+
+@pytest.mark.asyncio
+async def test_an_unwritable_sidecar_still_leaves_the_lyrics_in_the_tags(
+    tmp_path: Path,
+) -> None:
+    """A read-only mount must degrade, not abort: the .lrc is one of two places
+    the lyrics go, and the other one still works."""
+    track = tmp_path / "01.flac"
+    track.write_bytes(b"not really audio")
+    candidate = _candidate()
+
+    async def _get_exact_lyrics(**kwargs):  # noqa: ANN003, ANN202
+        return LyricsLookupResult(found=True, candidate=candidate)
+
+    service = PostImportEnrichmentService(
+        lambda: DownloadEnrichmentSettings(
+            lyrics=DownloadLyricsSettings(enabled=True)
+        ),
+        SimpleNamespace(get_exact_lyrics=_get_exact_lyrics),
+        SimpleNamespace(read=lambda path: _document()),
+    )
+    module.legacy_audio_projection = lambda document: (TAG, INFO)  # noqa: ARG005
+
+    def _refuse(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError(30, "Read-only file system")
+
+    original = Path.write_text
+    Path.write_text = _refuse  # type: ignore[method-assign]
+    try:
+        found = await service._lyrics_candidates(
+            [track], DownloadLyricsSettings(enabled=True)
+        )
+    finally:
+        Path.write_text = original  # type: ignore[method-assign]
+        from infrastructure.audio.metadata_engine import legacy_audio_projection
+
+        module.legacy_audio_projection = legacy_audio_projection
+
+    # The candidate survives the failed sidecar, so the tag write still gets it.
+    assert list(found) == [track]
