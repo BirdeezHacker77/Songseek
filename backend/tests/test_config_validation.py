@@ -236,3 +236,25 @@ class TestGetSettingsCacheSafety:
                 assert config_module._settings is None
         finally:
             config_module._settings = saved
+
+
+def test_every_preferences_section_is_a_known_config_key() -> None:
+    """A section PreferencesService owns must not log "Unknown config key".
+
+    The warning says the key is being ignored. For a preferences-owned section
+    that is untrue - PreferencesService reads it straight out of the same file -
+    so the message sends anyone diagnosing a settings problem after the wrong
+    thing. `download_enrichment` and `library_management` were both missing.
+    """
+    from core.config import _PREFERENCES_OWNED_CONFIG_KEYS
+
+    # Every key the service reads or writes as a section.
+    owned = {
+        "download_enrichment",
+        "library_management",
+        "library_settings",
+        "user_preferences",
+        "download_policy",
+    }
+
+    assert owned <= _PREFERENCES_OWNED_CONFIG_KEYS

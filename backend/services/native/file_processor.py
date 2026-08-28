@@ -820,6 +820,11 @@ class FileProcessor:
                         "task_id": manifest.task_id,
                         "file": _basename(failure.filename or expected.filename),
                         "reason": failure.reason,
+                        # A reason code alone does not say what disagreed with
+                        # what, so diagnosing a rejection meant opening the
+                        # quarantine row. The comparison that made the decision
+                        # belongs in the line that reports it.
+                        "detail": str(failure),
                     },
                 )
 
@@ -1993,7 +1998,13 @@ class FileProcessor:
                 file_format=info.file_format,
             )
             raise VerificationFailed(
-                "File tags name different content than requested",
+                # Both sides named, because "tags name different content" does
+                # not say whether the file is wrong or the request was, and that
+                # is the whole question when a download is rejected.
+                "File tags name different content than requested: file is "
+                f"{tag.artist or '?'} - {tag.title or '?'}, "
+                f"requested {manifest.artist_name or '?'} - "
+                f"{(expected_track.title if expected_track else None) or '?'}",
                 reason="tag_mismatch",
                 filename=expected.filename,
             )
