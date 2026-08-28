@@ -22,6 +22,13 @@ const h = vi.hoisted(() => {
 				known_genres_only: true,
 				maximum_count: 5,
 				denylist: []
+			},
+			tagging: {
+				enabled: false,
+				auto_accept_score: 0.7,
+				review_score: 0.5,
+				write_identifiers: true,
+				rewrite_titles: true
 			}
 		}
 	};
@@ -77,6 +84,13 @@ describe('Settings > Enrichment', () => {
 				known_genres_only: true,
 				maximum_count: 5,
 				denylist: []
+			},
+			tagging: {
+				enabled: false,
+				auto_accept_score: 0.7,
+				review_score: 0.5,
+				write_identifiers: true,
+				rewrite_titles: true
 			}
 		};
 	});
@@ -91,13 +105,15 @@ describe('Settings > Enrichment', () => {
 
 	it('keeps the lyrics options inert until lyrics are switched on', async () => {
 		const { container } = render(SettingsDownloadEnrichment);
+		// By card order, not the first fieldset on the page - identification sits
+		// above lyrics, and querying blind would assert against the wrong one.
+		const lyricsFieldset = () => container.querySelectorAll('fieldset')[1];
 
-		const fieldset = container.querySelector('fieldset');
-		expect(fieldset?.hasAttribute('disabled')).toBe(true);
+		expect(lyricsFieldset()?.hasAttribute('disabled')).toBe(true);
 
 		await page.getByText('Grab lyrics on future downloads').click();
 
-		expect(container.querySelector('fieldset')?.hasAttribute('disabled')).toBe(false);
+		expect(lyricsFieldset()?.hasAttribute('disabled')).toBe(false);
 	});
 
 	it('saves only after something changes, and sends the edited settings', async () => {
@@ -133,5 +149,36 @@ describe('Settings > Enrichment', () => {
 
 		await expect.element(page.getByText('Tidy genres on future downloads')).toBeVisible();
 		await expect.element(page.getByText('Drop anything unrecognised')).toBeVisible();
+	});
+
+	it('offers MusicBrainz retagging as a plain toggle', async () => {
+		render(SettingsDownloadEnrichment);
+
+		await expect
+			.element(page.getByText('Rewrite tags from MusicBrainz on future downloads'))
+			.toBeVisible();
+		await expect.element(page.getByText('Correct titles and track numbers')).toBeVisible();
+	});
+
+	it('shows the thresholds as percentages and saves them as fractions', async () => {
+		render(SettingsDownloadEnrichment);
+		await page.getByText('Rewrite tags from MusicBrainz on future downloads').click();
+
+		const auto = page.getByRole('spinbutton').nth(0);
+		await expect.element(auto).toHaveValue(70);
+
+		await auto.fill('85');
+		await page.getByRole('button', { name: 'Save' }).click();
+
+		expect((h.saved[0] as typeof h.data).tagging.auto_accept_score).toBe(0.85);
+	});
+
+	it('warns when asking about matches better than it accepts automatically', async () => {
+		h.data.tagging = { ...h.data.tagging, enabled: true, review_score: 0.9 };
+		render(SettingsDownloadEnrichment);
+
+		await expect
+			.element(page.getByText('Asking above the automatic threshold', { exact: false }))
+			.toBeVisible();
 	});
 });

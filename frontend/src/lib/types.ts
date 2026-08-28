@@ -2216,11 +2216,47 @@ export interface DownloadGenreSettings {
 	denylist: string[];
 }
 
+export interface DownloadTaggingSettings {
+	enabled: boolean;
+	auto_accept_score: number;
+	review_score: number;
+	write_identifiers: boolean;
+	rewrite_titles: boolean;
+}
+
 export interface DownloadEnrichmentSettings {
 	lyrics: DownloadLyricsSettings;
 	replaygain: DownloadReplayGainSettings;
 	refresh: DownloadRefreshSettings;
 	genres: DownloadGenreSettings;
+	tagging: DownloadTaggingSettings;
+}
+
+export type ImportReviewStatus = 'pending' | 'accepted' | 'dismissed';
+
+export interface ImportReviewEntry {
+	id: string;
+	status: ImportReviewStatus;
+	score: number;
+	reason_code: string;
+	local_album_title: string;
+	local_album_artist_name: string;
+	album_title: string;
+	album_artist_name: string;
+	release_mbid: string | null;
+	release_group_mbid: string | null;
+	paths: string[];
+	created_at: number;
+	resolved_at: number | null;
+}
+
+export interface ImportReviewPage {
+	items: ImportReviewEntry[];
+	total: number;
+}
+
+export interface ImportReviewAcceptResponse {
+	files_written: number;
 }
 
 export interface DownloadPolicySettings {

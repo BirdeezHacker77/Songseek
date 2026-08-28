@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AudioLines, Mic2, RefreshCw, Tags } from 'lucide-svelte';
+	import { AudioLines, Mic2, RefreshCw, ScanSearch, Tags } from 'lucide-svelte';
 
 	import {
 		getDownloadEnrichmentQuery,
@@ -25,6 +25,15 @@
 			query.data !== undefined &&
 			JSON.stringify($state.snapshot(draft)) !== JSON.stringify(query.data)
 	);
+
+	function setScore(field: 'auto_accept_score' | 'review_score', raw: string): void {
+		if (!draft) return;
+		const percent = Number.parseInt(raw, 10);
+		if (Number.isNaN(percent)) return;
+		// Stored as a fraction because that is what the match confidence is; shown
+		// as a percentage because that is how somebody thinks about "how sure".
+		draft.tagging[field] = Math.min(100, Math.max(0, percent)) / 100;
+	}
 
 	async function handleSave(): Promise<void> {
 		if (!draft) return;
@@ -59,6 +68,109 @@
 	{:else if query.isError}
 		<div class="alert alert-error">Could not load enrichment settings.</div>
 	{:else if draft}
+		<section class="card border border-base-300 bg-base-200/55">
+			<div class="card-body gap-4">
+				<div class="flex items-start gap-3">
+					<ScanSearch class="mt-0.5 h-5 w-5 text-primary" aria-hidden="true" />
+					<div class="min-w-0 flex-1">
+						<h3 class="font-semibold">Track identification</h3>
+						<p class="text-base-content/50 text-sm">
+							Matches a finished download against MusicBrainz and writes the release's own names
+							back, so two copies of one album stop browsing as two albums.
+						</p>
+					</div>
+				</div>
+
+				<label class="flex cursor-pointer items-center gap-3">
+					<input
+						type="checkbox"
+						class="toggle toggle-primary toggle-sm"
+						bind:checked={draft.tagging.enabled}
+					/>
+					<span class="font-medium">Rewrite tags from MusicBrainz on future downloads</span>
+				</label>
+
+				<fieldset class="grid gap-3 pl-1" disabled={!draft.tagging.enabled}>
+					<label class="flex cursor-pointer items-start gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm mt-0.5"
+							bind:checked={draft.tagging.rewrite_titles}
+						/>
+						<span
+							><strong class="text-sm">Correct titles and track numbers</strong>
+							<small class="text-base-content/50 block"
+								>Album, artist and track names take the release's spelling, and tracks are numbered
+								by their position on it.</small
+							></span
+						>
+					</label>
+
+					<label class="flex cursor-pointer items-start gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm mt-0.5"
+							bind:checked={draft.tagging.write_identifiers}
+						/>
+						<span
+							><strong class="text-sm">Write MusicBrainz identifiers</strong>
+							<small class="text-base-content/50 block"
+								>What lets a media server tie this release to the same one everywhere else.</small
+							></span
+						>
+					</label>
+
+					<div class="divider my-0"></div>
+
+					<p class="text-base-content/60 text-sm">
+						A match is scored on how much of the release lined up - every track, plus the album
+						title and artist.
+					</p>
+
+					<label class="flex items-center gap-3 text-sm">
+						<span class="text-base-content/60 w-40 shrink-0">Apply automatically at</span>
+						<input
+							type="number"
+							min="0"
+							max="100"
+							step="5"
+							class="input input-bordered input-sm w-24"
+							value={Math.round(draft.tagging.auto_accept_score * 100)}
+							oninput={(event) => setScore('auto_accept_score', event.currentTarget.value)}
+						/>
+						<span class="text-base-content/50">% or better</span>
+					</label>
+
+					<label class="flex items-center gap-3 text-sm">
+						<span class="text-base-content/60 w-40 shrink-0">Ask me about</span>
+						<input
+							type="number"
+							min="0"
+							max="100"
+							step="5"
+							class="input input-bordered input-sm w-24"
+							value={Math.round(draft.tagging.review_score * 100)}
+							oninput={(event) => setScore('review_score', event.currentTarget.value)}
+						/>
+						<span class="text-base-content/50">% or better</span>
+					</label>
+
+					{#if draft.tagging.review_score > draft.tagging.auto_accept_score}
+						<p class="text-warning text-xs">
+							Asking above the automatic threshold leaves nothing in between, so it will be lowered
+							to match when you save.
+						</p>
+					{/if}
+				</fieldset>
+
+				<p class="text-base-content/40 text-xs">
+					A download is never held back or refused over identification. Below the lower number it
+					imports with the tags it came with, and an album with a track that plainly is not on the
+					release is always asked about rather than rewritten - however well it scores.
+				</p>
+			</div>
+		</section>
+
 		<section class="card border border-base-300 bg-base-200/55">
 			<div class="card-body gap-4">
 				<div class="flex items-start gap-3">

@@ -10,6 +10,7 @@ from api.v1.schemas.settings import (
     DownloadLyricsSettings,
     DownloadRefreshSettings,
     DownloadReplayGainSettings,
+    DownloadTaggingSettings,
 )
 from models.audio import AudioInfo, AudioTag
 from models.library_management_enrichment import LyricsCandidate, LyricsLookupResult
@@ -638,3 +639,257 @@ def test_tidying_is_skipped_without_a_normalizer() -> None:
         )
         is None
     )
+
+
+# --- identification, joined to the same write --------------------------------
+
+
+class _Identification:
+    """Stands in for the MusicBrainz round trip."""
+
+    def __init__(self, proposal) -> None:  # noqa: ANN001
+        self.proposal = proposal
+        self.calls = 0
+
+    async def propose(self, paths, settings):  # noqa: ANN001, ANN202
+        self.calls += 1
+        return self.proposal
+
+
+class _Review:
+    def __init__(self) -> None:
+        self.recorded = []
+
+    async def record(self, proposal) -> None:  # noqa: ANN001
+        self.recorded.append(proposal)
+
+
+def _proposal(status: str, paths=(), **overrides):  # noqa: ANN001, ANN003, ANN202
+    from models.audio_metadata import DesiredAudioField
+    from services.native.post_import_identification_service import (
+        IdentificationProposal,
+    )
+
+    return IdentificationProposal(
+        status=status,
+        score=overrides.pop("score", 0.9),
+        album_title="The Colour and the Shape",
+        paths=tuple(str(value) for value in paths),
+        fields_by_path={
+            str(path): (
+                DesiredAudioField(
+                    name="album", action="set", value="The Colour and the Shape"
+                ),
+                DesiredAudioField(name="title", action="set", value="Doll"),
+            )
+            for path in paths
+        }
+        if status == "applied"
+        else {},
+        **overrides,
+    )
+
+
+def _tagging_service(identification, review=None, settings=None):  # noqa: ANN001, ANN202
+    from infrastructure.audio.metadata_engine import AudioMetadataEngine
+
+    return PostImportEnrichmentService(
+        lambda: settings
+        or DownloadEnrichmentSettings(
+            tagging=DownloadTaggingSettings(enabled=True)
+        ),
+        SimpleNamespace(get_exact_lyrics=None),
+        AudioMetadataEngine(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        identification,
+        review,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_match_is_flagged_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    track = tmp_path / "01.flac"
+    track.write_bytes(b"not really audio")
+    review = _Review()
+    proposal = _proposal("review", score=0.62)
+    service = _tagging_service(_Identification(proposal), review)
+
+    await service.enrich([str(track)])
+
+    assert review.recorded == [proposal]
+    # The file is untouched: a review is a question, not a pending change.
+    assert track.read_bytes() == b"not really audio"
+
+
+@pytest.mark.asyncio
+async def test_a_confident_match_is_not_flagged(tmp_path: Path) -> None:
+    track = tmp_path / "01.flac"
+    track.write_bytes(b"not really audio")
+    review = _Review()
+    service = _tagging_service(_Identification(_proposal("applied", [track])), review)
+
+    await service.enrich([str(track)])
+
+    assert review.recorded == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_identification_does_not_fail_the_import(
+    tmp_path: Path,
+) -> None:
+    track = tmp_path / "01.flac"
+    track.write_bytes(b"not really audio")
+
+    class _Broken:
+        async def propose(self, paths, settings):  # noqa: ANN001, ANN202
+            raise RuntimeError("musicbrainz is down")
+
+    await _tagging_service(_Broken()).enrich([str(track)])
+
+
+@pytest.mark.asyncio
+async def test_the_corrected_title_is_what_lyrics_are_looked_up_by(
+    tmp_path: Path,
+) -> None:
+    """LRCLIB matches on exact strings, so an uploader's "everlong (album
+    version)" misses where the release's own "Everlong" hits."""
+    track = tmp_path / "01.flac"
+    track.write_bytes(b"not really audio")
+    asked: list[dict] = []
+
+    async def _get_exact_lyrics(**kwargs):  # noqa: ANN003, ANN202
+        asked.append(kwargs)
+        return LyricsLookupResult(found=False, candidate=None)
+
+    service = PostImportEnrichmentService(
+        lambda: DownloadEnrichmentSettings(
+            lyrics=DownloadLyricsSettings(enabled=True),
+            tagging=DownloadTaggingSettings(enabled=True),
+        ),
+        SimpleNamespace(get_exact_lyrics=_get_exact_lyrics),
+        SimpleNamespace(read=lambda path: _document()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        _Identification(_proposal("applied", [track])),
+        None,
+    )
+    service._audio = SimpleNamespace(read=lambda path: _document())
+    module.legacy_audio_projection = lambda document: (TAG, INFO)  # noqa: ARG005
+
+    try:
+        await service.enrich([str(track)])
+    finally:
+        from infrastructure.audio.metadata_engine import legacy_audio_projection
+
+        module.legacy_audio_projection = legacy_audio_projection
+
+    assert asked and asked[0]["track_name"] == "Doll"
+    assert asked[0]["album_name"] == "The Colour and the Shape"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "The audio writer fsyncs the staged file, which fails with EBADF on "
+        "Windows. The write path itself is platform-independent; only this "
+        "harness cannot exercise it."
+    ),
+)
+@pytest.mark.asyncio
+async def test_an_accepted_match_really_rewrites_the_file(tmp_path: Path) -> None:
+    """End to end against a real FLAC: the corrected tags have to survive the
+    plan, the staged copy and the swap, not merely be proposed."""
+    import shutil as _shutil
+
+    import mutagen
+
+    from infrastructure.audio.metadata_engine import AudioMetadataEngine
+
+    fixture = Path(__file__).parents[2] / "fixtures" / "library" / "flac_full_01.flac"
+    track = tmp_path / "01 doll.flac"
+    _shutil.copy2(fixture, track)
+    original = mutagen.File(track)
+    original["album"] = ["colour+shape 1997 XYZ"]
+    original["title"] = ["01 doll"]
+    original.save()
+
+    service = _tagging_service(_Identification(_proposal("applied", [track])))
+    service._audio = AudioMetadataEngine()
+
+    await service.enrich([str(track)])
+
+    tags = mutagen.File(track).tags
+    assert tags["album"] == ["The Colour and the Shape"]
+    assert tags["title"] == ["Doll"]
+    assert list(tmp_path.glob(".songseek-enrich*")) == []
+
+
+def test_every_proposed_tag_is_one_the_writer_will_actually_accept(
+    tmp_path: Path,
+) -> None:
+    """The plan stage, which is where a bad field name or value shape shows up.
+
+    `_write_tags_blocking` logs a blocked plan and returns, so a field the
+    engine does not accept would leave identification silently doing nothing -
+    with every unit test still green. This runs the real planner over a real
+    file, and needs no fsync, so it runs on every platform.
+    """
+    import shutil as _shutil
+
+    import mutagen
+
+    from infrastructure.audio.metadata_engine import AudioMetadataEngine
+    from models.audio_metadata import (
+        AudioWritePolicy,
+        DesiredAudioDocument,
+        DesiredAudioField,
+    )
+
+    fixture = Path(__file__).parents[2] / "fixtures" / "library" / "flac_full_01.flac"
+    track = tmp_path / "01 doll.flac"
+    _shutil.copy2(fixture, track)
+    tags = mutagen.File(track)
+    tags["album"] = ["colour+shape 1997 XYZ"]
+    tags["title"] = ["01 doll"]
+    tags.save()
+
+    engine = AudioMetadataEngine()
+    proposed = (
+        DesiredAudioField(name="album", action="set", value="The Colour and the Shape"),
+        DesiredAudioField(name="album_artist", action="set", value=("Foo Fighters",)),
+        DesiredAudioField(name="title", action="set", value="Doll"),
+        DesiredAudioField(name="track_number", action="set", value=1),
+        DesiredAudioField(name="disc_number", action="set", value=1),
+        DesiredAudioField(name="musicbrainz_release_id", action="set", value="rel-1"),
+        DesiredAudioField(
+            name="musicbrainz_release_group_id", action="set", value="rg-1"
+        ),
+        DesiredAudioField(
+            name="musicbrainz_album_artist_id", action="set", value=("a-1",)
+        ),
+        DesiredAudioField(name="musicbrainz_recording_id", action="set", value="rec-1"),
+        DesiredAudioField(
+            name="musicbrainz_release_track_id", action="set", value="rt-1"
+        ),
+    )
+
+    plan = engine.plan(
+        engine.read(track),
+        DesiredAudioDocument(fields=proposed),
+        AudioWritePolicy(),
+    )
+
+    assert list(plan.blockers) == []
+    assert plan.requires_write
+    assert {mutation.name for mutation in plan.mutations} == {
+        field.name for field in proposed
+    }

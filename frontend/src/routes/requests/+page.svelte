@@ -72,6 +72,8 @@
 	import DiscoveryBatchList from '$lib/components/discover/DiscoveryBatchList.svelte';
 	import DropImportJobList from '$lib/components/import/DropImportJobList.svelte';
 	import DropImportZone from '$lib/components/import/DropImportZone.svelte';
+	import ImportReviewList from '$lib/components/downloads/ImportReviewList.svelte';
+	import { getImportReviewsQuery } from '$lib/queries/downloads/ImportReviewQueries.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { getIntegrationStatusQuery } from '$lib/queries/HomeIntegrationStatusQuery.svelte';
 
@@ -86,6 +88,14 @@
 	// <details> still mounts its children, which would fire their queries.
 	let importsOpen = $state(false);
 	let historyOpen = $state(false);
+
+	// Shares its key with the list component below, so TanStack serves both from
+	// one request. Needed here only so the empty state does not claim there is
+	// nothing to approve while reviews are sitting above it.
+	const importReviews = getImportReviewsQuery(
+		() => activeTab === 'approvals' && authStore.isAdmin
+	);
+	const reviewCount = $derived(importReviews.data?.items.length ?? 0);
 
 	const integrationStatus = getIntegrationStatusQuery();
 	const downloadClientReady = $derived(integrationStatus.data?.download_client ?? false);
@@ -959,6 +969,10 @@
 		</div>
 	{:else if activeTab === 'approvals' && authStore.isAdmin}
 		<div in:fade={{ duration: 150 }}>
+			<!-- Identification reviews sit above request approvals: both are "needs my
+			     call", and this one is about music already on disk. -->
+			<ImportReviewList enabled={activeTab === 'approvals' && authStore.isAdmin} />
+
 			{#if approvalError}
 				<div class="alert alert-warning mb-4">
 					<TriangleAlert class="h-5 w-5" />
@@ -986,7 +1000,7 @@
 						</div>
 					{/each}
 				</div>
-			{:else if approvalItems.length === 0}
+			{:else if approvalItems.length === 0 && reviewCount === 0}
 				<div class="flex flex-col items-center justify-center min-h-60 text-center py-16">
 					<div class="w-16 h-16 rounded-full bg-success/5 flex items-center justify-center mb-4">
 						<CheckCircle class="h-8 w-8 text-success/30" />

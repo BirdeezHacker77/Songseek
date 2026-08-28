@@ -354,6 +354,40 @@ class DownloadGenreSettings(AppStruct):
     denylist: list[str] = msgspec.field(default_factory=list)
 
 
+class DownloadTaggingSettings(AppStruct):
+    """Rewrite a download's tags from MusicBrainz, gated on how well it matches.
+
+    A download names its files however the uploader felt like naming them, so
+    two copies of one album can browse as two albums. Matching the release
+    against MusicBrainz fixes that - but only when the match is actually the
+    same record, which is what the two scores below decide.
+
+    A download is never held back or rejected over identification: below the
+    review score it imports with the tags it came with, exactly as today.
+    """
+
+    enabled: bool = False
+    # At or above this, the match is taken as correct and the tags are written.
+    auto_accept_score: float = 0.70
+    # Between the two, the file imports untouched and is flagged for review.
+    # Below it, nothing is flagged - a bad match is noise, not a decision.
+    review_score: float = 0.50
+    # Write the MusicBrainz identifiers, which is what lets a media server tie
+    # this release to the same one everywhere else.
+    write_identifiers: bool = True
+    # Correct album, artist and track titles to the release's own spelling.
+    rewrite_titles: bool = True
+
+    def __post_init__(self) -> None:
+        _validate_range(self.auto_accept_score, "auto_accept_score", 0.0, 1.0)
+        _validate_range(self.review_score, "review_score", 0.0, 1.0)
+        # A review floor above the auto-accept score would leave a band where a
+        # match is too good to flag and too poor to apply, and every download in
+        # it would silently do nothing.
+        if self.review_score > self.auto_accept_score:
+            self.review_score = self.auto_accept_score
+
+
 class DownloadRefreshSettings(AppStruct):
     """Tell the media servers a new album landed, so it shows up without waiting
     for their own scan schedule."""
@@ -377,6 +411,9 @@ class DownloadEnrichmentSettings(AppStruct):
     )
     genres: DownloadGenreSettings = msgspec.field(
         default_factory=DownloadGenreSettings
+    )
+    tagging: DownloadTaggingSettings = msgspec.field(
+        default_factory=DownloadTaggingSettings
     )
 
 

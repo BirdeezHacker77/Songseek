@@ -1119,7 +1119,66 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
         get_jellyfin_repository,
         get_enrichment_history_store(),
         get_genre_normalizer(),
+        get_post_import_identification_service(),
+        get_import_review_service(),
     )
+
+
+@singleton
+def get_post_import_identification_service() -> "PostImportIdentificationService":
+    from services.native.album_candidate_service import AlbumCandidateService
+    from services.native.album_evidence_engine import AlbumEvidenceEngine
+    from services.native.post_import_identification_service import (
+        PostImportIdentificationService,
+    )
+
+    return PostImportIdentificationService(
+        get_audio_metadata_engine(),
+        AlbumCandidateService(get_musicbrainz_identification_repository()),
+        AlbumEvidenceEngine(),
+    )
+
+
+@singleton
+def get_import_review_store() -> "ImportReviewStore":
+    from core.config import get_settings
+    from infrastructure.persistence.import_review_store import ImportReviewStore
+
+    from .cache_providers import get_persistence_write_lock
+
+    return ImportReviewStore(
+        db_path=get_settings().library_db_path,
+        write_lock=get_persistence_write_lock(),
+    )
+
+
+@singleton
+def get_import_review_service() -> "ImportReviewService":
+    from services.native.import_review_service import ImportReviewService
+
+    return ImportReviewService(
+        get_import_review_store(),
+        get_post_import_identification_service(),
+        # Lazily, because the enrichment service is what constructs this one -
+        # taking it eagerly here would close the cycle at import time.
+        _LazyEnrichment(),
+        lambda: get_preferences_service().get_download_enrichment(),
+    )
+
+
+class _LazyEnrichment:
+    """Defers resolving the enrichment service until a review is accepted.
+
+    The enrichment service holds the review service (to flag an uncertain match)
+    and the review service holds the enrichment service (to write an accepted
+    one). Only the second direction is needed at construction time, so it is the
+    one that waits.
+    """
+
+    async def apply_tag_fields(self, path, fields) -> bool:  # noqa: ANN001
+        return await get_post_import_enrichment_service().apply_tag_fields(
+            path, fields
+        )
 
 
 @singleton

@@ -775,6 +775,11 @@ export const API = {
 		sourcePriority: () => '/api/v1/download-clients/source-priority',
 		wanted: () => '/api/v1/download-clients/wanted'
 	},
+	importReview: {
+		list: () => '/api/v1/import-review',
+		accept: (id: string) => `/api/v1/import-review/${id}/accept`,
+		dismiss: (id: string) => `/api/v1/import-review/${id}/dismiss`
+	},
 	connectApps: {
 		settings: () => '/api/v1/connect-apps/settings',
 		appPasswords: () => '/api/v1/connect-apps/app-passwords',

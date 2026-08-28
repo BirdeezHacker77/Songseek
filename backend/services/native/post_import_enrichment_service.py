@@ -33,6 +33,7 @@ from api.v1.schemas.settings import (
     DownloadLyricsSettings,
     DownloadRefreshSettings,
     DownloadReplayGainSettings,
+    DownloadTaggingSettings,
 )
 from infrastructure.audio.lyrics import normalize_lrc
 from infrastructure.audio.metadata_engine import (
@@ -61,6 +62,14 @@ _DURATION_TOLERANCE_SECONDS = 2.0
 _WRITE_POLICY = AudioWritePolicy()
 
 
+def _proposed_text(fields: Sequence[DesiredAudioField], name: str) -> str | None:
+    """The string identification proposed for one field, if it proposed one."""
+    for field in fields:
+        if field.name == name and isinstance(field.value, str) and field.value:
+            return field.value
+    return None
+
+
 class PostImportEnrichmentService:
     def __init__(
         self,
@@ -72,6 +81,8 @@ class PostImportEnrichmentService:
         jellyfin_getter: Callable[[], object] | None = None,
         history: object | None = None,
         genres: GenreNormalizer | None = None,
+        identification: object | None = None,
+        review: object | None = None,
     ) -> None:
         self._settings_getter = settings_getter
         self._lrclib = lrclib
@@ -81,6 +92,8 @@ class PostImportEnrichmentService:
         self._jellyfin_getter = jellyfin_getter
         self._history = history
         self._genres = genres
+        self._identification = identification
+        self._review = review
 
     async def enrich(self, paths: Sequence[str]) -> None:
         try:
@@ -94,12 +107,19 @@ class PostImportEnrichmentService:
             not lyrics_settings.enabled
             and not replaygain_settings.enabled
             and not refresh_settings.enabled
+            and not settings.genres.enabled
+            and not settings.tagging.enabled
         ):
             return
 
         tracks = [Path(value) for value in paths]
+        # First, because everything else fills in a track while this decides what
+        # the release actually is - and because the corrected title and artist are
+        # better search terms for the lyrics lookup than whatever the uploader
+        # typed.
+        proposed = await self._identify(tracks, settings.tagging)
         candidates = (
-            await self._lyrics_candidates(tracks, lyrics_settings)
+            await self._lyrics_candidates(tracks, lyrics_settings, proposed)
             if lyrics_settings.enabled
             else {}
         )
@@ -116,6 +136,7 @@ class PostImportEnrichmentService:
                     gain=gains.get(track),
                     lyrics_settings=lyrics_settings,
                     genre_settings=settings.genres,
+                    proposed_fields=proposed.get(str(track), ()),
                 )
             except Exception:  # noqa: BLE001 - one bad track must not stop the rest
                 logger.warning(
@@ -127,6 +148,37 @@ class PostImportEnrichmentService:
         # still being rewritten - and once per publication, not once per track.
         if refresh_settings.enabled and tracks:
             await self._refresh_media_servers(refresh_settings)
+
+    # --- identification -------------------------------------------------------
+
+    async def _identify(
+        self, tracks: Sequence[Path], settings: DownloadTaggingSettings
+    ) -> dict[str, tuple[DesiredAudioField, ...]]:
+        """Corrected tags per path, and a review row when the match is unsure."""
+
+        if self._identification is None or not settings.enabled:
+            return {}
+        try:
+            proposal = await self._identification.propose(tracks, settings)
+        except Exception:  # noqa: BLE001 - the music is imported either way
+            logger.warning("post_import_enrichment.identify_failed", exc_info=True)
+            return {}
+        logger.info(
+            "post_import_enrichment.identified",
+            extra={
+                "status": proposal.status,
+                "score": round(proposal.score, 3),
+                "release_mbid": proposal.release_mbid,
+            },
+        )
+        if proposal.status == "review" and self._review is not None:
+            try:
+                await self._review.record(proposal)
+            except Exception:  # noqa: BLE001 - flagging is not the import
+                logger.warning(
+                    "post_import_enrichment.review_not_recorded", exc_info=True
+                )
+        return dict(proposal.fields_by_path)
 
     # --- media servers --------------------------------------------------------
 
@@ -166,12 +218,17 @@ class PostImportEnrichmentService:
     # --- lyrics ---------------------------------------------------------------
 
     async def _lyrics_candidates(
-        self, tracks: Sequence[Path], settings: DownloadLyricsSettings
+        self,
+        tracks: Sequence[Path],
+        settings: DownloadLyricsSettings,
+        proposed: dict[str, tuple[DesiredAudioField, ...]] | None = None,
     ) -> dict[Path, LyricsCandidate]:
         found: dict[Path, LyricsCandidate] = {}
         for track in tracks:
             try:
-                candidate = await self._lookup(track, settings)
+                candidate = await self._lookup(
+                    track, settings, (proposed or {}).get(str(track), ())
+                )
             except Exception:  # noqa: BLE001 - one bad track must not stop the rest
                 logger.warning(
                     "post_import_enrichment.failed",
@@ -198,7 +255,10 @@ class PostImportEnrichmentService:
         return found
 
     async def _lookup(
-        self, path: Path, settings: DownloadLyricsSettings
+        self,
+        path: Path,
+        settings: DownloadLyricsSettings,
+        proposed: tuple[DesiredAudioField, ...] = (),
     ) -> LyricsCandidate | None:
         # A download that shipped its own .lrc already has lyrics somebody chose;
         # leave the track alone rather than replacing them.
@@ -206,12 +266,17 @@ class PostImportEnrichmentService:
             return None
         document = await asyncio.to_thread(self._audio.read, path)
         tag, info = legacy_audio_projection(document)
-        if not tag.title or not tag.artist:
+        # LRCLIB matches on exact strings, so an uploader's "everlong (album
+        # version)" misses where the release's own "Everlong" would hit. When
+        # identification has already accepted a release, search on its spelling.
+        title = _proposed_text(proposed, "title") or tag.title
+        album = _proposed_text(proposed, "album") or tag.album
+        if not title or not tag.artist:
             return None
         result = await self._lrclib.get_exact_lyrics(
-            track_name=tag.title,
+            track_name=title,
             artist_name=tag.artist,
-            album_name=tag.album or "",
+            album_name=album or "",
             duration_seconds=int(round(info.duration_seconds)),
         )
         candidate = result.candidate if result.found else None
@@ -274,12 +339,18 @@ class PostImportEnrichmentService:
         gain: object | None,
         lyrics_settings: DownloadLyricsSettings,
         genre_settings: DownloadGenreSettings,
-    ) -> None:
+        proposed_fields: tuple[DesiredAudioField, ...] = (),
+    ) -> bool:
         if candidate is not None and not lyrics_settings.embed_in_tags:
             candidate = None
         tidy_genres = genre_settings.enabled and self._genres is not None
-        if candidate is None and gain is None and not tidy_genres:
-            return
+        if (
+            candidate is None
+            and gain is None
+            and not tidy_genres
+            and not proposed_fields
+        ):
+            return False
         entry = await asyncio.to_thread(
             self._write_tags_blocking,
             path,
@@ -287,6 +358,7 @@ class PostImportEnrichmentService:
             gain,
             lyrics_settings,
             genre_settings,
+            proposed_fields,
         )
         # Recorded from the async side: the write itself runs in a worker thread,
         # and the store is async. Best-effort on purpose - the write already
@@ -301,6 +373,26 @@ class PostImportEnrichmentService:
                     extra={"path": str(path)},
                     exc_info=True,
                 )
+        return entry is not None
+
+    async def apply_tag_fields(
+        self, path: Path, fields: Sequence[DesiredAudioField]
+    ) -> bool:
+        """Write an accepted identification's tags to one file.
+
+        The same staged-copy write and the same history entry as an automatic
+        one, so a match somebody accepted by hand is as undoable as a match the
+        score accepted for them. Default settings switch off everything else -
+        accepting a release is not an invitation to go looking for lyrics.
+        """
+        return await self._write_tags(
+            path,
+            candidate=None,
+            gain=None,
+            lyrics_settings=DownloadLyricsSettings(),
+            genre_settings=DownloadGenreSettings(),
+            proposed_fields=tuple(fields),
+        )
 
     def _write_tags_blocking(
         self,
@@ -309,6 +401,7 @@ class PostImportEnrichmentService:
         gain: object | None,
         lyrics_settings: DownloadLyricsSettings,
         genre_settings: DownloadGenreSettings,
+        proposed_fields: tuple[DesiredAudioField, ...] = (),
     ):  # noqa: ANN201
         # Written to a copy beside the track and swapped in, so a failure midway
         # leaves the imported file exactly as it was. copy2 carries the mode and
@@ -318,7 +411,12 @@ class PostImportEnrichmentService:
             shutil.copy2(path, staged)
             current = self._audio.read(staged)
             fields = self._desired_fields(
-                current, candidate, gain, lyrics_settings, genre_settings
+                current,
+                candidate,
+                gain,
+                lyrics_settings,
+                genre_settings,
+                proposed_fields,
             )
             if not fields:
                 return None
@@ -343,13 +441,15 @@ class PostImportEnrichmentService:
             logger.info(
                 "post_import_enrichment.tags_written", extra={"path": str(path)}
             )
-            return self._history_entry(path, plan, snapshot, candidate, gain)
+            return self._history_entry(
+                path, plan, snapshot, candidate, gain, proposed_fields
+            )
         finally:
             if staged is not None:
                 staged.unlink(missing_ok=True)
 
     @staticmethod
-    def _history_entry(path: Path, plan, snapshot, candidate, gain):  # noqa: ANN001, ANN205
+    def _history_entry(path: Path, plan, snapshot, candidate, gain, proposed=()):  # noqa: ANN001, ANN205
         """What the file looked like before this write, ready to be restored."""
         kinds: list[str] = []
         if candidate is not None:
@@ -358,6 +458,14 @@ class PostImportEnrichmentService:
             kinds.append("replaygain")
         if any(value.name == "genre" for value in plan.mutations):
             kinds.append("genres")
+        # Named separately from the rest because it is the only one that replaces
+        # what the file said about itself rather than filling in a blank, so it is
+        # the entry somebody is most likely to come looking for.
+        if proposed and any(
+            value.name in {field.name for field in proposed}
+            for value in plan.mutations
+        ):
+            kinds.append("tags")
         return EnrichmentHistoryEntry(
             id=str(uuid.uuid4()),
             file_path=str(path),
@@ -429,8 +537,14 @@ class PostImportEnrichmentService:
         gain: object | None,
         lyrics_settings: DownloadLyricsSettings,
         genre_settings: DownloadGenreSettings,
+        proposed_fields: tuple[DesiredAudioField, ...] = (),
     ) -> list[DesiredAudioField]:
-        fields: list[DesiredAudioField] = []
+        # Identification's corrected tags join the same document as the lyrics,
+        # loudness and genre ones, so a download that needs all four is a single
+        # rewrite of the file and a single entry to undo. The names do not
+        # overlap: identification writes titles, positions and identifiers, and
+        # nothing below touches those.
+        fields: list[DesiredAudioField] = list(proposed_fields)
         tidied = self._tidy_genres(current, genre_settings)
         if tidied is not None:
             fields.append(DesiredAudioField(name="genre", action="set", value=tidied))
