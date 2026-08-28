@@ -32,6 +32,7 @@
 		ShoppingBag,
 		Landmark,
 		Blocks,
+		History,
 		PanelLeft
 	} from 'lucide-svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
@@ -74,6 +75,12 @@
 						icon: HardDriveDownload
 					},
 					{ id: 'enrichment', label: 'Enrichment', tier: 'setup', icon: Mic2 },
+					{
+						id: 'enrichment-history',
+						label: 'Enrichment History',
+						tier: 'setup',
+						icon: History
+					},
 					{ id: 'indexers', label: 'Indexers', tier: 'setup', icon: Search },
 					{ id: 'lidarr-import', label: 'Lidarr Import', tier: 'setup', icon: DownloadCloud }
 				]

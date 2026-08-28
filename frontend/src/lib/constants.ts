@@ -780,6 +780,10 @@ export const API = {
 		accept: (id: string) => `/api/v1/import-review/${id}/accept`,
 		dismiss: (id: string) => `/api/v1/import-review/${id}/dismiss`
 	},
+	enrichmentHistory: {
+		list: () => '/api/v1/enrichment-history',
+		restore: (id: string) => `/api/v1/enrichment-history/${id}/restore`
+	},
 	connectApps: {
 		settings: () => '/api/v1/connect-apps/settings',
 		appPasswords: () => '/api/v1/connect-apps/app-passwords',

@@ -2263,6 +2263,19 @@ export interface ImportReviewPage {
 	total: number;
 }
 
+export interface EnrichmentHistoryItem {
+	id: string;
+	file_path: string;
+	kinds: string[];
+	changed_fields: string[];
+	created_at: number;
+	restored_at: number | null;
+}
+
+export interface EnrichmentHistoryPage {
+	items: EnrichmentHistoryItem[];
+}
+
 export interface ImportReviewAcceptResponse {
 	files_written: number;
 }

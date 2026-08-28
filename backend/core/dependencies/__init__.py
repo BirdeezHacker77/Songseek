@@ -104,6 +104,7 @@ from .service_providers import (  # noqa: F401
     get_canonical_release_metadata_service,
     get_effective_metadata_projection_service,
     get_library_management_override_service,
+    get_enrichment_history_service,
     get_genre_normalizer,
     get_import_review_service,
     get_import_review_store,
