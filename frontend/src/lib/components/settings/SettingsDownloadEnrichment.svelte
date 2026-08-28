@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AudioLines, Mic2, RefreshCw, ScanSearch, Tags } from 'lucide-svelte';
+	import { AudioLines, Image, Mic2, RefreshCw, ScanSearch, Tags } from 'lucide-svelte';
 
 	import {
 		getDownloadEnrichmentQuery,
@@ -294,6 +294,77 @@
 				<p class="text-base-content/40 text-xs">
 					Analysis runs per track and is CPU-heavy, so a large download takes noticeably longer.
 					Gains already present on a file are kept.
+				</p>
+			</div>
+		</section>
+
+		<section class="card border border-base-300 bg-base-200/55">
+			<div class="card-body gap-4">
+				<div class="flex items-start gap-3">
+					<Image class="mt-0.5 h-5 w-5 text-primary" aria-hidden="true" />
+					<div class="min-w-0 flex-1">
+						<h3 class="font-semibold">Cover art</h3>
+						<p class="text-base-content/50 text-sm">
+							Fills in a cover for a download that arrived without one. It never replaces artwork a
+							download already has.
+						</p>
+					</div>
+				</div>
+
+				<label class="flex cursor-pointer items-center gap-3">
+					<input
+						type="checkbox"
+						class="toggle toggle-primary toggle-sm"
+						bind:checked={draft.artwork.enabled}
+					/>
+					<span class="font-medium">Fetch missing cover art on future downloads</span>
+				</label>
+
+				<fieldset class="grid gap-3 pl-1" disabled={!draft.artwork.enabled}>
+					<label class="flex cursor-pointer items-start gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm mt-0.5"
+							bind:checked={draft.artwork.save_cover_file}
+						/>
+						<span
+							><strong class="text-sm">Save a cover file next to the album</strong>
+							<small class="text-base-content/50 block"
+								>What most scanners and players look for.</small
+							></span
+						>
+					</label>
+					<label class="flex cursor-pointer items-start gap-3">
+						<input
+							type="checkbox"
+							class="checkbox checkbox-sm mt-0.5"
+							bind:checked={draft.artwork.embed_in_tags}
+						/>
+						<span
+							><strong class="text-sm">Also embed it in the song's tags</strong>
+							<small class="text-base-content/50 block"
+								>Only tracks that have no cover of their own are touched.</small
+							></span
+						>
+					</label>
+					<label class="flex items-center gap-3 text-sm">
+						<span class="text-base-content/60 w-28 shrink-0">At least</span>
+						<input
+							type="number"
+							min="0"
+							max="5000"
+							step="100"
+							class="input input-bordered input-sm w-24"
+							bind:value={draft.artwork.minimum_width}
+						/>
+						<span class="text-base-content/50">pixels wide</span>
+					</label>
+				</fieldset>
+
+				<p class="text-base-content/40 text-xs">
+					Covers come from the Cover Art Archive, which is addressed by MusicBrainz release. A
+					download with no MusicBrainz tags is skipped unless track identification above has
+					matched it first.
 				</p>
 			</div>
 		</section>

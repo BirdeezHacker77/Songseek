@@ -29,6 +29,12 @@ const h = vi.hoisted(() => {
 				review_score: 0.5,
 				write_identifiers: true,
 				rewrite_titles: true
+			},
+			artwork: {
+				enabled: false,
+				embed_in_tags: true,
+				save_cover_file: true,
+				minimum_width: 500
 			}
 		}
 	};
@@ -91,6 +97,12 @@ describe('Settings > Enrichment', () => {
 				review_score: 0.5,
 				write_identifiers: true,
 				rewrite_titles: true
+			},
+			artwork: {
+				enabled: false,
+				embed_in_tags: true,
+				save_cover_file: true,
+				minimum_width: 500
 			}
 		};
 	});
@@ -179,6 +191,15 @@ describe('Settings > Enrichment', () => {
 
 		await expect
 			.element(page.getByText('Asking above the automatic threshold', { exact: false }))
+			.toBeVisible();
+	});
+
+	it('offers cover art as a fill-only toggle', async () => {
+		render(SettingsDownloadEnrichment);
+
+		await expect.element(page.getByText('Fetch missing cover art on future downloads')).toBeVisible();
+		await expect
+			.element(page.getByText('It never replaces artwork a download already has.', { exact: false }))
 			.toBeVisible();
 	});
 });

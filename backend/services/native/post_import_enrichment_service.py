@@ -31,6 +31,7 @@ from api.v1.schemas.settings import (
     DownloadEnrichmentSettings,
     DownloadGenreSettings,
     DownloadLyricsSettings,
+    DownloadArtworkSettings,
     DownloadRefreshSettings,
     DownloadReplayGainSettings,
     DownloadTaggingSettings,
@@ -45,11 +46,16 @@ from models.audio_metadata import (
     DesiredAudioDocument,
     DesiredAudioField,
 )
+from services.native.artwork_projection_service import desired_embedded_artwork
 from models.enrichment_history import EnrichmentHistoryEntry
 from models.library_management_enrichment import LyricsCandidate
 from repositories.protocols.lrclib import LrclibRepositoryProtocol
 from models.library_management_genres import GenreCandidate
-from services.native.download_enrichment_policy import import_genre_settings
+from infrastructure.queue.priority_queue import RequestPriority
+from services.native.download_enrichment_policy import (
+    import_artwork_settings,
+    import_genre_settings,
+)
 from services.native.genre_normalizer import GenreNormalizer, fold_genre
 from services.native.lyrics_management_policy import synchronized_lyrics_supported
 from services.native.replaygain_analysis_service import ReplayGainAnalysisService
@@ -83,6 +89,7 @@ class PostImportEnrichmentService:
         genres: GenreNormalizer | None = None,
         identification: object | None = None,
         review: object | None = None,
+        artwork: object | None = None,
     ) -> None:
         self._settings_getter = settings_getter
         self._lrclib = lrclib
@@ -94,6 +101,7 @@ class PostImportEnrichmentService:
         self._genres = genres
         self._identification = identification
         self._review = review
+        self._artwork_projection = artwork
 
     async def enrich(self, paths: Sequence[str]) -> None:
         try:
@@ -109,6 +117,7 @@ class PostImportEnrichmentService:
             and not refresh_settings.enabled
             and not settings.genres.enabled
             and not settings.tagging.enabled
+            and not settings.artwork.enabled
         ):
             return
 
@@ -128,6 +137,7 @@ class PostImportEnrichmentService:
             if replaygain_settings.enabled
             else {}
         )
+        cover = await self._artwork(tracks, settings.artwork, proposed)
         for track in tracks:
             try:
                 await self._write_tags(
@@ -137,6 +147,7 @@ class PostImportEnrichmentService:
                     lyrics_settings=lyrics_settings,
                     genre_settings=settings.genres,
                     proposed_fields=proposed.get(str(track), ()),
+                    cover=cover,
                 )
             except Exception:  # noqa: BLE001 - one bad track must not stop the rest
                 logger.warning(
@@ -179,6 +190,98 @@ class PostImportEnrichmentService:
                     "post_import_enrichment.review_not_recorded", exc_info=True
                 )
         return dict(proposal.fields_by_path)
+
+    # --- artwork --------------------------------------------------------------
+
+    async def _artwork(
+        self,
+        tracks: Sequence[Path],
+        settings: DownloadArtworkSettings,
+        proposed: dict[str, tuple[DesiredAudioField, ...]],
+    ) -> object | None:
+        """A front cover for this album, or None to leave it as it arrived.
+
+        One lookup per publication rather than one per track: it is one album,
+        one cover, and Cover Art Archive is not to be asked the same question
+        twelve times.
+        """
+        if self._artwork_projection is None or not settings.enabled or not tracks:
+            return None
+        release, release_group = await self._release_ids(tracks, proposed)
+        if not release and not release_group:
+            # Nothing to look it up by. Identification would supply these, which
+            # is why the setting says so.
+            logger.info("post_import_enrichment.artwork_no_release_id")
+            return None
+        directory = tracks[0].parent
+        try:
+            existing_external = (
+                await self._artwork_projection.inspect_existing_external(
+                    import_artwork_settings(settings), directory
+                )
+            )
+            projection = await self._artwork_projection.project(
+                settings=import_artwork_settings(settings),
+                release_mbid=release or "",
+                release_group_mbid=release_group or "",
+                album_directory=directory,
+                existing_embedded=(),
+                existing_external=existing_external,
+                priority=RequestPriority.USER_INITIATED,
+            )
+        except Exception:  # noqa: BLE001 - a missing cover is not a failed import
+            logger.warning("post_import_enrichment.artwork_failed", exc_info=True)
+            return None
+        front = next(
+            (value for value in projection.embedded if value.image_type == "front"),
+            None,
+        )
+        if settings.save_cover_file:
+            await self._write_cover_file(directory, projection.external)
+        return front
+
+    async def _release_ids(
+        self,
+        tracks: Sequence[Path],
+        proposed: dict[str, tuple[DesiredAudioField, ...]],
+    ) -> tuple[str | None, str | None]:
+        """The release this album is, preferring what identification just decided."""
+        fields = proposed.get(str(tracks[0]), ())
+        release = _proposed_text(fields, "musicbrainz_release_id")
+        group = _proposed_text(fields, "musicbrainz_release_group_id")
+        if release or group:
+            return release, group
+        try:
+            document = await asyncio.to_thread(self._audio.read, tracks[0])
+        except Exception:  # noqa: BLE001 - an unreadable file has no ids to give
+            return None, None
+        tag, _ = legacy_audio_projection(document)
+        return tag.musicbrainz_release_id, tag.musicbrainz_release_group_id
+
+    @staticmethod
+    async def _write_cover_file(directory: Path, outputs: Sequence[object]) -> None:
+        front = next(
+            (
+                value
+                for value in outputs
+                if getattr(value, "image_type", None) == "front"
+            ),
+            None,
+        )
+        if front is None:
+            return
+        suffix = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}.get(
+            getattr(front, "format", ""), ".jpg"
+        )
+        path = directory / f"cover{suffix}"
+        if await asyncio.to_thread(path.exists):
+            # The projection preserves an existing cover rather than proposing
+            # one, so reaching here means something else wrote it in between.
+            return
+        await asyncio.to_thread(path.write_bytes, front.content)
+        logger.info(
+            "post_import_enrichment.cover_written", extra={"path": str(path)}
+        )
 
     # --- media servers --------------------------------------------------------
 
@@ -340,6 +443,7 @@ class PostImportEnrichmentService:
         lyrics_settings: DownloadLyricsSettings,
         genre_settings: DownloadGenreSettings,
         proposed_fields: tuple[DesiredAudioField, ...] = (),
+        cover: object | None = None,
     ) -> bool:
         if candidate is not None and not lyrics_settings.embed_in_tags:
             candidate = None
@@ -349,6 +453,7 @@ class PostImportEnrichmentService:
             and gain is None
             and not tidy_genres
             and not proposed_fields
+            and cover is None
         ):
             return False
         entry = await asyncio.to_thread(
@@ -359,6 +464,7 @@ class PostImportEnrichmentService:
             lyrics_settings,
             genre_settings,
             proposed_fields,
+            cover,
         )
         # Recorded from the async side: the write itself runs in a worker thread,
         # and the store is async. Best-effort on purpose - the write already
@@ -402,6 +508,7 @@ class PostImportEnrichmentService:
         lyrics_settings: DownloadLyricsSettings,
         genre_settings: DownloadGenreSettings,
         proposed_fields: tuple[DesiredAudioField, ...] = (),
+        cover: object | None = None,
     ):  # noqa: ANN201
         # Written to a copy beside the track and swapped in, so a failure midway
         # leaves the imported file exactly as it was. copy2 carries the mode and
@@ -418,10 +525,13 @@ class PostImportEnrichmentService:
                 genre_settings,
                 proposed_fields,
             )
-            if not fields:
+            artwork = self._desired_artwork(current, cover)
+            if not fields and artwork is None:
                 return None
             plan = self._audio.plan(
-                current, DesiredAudioDocument(fields=tuple(fields)), _WRITE_POLICY
+                current,
+                DesiredAudioDocument(fields=tuple(fields), artwork=artwork),
+                _WRITE_POLICY,
             )
             if plan.blockers:
                 logger.info(
@@ -442,14 +552,14 @@ class PostImportEnrichmentService:
                 "post_import_enrichment.tags_written", extra={"path": str(path)}
             )
             return self._history_entry(
-                path, plan, snapshot, candidate, gain, proposed_fields
+                path, plan, snapshot, candidate, gain, proposed_fields, artwork
             )
         finally:
             if staged is not None:
                 staged.unlink(missing_ok=True)
 
     @staticmethod
-    def _history_entry(path: Path, plan, snapshot, candidate, gain, proposed=()):  # noqa: ANN001, ANN205
+    def _history_entry(path: Path, plan, snapshot, candidate, gain, proposed=(), artwork=None):  # noqa: ANN001, ANN205
         """What the file looked like before this write, ready to be restored."""
         kinds: list[str] = []
         if candidate is not None:
@@ -466,6 +576,8 @@ class PostImportEnrichmentService:
             for value in plan.mutations
         ):
             kinds.append("tags")
+        if artwork is not None:
+            kinds.append("artwork")
         return EnrichmentHistoryEntry(
             id=str(uuid.uuid4()),
             file_path=str(path),
@@ -516,6 +628,24 @@ class PostImportEnrichmentService:
         if not result or result == existing:
             return None
         return result
+
+    @staticmethod
+    def _desired_artwork(current, cover):  # noqa: ANN001, ANN205
+        """The artwork this file should end up with, or None to leave it alone.
+
+        Fill-only, and the check is per file rather than per album: a download
+        where one track lost its cover in transit gets that one filled, and the
+        eleven that kept theirs are not rewritten.
+
+        None and an empty tuple mean different things to the writer - None
+        leaves the existing artwork untouched, a tuple is the complete desired
+        set - so a file that already has a front cover must return None.
+        """
+        if cover is None:
+            return None
+        if any(value.image_type == "front" for value in current.artwork):
+            return None
+        return desired_embedded_artwork(current.artwork, (cover,))
 
     @staticmethod
     def _staged_path(path: Path) -> Path:

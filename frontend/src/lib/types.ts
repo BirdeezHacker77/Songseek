@@ -2224,12 +2224,20 @@ export interface DownloadTaggingSettings {
 	rewrite_titles: boolean;
 }
 
+export interface DownloadArtworkSettings {
+	enabled: boolean;
+	embed_in_tags: boolean;
+	save_cover_file: boolean;
+	minimum_width: number;
+}
+
 export interface DownloadEnrichmentSettings {
 	lyrics: DownloadLyricsSettings;
 	replaygain: DownloadReplayGainSettings;
 	refresh: DownloadRefreshSettings;
 	genres: DownloadGenreSettings;
 	tagging: DownloadTaggingSettings;
+	artwork: DownloadArtworkSettings;
 }
 
 export type ImportReviewStatus = 'pending' | 'accepted' | 'dismissed';

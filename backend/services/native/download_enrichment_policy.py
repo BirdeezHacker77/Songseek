@@ -13,11 +13,13 @@ exactly one notion of "the lyrics settings", not two.
 from __future__ import annotations
 
 from api.v1.schemas.library_management import (
+    ArtworkManagementSettings,
     GenreManagementSettings,
     LyricsManagementSettings,
     ReplayGainManagementSettings,
 )
 from api.v1.schemas.settings import (
+    DownloadArtworkSettings,
     DownloadEnrichmentSettings,
     DownloadGenreSettings,
     DownloadLyricsSettings,
@@ -75,6 +77,35 @@ def import_genre_settings(
         canonicalize=settings.canonicalize,
         maximum_count=settings.maximum_count,
         denylist=list(settings.denylist),
+    )
+
+
+def import_artwork_settings(
+    settings: DownloadArtworkSettings,
+) -> ArtworkManagementSettings:
+    """The projection service's own settings shape, filled from the plain ones.
+
+    Everything here is set to fill rather than improve. `local_files` stays in
+    the provider list so a cover already sitting beside the album is recognised
+    as artwork that exists, rather than being ignored and then written over.
+    """
+    return ArtworkManagementSettings(
+        embedded_enabled=settings.embed_in_tags,
+        external_enabled=settings.save_cover_file,
+        providers=[
+            "cover_art_archive_release",
+            "cover_art_archive_release_group",
+            "local_files",
+            "embedded",
+        ],
+        image_types=["front"],
+        embedded_front_only=True,
+        external_front_only=True,
+        minimum_width=settings.minimum_width,
+        minimum_height=settings.minimum_width,
+        # Never touch a cover file that is already there.
+        overwrite_external_files=False,
+        never_replace_with_smaller=True,
     )
 
 

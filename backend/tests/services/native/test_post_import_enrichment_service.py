@@ -893,3 +893,226 @@ def test_every_proposed_tag_is_one_the_writer_will_actually_accept(
     assert {mutation.name for mutation in plan.mutations} == {
         field.name for field in proposed
     }
+
+
+# --- artwork, filled only when it is missing ----------------------------------
+
+
+class _Projection:
+    """Stands in for Cover Art Archive."""
+
+    def __init__(self, embedded=(), external=()) -> None:  # noqa: ANN001
+        self.embedded = embedded
+        self.external = external
+        self.calls: list[dict] = []
+
+    async def inspect_existing_external(self, settings, directory):  # noqa: ANN001, ANN201
+        return ()
+
+    async def project(self, **kwargs):  # noqa: ANN003, ANN201
+        self.calls.append(kwargs)
+        return SimpleNamespace(embedded=self.embedded, external=self.external)
+
+
+def _output(image_type: str = "front", *, content: bytes = b"jpeg-bytes"):  # noqa: ANN202
+    return SimpleNamespace(
+        image_type=image_type,
+        mime_type="image/jpeg",
+        format="jpeg",
+        description="",
+        width=1000,
+        height=1000,
+        byte_size=len(content),
+        sha256="abc",
+        content=content,
+    )
+
+
+def _artwork_service(projection, settings=None, artwork_document=None):  # noqa: ANN001, ANN202
+    from api.v1.schemas.settings import DownloadArtworkSettings
+
+    return PostImportEnrichmentService(
+        lambda: DownloadEnrichmentSettings(
+            artwork=settings or DownloadArtworkSettings(enabled=True)
+        ),
+        SimpleNamespace(get_exact_lyrics=None),
+        SimpleNamespace(read=lambda path: artwork_document or _document()),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        projection,
+    )
+
+
+def _album_document(release_id=None, group_id=None, artwork=()):  # noqa: ANN001, ANN202
+    """A read document plus the tag projection that goes with it."""
+    tag = AudioTag(
+        title="Doll",
+        artist="Foo Fighters",
+        album="The Colour and the Shape",
+        track_number=1,
+        musicbrainz_release_id=release_id,
+        musicbrainz_release_group_id=group_id,
+    )
+    document = SimpleNamespace(
+        probe=SimpleNamespace(detected_format="flac"), artwork=artwork
+    )
+    return document, tag
+
+
+async def _enrich_with(service, tag, paths):  # noqa: ANN001, ANN202
+    """Runs enrich with the tag projection stubbed, and always puts it back."""
+    module.legacy_audio_projection = lambda document: (tag, INFO)  # noqa: ARG005
+    try:
+        await service.enrich(paths)
+    finally:
+        from infrastructure.audio.metadata_engine import legacy_audio_projection
+
+        module.legacy_audio_projection = legacy_audio_projection
+
+
+def _track(directory: Path, name: str = "01.flac") -> Path:
+    path = directory / name
+    path.write_bytes(b"not really audio")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_no_cover_is_fetched_when_the_setting_is_off(tmp_path: Path) -> None:
+    from api.v1.schemas.settings import DownloadArtworkSettings
+
+    projection = _Projection()
+    document, tag = _album_document(release_id="rel-1")
+    service = _artwork_service(
+        projection, DownloadArtworkSettings(enabled=False), document
+    )
+
+    await _enrich_with(service, tag, [str(_track(tmp_path))])
+
+    assert projection.calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_cover_is_fetched_without_a_release_to_look_it_up_by(
+    tmp_path: Path,
+) -> None:
+    """Cover Art Archive is addressed by MBID. With none on the file and none
+    from identification there is nothing to ask for."""
+    projection = _Projection()
+    document, tag = _album_document()
+    service = _artwork_service(projection, artwork_document=document)
+
+    await _enrich_with(service, tag, [str(_track(tmp_path))])
+
+    assert projection.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_release_on_the_file_is_what_the_cover_is_looked_up_by(
+    tmp_path: Path,
+) -> None:
+    projection = _Projection()
+    document, tag = _album_document(release_id="rel-1", group_id="rg-1")
+    service = _artwork_service(projection, artwork_document=document)
+
+    await _enrich_with(service, tag, [str(_track(tmp_path))])
+
+    assert len(projection.calls) == 1
+    assert projection.calls[0]["release_mbid"] == "rel-1"
+    assert projection.calls[0]["release_group_mbid"] == "rg-1"
+
+
+@pytest.mark.asyncio
+async def test_one_cover_lookup_per_album_not_one_per_track(tmp_path: Path) -> None:
+    projection = _Projection()
+    document, tag = _album_document(release_id="rel-1")
+    service = _artwork_service(projection, artwork_document=document)
+    tracks = [str(_track(tmp_path, f"{index:02d}.flac")) for index in range(1, 4)]
+
+    await _enrich_with(service, tag, tracks)
+
+    assert len(projection.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cover_file_is_written_beside_the_album(tmp_path: Path) -> None:
+    projection = _Projection(external=(_output(content=b"the-cover"),))
+    document, tag = _album_document(release_id="rel-1")
+    service = _artwork_service(projection, artwork_document=document)
+
+    await _enrich_with(service, tag, [str(_track(tmp_path))])
+
+    assert (tmp_path / "cover.jpg").read_bytes() == b"the-cover"
+
+
+@pytest.mark.asyncio
+async def test_an_existing_cover_file_is_never_overwritten(tmp_path: Path) -> None:
+    projection = _Projection(external=(_output(content=b"the-cover"),))
+    document, tag = _album_document(release_id="rel-1")
+    service = _artwork_service(projection, artwork_document=document)
+    (tmp_path / "cover.jpg").write_bytes(b"the-one-it-came-with")
+
+    await _enrich_with(service, tag, [str(_track(tmp_path))])
+
+    assert (tmp_path / "cover.jpg").read_bytes() == b"the-one-it-came-with"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cover_lookup_does_not_fail_the_import(
+    tmp_path: Path,
+) -> None:
+    class _Broken:
+        async def inspect_existing_external(self, settings, directory):  # noqa: ANN001, ANN201
+            return ()
+
+        async def project(self, **kwargs):  # noqa: ANN003, ANN201
+            raise RuntimeError("cover art archive is down")
+
+    document, tag = _album_document(release_id="rel-1")
+
+    await _enrich_with(
+        _artwork_service(_Broken(), artwork_document=document),
+        tag,
+        [str(_track(tmp_path))],
+    )
+
+
+def test_a_track_that_already_has_a_cover_keeps_it() -> None:
+    """The one it came with is usually ripped from the disc; a Cover Art Archive
+    scan of another pressing would be a downgrade dressed as an improvement."""
+    current = SimpleNamespace(artwork=(_output("front"),))
+
+    assert PostImportEnrichmentService._desired_artwork(current, _output()) is None
+
+
+def test_a_track_with_no_cover_gets_the_one_that_was_fetched() -> None:
+    current = SimpleNamespace(artwork=())
+
+    desired = PostImportEnrichmentService._desired_artwork(current, _output())
+
+    assert desired is not None
+    assert [value.image_type for value in desired] == ["front"]
+    assert desired[0].content == b"jpeg-bytes"
+
+
+def test_a_track_with_only_a_back_cover_still_gets_a_front_one() -> None:
+    current = SimpleNamespace(artwork=(_output("back"),))
+
+    desired = PostImportEnrichmentService._desired_artwork(current, _output())
+
+    assert desired is not None
+    # The back image survives: the desired set is the complete one, so dropping
+    # it here would delete artwork the file already had.
+    assert sorted(value.image_type for value in desired) == ["back", "front"]
+
+
+def test_no_artwork_is_desired_when_none_was_fetched() -> None:
+    """None and () mean different things to the writer: None leaves what is
+    there, () would clear it."""
+    current = SimpleNamespace(artwork=())
+
+    assert PostImportEnrichmentService._desired_artwork(current, None) is None

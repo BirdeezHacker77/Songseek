@@ -388,6 +388,30 @@ class DownloadTaggingSettings(AppStruct):
             self.review_score = self.auto_accept_score
 
 
+class DownloadArtworkSettings(AppStruct):
+    """Cover art for a download that arrived without any.
+
+    Strictly fill-only. Almost every download already carries artwork, and the
+    one it came with is usually the one the uploader ripped from the disc - so
+    replacing it with a Cover Art Archive scan of a different pressing would be
+    a downgrade dressed as an improvement. This only ever fills a blank.
+
+    Needs a MusicBrainz release id to look anything up, which comes either from
+    the download's own tags or from identification having just matched it.
+    """
+
+    enabled: bool = False
+    # Into the file, where a player that ignores folder images still finds it.
+    embed_in_tags: bool = True
+    # A cover file beside the album, which is what most scanners look for.
+    save_cover_file: bool = True
+    # Below this, a thumbnail would look worse than the nothing it replaces.
+    minimum_width: int = 500
+
+    def __post_init__(self) -> None:
+        _validate_range(self.minimum_width, "minimum_width", 0, 5000)
+
+
 class DownloadRefreshSettings(AppStruct):
     """Tell the media servers a new album landed, so it shows up without waiting
     for their own scan schedule."""
@@ -414,6 +438,9 @@ class DownloadEnrichmentSettings(AppStruct):
     )
     tagging: DownloadTaggingSettings = msgspec.field(
         default_factory=DownloadTaggingSettings
+    )
+    artwork: DownloadArtworkSettings = msgspec.field(
+        default_factory=DownloadArtworkSettings
     )
 
 

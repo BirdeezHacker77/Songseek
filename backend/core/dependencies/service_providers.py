@@ -1121,6 +1121,7 @@ def get_post_import_enrichment_service() -> "PostImportEnrichmentService":
         get_genre_normalizer(),
         get_post_import_identification_service(),
         get_import_review_service(),
+        get_artwork_projection_service(),
     )
 
 
