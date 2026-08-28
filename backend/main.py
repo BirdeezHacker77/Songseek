@@ -697,7 +697,11 @@ async def lifespan(app: FastAPI):
 
     start_personal_mix_refresh_task(get_personal_mix_service())
 
-    from core.tasks import start_orphan_cover_demotion_task, start_store_prune_task
+    from core.tasks import (
+        start_enrichment_prune_task,
+        start_orphan_cover_demotion_task,
+        start_store_prune_task,
+    )
     from core.dependencies import (
         get_request_history_store,
         get_mbid_store,
@@ -722,6 +726,9 @@ async def lifespan(app: FastAPI):
         ignored_retention_days=advanced_settings.ignored_releases_retention_days,
         interval=advanced_settings.store_prune_interval_hours * 3600,
         wanted_store=get_wanted_store(),
+    )
+    start_enrichment_prune_task(
+        interval=advanced_settings.store_prune_interval_hours * 3600
     )
 
     from core.tasks import (

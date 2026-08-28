@@ -1462,3 +1462,46 @@ def start_background_upgrade_scan_task(
     )
     TaskRegistry.get_instance().register("background-upgrade-scan", task)
     return task
+
+
+async def prune_enrichment_periodically(interval: int = 21600) -> None:
+    """Age out the enrichment undo window and the answered import reviews.
+
+    Both are bounded on purpose rather than kept forever. A history entry holds
+    a complete tag snapshot of the file before the write, so an unpruned table
+    grows by a full copy of every track's metadata and would eventually dwarf
+    the library database itself.
+
+    Resolved reviews go the same way. Pending ones never do: a question that
+    quietly expired would be worse than never having asked it.
+    """
+    from core.dependencies import (
+        get_enrichment_history_service,
+        get_import_review_service,
+    )
+
+    # After startup has settled - nothing here is urgent, and the first minutes
+    # of a container's life belong to the scan and the queue.
+    await asyncio.sleep(900)
+    while True:
+        try:
+            history = await get_enrichment_history_service().prune()
+            reviews = await get_import_review_service().prune()
+            if history or reviews:
+                logger.info(
+                    "Enrichment prune removed %d history entries, %d reviews",
+                    history,
+                    reviews,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:  # noqa: BLE001 - a failed prune must not kill the loop
+            logger.error("Enrichment prune failed: %s", e, exc_info=True)
+
+        await asyncio.sleep(interval)
+
+
+def start_enrichment_prune_task(interval: int = 21600) -> asyncio.Task:
+    task = asyncio.create_task(prune_enrichment_periodically(interval=interval))
+    TaskRegistry.get_instance().register("enrichment-prune", task)
+    return task

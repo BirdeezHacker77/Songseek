@@ -264,6 +264,7 @@ async def start_target_operational_runtime(
         start_poll_new_releases_task,
         start_recycle_bin_prune_task,
         start_request_status_sync_task,
+        start_enrichment_prune_task,
         start_store_prune_task,
         start_wanted_watcher_task,
         warm_jellyfin_mbid_index,
@@ -391,6 +392,7 @@ async def start_target_operational_runtime(
         interval=advanced.store_prune_interval_hours * 3600,
         wanted_store=get_wanted_store(),
     )
+    start_enrichment_prune_task(interval=advanced.store_prune_interval_hours * 3600)
     start_recycle_bin_prune_task(preferences)
     start_background_upgrade_scan_task(
         get_target_download_service, auth_store, preferences
