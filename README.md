@@ -349,26 +349,63 @@ The page shows whether the downloads path is writable and shares a rename bounda
 
 On **Settings > Library**, click **Scan** (or `POST /api/v1/library/scan/start`). The scan walks your paths, reads tags, identifies files through the tiered strategy, and populates the catalog. It does not edit tags or move music files. Progress streams live. Files it cannot confidently identify land in manual review.
 
-### 4. Optional: lyrics and ReplayGain on new downloads
+### 4. Optional: enrichment on new downloads
 
 **Settings > Enrichment** decides what gets added to a track on its way into your
 library. It applies to new downloads only - existing files are never touched - and
-changing it needs no dry run.
+changing it needs no dry run. Every option is off by default, and none of them can
+hold up or refuse an import: whatever fails, the music still lands.
 
-Lyrics come from LRCLIB, matched on artist, title and duration so a track only ever
-gets lyrics that belong to it. You choose independently whether to save a `.lrc`
-file beside the song, whether to embed the lyrics in the file's own tags, and
+**Track identification** matches a finished download against MusicBrainz and writes
+the release's own names back. A download is named however the uploader felt like
+naming it, so two copies of one album can browse as two records; this is what
+collapses them into one. It is gated on two things, not one. The evidence engine's
+verdict has to be "identified", and the match confidence - how many of the checks
+lined up, every track plus the album title and artist - has to reach the threshold
+you set. Both numbers are yours to change.
+
+Between the two thresholds a download imports untouched and is flagged instead, and
+the flag appears under **Requests > Approvals**, where you can accept the match or
+keep your own tags. An album with a track that plainly is not on the release is
+always asked about rather than rewritten, however well it otherwise scores.
+Accepting re-fetches the release rather than replaying what was proposed at import
+time, so a correction MusicBrainz has made since is the one you get.
+
+**Lyrics** come from LRCLIB, matched on artist, title and duration so a track only
+ever gets lyrics that belong to it. You choose independently whether to save a
+`.lrc` file beside the song, whether to embed the lyrics in the file's own tags, and
 whether to prefer time-synced lyrics that scroll with playback. A `.lrc` sidecar is
 what most players and scanners look for, and it is the only place synchronized
 lyrics can live for a format whose tags cannot hold them.
 
-ReplayGain measures perceived loudness so albums play at an even volume. It does not
-re-encode or alter the audio; it only records recommended gain and peak values in
-tags. Analysis is CPU-bound per track, so a large download takes noticeably longer.
+**Cover art** fills in a cover for a download that arrived without one, and only
+that. It never replaces artwork a download already has: the one it came with is
+usually ripped from the disc, so a Cover Art Archive scan of a different pressing
+would be a downgrade dressed as an improvement. Covers are addressed by MusicBrainz
+release, so a download carrying no MusicBrainz tags is skipped unless track
+identification matched it first.
 
-Neither is ever *required*: a track with no lyrics on LRCLIB, or a loudness analysis
-that fails, imports normally rather than holding up the queue. Both preserve values a
-file already carries instead of replacing them.
+**Genres** tidies what the download arrives with rather than looking anything up.
+Uploaders write "Hard Rock", "hard rock" and "alt rock" for the same record, and it
+is that inconsistency rather than a shortage of genres that makes a library hard to
+browse. Names follow the MusicBrainz vocabulary, which is lowercase by convention.
+A track whose genres are all unrecognised keeps the ones it had.
+
+**ReplayGain** measures perceived loudness so albums play at an even volume. It does
+not re-encode or alter the audio; it only records recommended gain and peak values
+in tags. Analysis is CPU-bound per track, so a large download takes noticeably
+longer.
+
+**Media server refresh** tells Navidrome or Jellyfin that an album landed, once per
+import, so it appears without waiting for their own scan schedule.
+
+Everything except identification preserves values a file already carries instead of
+replacing them. Identification is the one that rewrites what the file said about
+itself, which is why it is the one with a review queue.
+
+**Settings > Enrichment History** lists every tag write enrichment made - which
+file, what kind of change, when - and restores any of them, putting that file back
+exactly as it arrived. History is kept for 30 days.
 
 > These settings live outside Library Management profiles on purpose. A profile
 > describes what an organization pass would do to the library you already have, so
