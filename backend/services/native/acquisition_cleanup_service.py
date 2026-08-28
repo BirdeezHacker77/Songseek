@@ -770,7 +770,18 @@ def _attention_source_absent(
             *materialization.file_paths,
         }
     if not candidates:
-        return materialization.state == "missing"
+        # Nothing to point at: the attempt recorded no materialized path and the
+        # client cannot locate one now. The mount is healthy and the transfer is
+        # not active - both checked above - so there is no file left to remove
+        # and the cleanup goal is already met.
+        #
+        # Requiring the client to also report "missing" left an attempt whose
+        # transfer record still reads "completed" rechecking every hour forever,
+        # logging "not locatable on the downloads mount" each time and holding
+        # the service degraded over a file nobody can find. Deleting the client's
+        # temp folder by hand - the ordinary way somebody clears space - puts an
+        # attempt in exactly that state.
+        return True
     for value in candidates:
         try:
             _confined_parts(root, Path(value))
