@@ -131,7 +131,14 @@ ENABLED = DownloadTaggingSettings(enabled=True)
             ("doll", "monkey wrench"),
             "the colour and the shape",
             "applied",
-            0.8,
+            1.0,
+        ),
+        (
+            "a single downloaded track identifies its release",
+            ("doll",),
+            "the colour and the shape",
+            "applied",
+            1.0,
         ),
         (
             "one track is a different song",
@@ -436,3 +443,65 @@ def _album(directory: Path, titles: tuple[str, ...]) -> list[Path]:
         audio.save()
         paths.append(path)
     return paths
+
+
+# --- a single-track download identifies its release ---------------------------
+
+
+def _one_matched_track(release_size: int):  # noqa: ANN202
+    """One downloaded file, matched cleanly, against a release of N tracks."""
+    from models.identification import CandidateEvidence, TrackEvidence
+
+    return CandidateEvidence(
+        release_group_mbid="rg",
+        release_mbid="rel",
+        album_title="Paranoid Android",
+        album_artist_name="Radiohead",
+        album_title_classification="supported",
+        album_artist_classification="supported",
+        track_evidence=[TrackEvidence(local_track_id="1", classification="supported")],
+        unmatched_expected_tracks=[f"t{i}" for i in range(release_size - 1)],
+    )
+
+
+@pytest.mark.parametrize("release_size", [1, 3, 5, 10, 12, 50])
+def test_the_size_of_the_release_does_not_change_a_matched_track(
+    release_size: int,
+) -> None:
+    """The regression, seen in production as `status=unmatched score=0.25`.
+
+    Counting the release's other tracks against the download measured
+    completeness, not identity: one file matching one track of a ten-track
+    release scored 0.25 and fell below even the review threshold, so a
+    single-track download could never be identified - and the bigger the album
+    the song came from, the more certain the failure.
+
+    Not having downloaded the other nine says nothing about whether this is the
+    right release.
+    """
+    confidence = PostImportIdentificationService.confidence(
+        _one_matched_track(release_size)
+    )
+
+    assert confidence == pytest.approx(1.0)
+
+
+def test_a_single_track_that_contradicts_the_release_is_still_doubted() -> None:
+    """Ignoring the tracks we did not download must not make everything certain."""
+    from models.identification import CandidateEvidence, TrackEvidence
+
+    evidence = CandidateEvidence(
+        release_group_mbid="rg",
+        release_mbid="rel",
+        album_title_classification="supported",
+        album_artist_classification="supported",
+        track_evidence=[
+            TrackEvidence(local_track_id="1", classification="contradictory")
+        ],
+        unmatched_expected_tracks=["a"] * 9,
+    )
+
+    confidence = PostImportIdentificationService.confidence(evidence)
+
+    # Between the thresholds: asked about, never applied.
+    assert ENABLED.review_score <= confidence < ENABLED.auto_accept_score

@@ -146,23 +146,32 @@ class PostImportIdentificationService:
 
     @staticmethod
     def confidence(evidence: CandidateEvidence) -> float:
-        """How much of this release lined up, as a fraction of what was checked.
+        """How much of what we downloaded lined up, as a fraction of what was checked.
 
         The evidence engine's own `score` is an assignment cost, and it sits at
         1.0 for an album with a track that is plainly a different song - useful
         for ranking two candidates against each other, useless as "how sure are
-        we". This counts the checks instead: every track, plus the album title
-        and the album artist. It is the number the thresholds are set against,
-        so it has to mean something a person can read.
+        we". This counts the checks instead: every file we have, plus the album
+        title and the album artist. It is the number the thresholds are set
+        against, so it has to mean something a person can read.
+
+        Tracks the release has and the download does not are deliberately NOT
+        counted. Doing so measured completeness rather than identity, and it
+        made a single-track download impossible to identify: one file matching
+        one track of a ten-track release scored 0.25 and fell below even the
+        review threshold, however perfectly it matched. Not having downloaded
+        the other nine is not evidence that the release is wrong.
+
+        Picking the wrong release out of several that all contain the song is a
+        real risk, and it is not this number's job - `decide` returns "ambiguous"
+        when two candidates are close, and an ambiguous result is never applied.
         """
         supported = sum(
-            1 for value in evidence.track_evidence if value.classification == "supported"
+            1
+            for value in evidence.track_evidence
+            if value.classification == "supported"
         )
-        # The release may have tracks the download does not, and the download may
-        # have tracks the release does not. Both count against it, so the
-        # denominator is whichever side has more.
-        expected = supported + len(evidence.unmatched_expected_tracks)
-        checks = max(len(evidence.track_evidence), expected) + 2
+        checks = len(evidence.track_evidence) + 2
         matched = (
             supported
             + (1 if evidence.album_title_classification == "supported" else 0)
